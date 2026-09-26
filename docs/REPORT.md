@@ -248,11 +248,12 @@ database indexes its primary keys. *(Re-measure on your own machine and replace 
 | A transaction copies the whole database | A write-ahead log (WAL) of individual changes |
 | Indexes are rebuilt after restarts and rewrites | Persistent on-disk index files |
 | Rule-based planner | Cost-based optimizer using table statistics |
-| Passwords sent in plain text | TLS encryption, users and roles |
+| Passwords sent in plain text | TLS encryption |
 | `SANDARBH` (FOREIGN KEY) has no `ON DELETE CASCADE` -- only RESTRICT | CASCADE/SET NULL delete rules |
 | `SHART` (CHECK) is stored as source text, not a persisted AST | A serialisable expression-tree format |
 | Views are re-materialized on every read, never cached | Materialized/indexed views |
-| No users/privileges/triggers/stored procedures | Future work |
+| Privileges are per `(database, table)` only -- no schema-level roles, no column-level grants, no `WITH GRANT OPTION` | Fine-grained role-based access control |
+| Triggers/stored procedures have no loops, no local variables, no return value (procedures) | A full procedural language (PL/SQL, PL/pgSQL, ...) |
 
 ## 9. Conclusion
 

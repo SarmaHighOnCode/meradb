@@ -116,17 +116,26 @@ class Catalog:
         self.path = os.path.join(db_dir, self.FILE_NAME)
         self.tables: dict[str, TableSchema] = {}
         self.views: dict[str, str] = {}  # view name -> its DIKHAO source text
+        # trigger name -> {"timing": "PEHLE"|"BAAD", "event": "DAALO"|"BADLO"|"MITAO",
+        #                   "table": str, "body_text": str}
+        self.triggers: dict[str, dict] = {}
+        # procedure name -> {"params": [[name, type], ...], "body_text": str}
+        self.procedures: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
         if not os.path.exists(self.path):
             self.tables = {}
             self.views = {}
+            self.triggers = {}
+            self.procedures = {}
             return
         with open(self.path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.tables = {name: TableSchema.from_dict(t) for name, t in data["tables"].items()}
         self.views = data.get("views", {})  # "views" key: absent in old catalog.json files
+        self.triggers = data.get("triggers", {})  # absent in pre-Phase-B catalog.json files
+        self.procedures = data.get("procedures", {})
 
     def save(self) -> None:
         # Same temp-file-then-replace trick as HeapFile.rewrite: never leave
@@ -142,7 +151,11 @@ class Catalog:
             for n, t in self.tables.items()
         }
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"tables": tables, "views": self.views}, f, indent=2)
+            json.dump(
+                {"tables": tables, "views": self.views, "triggers": self.triggers, "procedures": self.procedures},
+                f,
+                indent=2,
+            )
         os.replace(tmp, self.path)
 
     def table_path(self, table: str) -> str:
@@ -171,4 +184,25 @@ class Catalog:
 
     def remove_view(self, name: str) -> None:
         del self.views[name]
+        self.save()
+
+    def add_trigger(self, name: str, timing: str, event: str, table: str, body_text: str) -> None:
+        self.triggers[name] = {"timing": timing, "event": event, "table": table, "body_text": body_text}
+        self.save()
+
+    def remove_trigger(self, name: str) -> None:
+        del self.triggers[name]
+        self.save()
+
+    def triggers_for(self, timing: str, event: str, table: str) -> list[tuple[str, dict]]:
+        """Triggers matching (timing, event, table), in the order they were
+        CREATEd (a plain dict already preserves insertion order in Python)."""
+        return [(n, t) for n, t in self.triggers.items() if t["timing"] == timing and t["event"] == event and t["table"] == table]
+
+    def add_procedure(self, name: str, params: list, body_text: str) -> None:
+        self.procedures[name] = {"params": [list(p) for p in params], "body_text": body_text}
+        self.save()
+
+    def remove_procedure(self, name: str) -> None:
+        del self.procedures[name]
         self.save()

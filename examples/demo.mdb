@@ -187,6 +187,64 @@ HATAO TABLE pupils;
 HATAO TABLE courses;
 DIKHAO TABLES;
 
+-- ======================= TRIGGERS =======================
+-- A trigger fires once per affected row, running stored statements with
+-- NAYA (NEW) / PURANA (OLD) substituted in as literal values.
+BANAO TABLE accounts (id INT MUKHYA KUNJI, naam TEXT, balance INT);
+BANAO TABLE balance_audit (naam TEXT, purana_balance INT, naya_balance INT);
+DAALO MEIN accounts MAAN (1, 'Ravi', 1000);
+
+BANAO TRIGGER audit_balance BAAD BADLO PAR accounts SHURU
+    DAALO MEIN balance_audit MAAN (NAYA.naam, PURANA.balance, NAYA.balance);
+KHATAM;
+
+BADLO accounts RAKHO balance = balance - 200 JAHAN id = 1;
+DIKHAO * SE balance_audit;                                  -- one audit row, written by the trigger
+
+-- A PEHLE (BEFORE) trigger can VETO the write it fires for, simply by raising
+-- an error -- here, dividing by zero only when NAYA.balance would go negative
+-- (a real, useful "raise only when a condition holds" trick within one expression).
+BANAO TRIGGER no_negative_balance PEHLE BADLO PAR accounts SHURU
+    BADLO accounts RAKHO balance = balance / (AGAR NAYA.balance < 0 TAB 0 WARNA 1 KHATAM) JAHAN naam = NAYA.naam;
+KHATAM;
+BADLO accounts RAKHO balance = balance - 10000 JAHAN id = 1;   -- FAILS ON PURPOSE: would go negative
+
+HATAO TRIGGER no_negative_balance;
+HATAO TRIGGER audit_balance;
+
+-- ======================= STORED PROCEDURES =======================
+-- A named, parameterised sequence of statements -- a macro, not a full
+-- procedural language (no loops, no return value; see docs/LANGUAGE.md).
+BANAO PROCEDURE jamaa_karo (p_id INT, p_kitna INT) SHURU
+    BADLO accounts RAKHO balance = balance + p_kitna JAHAN id = p_id;
+KHATAM;
+
+CHALAO jamaa_karo(1, 500);
+DIKHAO * SE accounts;
+
+HATAO PROCEDURE jamaa_karo;
+CHALAO jamaa_karo(1, 500);                                   -- FAILS ON PURPOSE: procedure was dropped
+
+HATAO TABLE balance_audit;
+HATAO TABLE accounts;
+
+-- ======================= USERS & PRIVILEGES =======================
+-- Server-wide users with hashed passwords, and per-(database,table) grants.
+-- This --local/embedded run has no server session to authenticate AS, so it
+-- can only show BANAO USER / ADHIKAR DO succeeding here -- the actual
+-- ENFORCEMENT (a restricted user blocked from what they weren't granted) is
+-- demonstrated in tests/test_phase_b.py's client/server test, over a real
+-- connection with `-U`/`--user`.
+BANAO TABLE reports (id INT MUKHYA KUNJI, titles TEXT);
+DAALO MEIN reports MAAN (1, 'Attendance');
+
+BANAO USER ravi GUPT 'secret123';
+ADHIKAR DO DIKHAO, DAALO PAR reports KO ravi;
+ADHIKAR WAPAS DAALO PAR reports SE ravi;                     -- ravi now only has DIKHAO
+
+HATAO USER ravi;
+HATAO TABLE reports;
+
 -- ======================= errors are friendly too =======================
 DAALO MEIN nahi_hai MAAN (1);
 

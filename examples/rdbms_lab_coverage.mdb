@@ -290,19 +290,33 @@ HATAO VIEW cs_department_students;
 
 -- ============================================================================
 -- Lab 11: Privileges
--- MeraDB has ONE optional server-wide password (meradb start --password ...),
--- not a per-user/per-table permission system. There is no GRANT, no REVOKE,
--- no concept of a user at all inside a database -- every connected client
--- can do everything. See docs/SERVER.md for the password itself.
+-- BANAO USER / HATAO USER (server-wide, hashed passwords) and ADHIKAR DO /
+-- ADHIKAR WAPAS (GRANT/REVOKE), per (database, table). Enforcement only
+-- kicks in for a SERVER session that logged in with `-U`/`--user`; this
+-- --local/embedded script has no server connection to demonstrate the
+-- actual BLOCKING with, so it can only show the commands themselves
+-- succeeding below -- tests/test_phase_b.py's client/server test shows a
+-- restricted user actually being allowed/blocked over a real connection.
+-- See docs/LANGUAGE.md "Users & privileges" for the full syntax and its
+-- honest-scope limits (per-table only; no schema-level roles, no
+-- column-level grants, no WITH GRANT OPTION).
 -- ============================================================================
+
+BANAO USER lab_ta GUPT 'ta_password';
+ADHIKAR DO DIKHAO PAR students KO lab_ta;                 -- GRANT SELECT ON students TO lab_ta
+ADHIKAR DO SAB PAR teachers KO lab_ta;                    -- GRANT ALL (SELECT/INSERT/UPDATE/DELETE)
+ADHIKAR WAPAS DAALO, BADLO, MITAO PAR teachers SE lab_ta; -- REVOKE down to just DIKHAO
+HATAO USER lab_ta;
 
 
 -- ============================================================================
 -- Lab 12: Transaction Control Language
 --   Rollback, Commit, Savepoint, Triggers, Stored Procedures
--- MeraDB has SHURU/PAKKA/WAPAS (BEGIN/COMMIT/ROLLBACK). It has no SAVEPOINT
--- (only the whole transaction can be rolled back, not part of it), and no
--- triggers or stored procedures at all (no PL/SQL equivalent language).
+-- MeraDB has SHURU/PAKKA/WAPAS (BEGIN/COMMIT/ROLLBACK), BANAO TRIGGER, and
+-- BANAO PROCEDURE. It still has no SAVEPOINT (only the whole transaction can
+-- be rolled back, not part of it) and no full PL/SQL-style procedural
+-- language (see docs/LANGUAGE.md "Triggers"/"Stored procedures" for the
+-- honest-scope limits of each).
 -- ============================================================================
 
 SHURU;                                                    -- BEGIN
@@ -315,6 +329,27 @@ SHURU;
 BADLO teachers RAKHO salary = salary * 1.1 JAHAN dept_id = 1;
 PAKKA;                                                    -- COMMIT: keep it
 DIKHAO naam, salary SE teachers JAHAN dept_id = 1;        -- the raise stayed
+
+
+-- Triggers: fire once per affected row, PEHLE/BAAD (BEFORE/AFTER) x
+-- DAALO/BADLO/MITAO, with NAYA/PURANA (NEW/OLD) row substitution.
+BANAO TABLE salary_audit (naam TEXT, purana_salary FLOAT, naya_salary FLOAT);
+BANAO TRIGGER audit_salary BAAD BADLO PAR teachers SHURU
+    DAALO MEIN salary_audit MAAN (NAYA.naam, PURANA.salary, NAYA.salary);
+KHATAM;
+BADLO teachers RAKHO salary = salary * 1.05 JAHAN dept_id = 1;
+DIKHAO * SE salary_audit;
+HATAO TRIGGER audit_salary;
+HATAO TABLE salary_audit;
+
+-- Stored procedures: a named, parameterised sequence of statements (a macro,
+-- not a full PL/SQL language -- no loops, no return value).
+BANAO PROCEDURE badhao_salary (p_dept_id INT, p_percent FLOAT) SHURU
+    BADLO teachers RAKHO salary = salary * (1 + p_percent / 100) JAHAN dept_id = p_dept_id;
+KHATAM;
+CHALAO badhao_salary(1, 10);
+DIKHAO naam, salary SE teachers JAHAN dept_id = 1;
+HATAO PROCEDURE badhao_salary;
 
 
 -- ============================================================================
@@ -371,21 +406,30 @@ HATAO DATABASE college_lab;
 
 -- ============================================================================
 -- NOT SUPPORTED BY MERADB -- the complete list, all in one place
--- (Phase A of this project's gap features -- subqueries, VIEWs, set
--- operations, NATURAL/RIGHT/FULL OUTER JOIN, COALESCE/CASE WHEN, INSERT ...
--- SELECT, upsert, and composite UNIQUE/PRIMARY KEY -- have all been added
--- and are demonstrated as real, working commands above. What remains below
--- is Phase B's territory: users/privileges/triggers/procedures.)
---   GRANT / REVOKE / per-user privileges (only one whole-server password)
+-- (Phase A's gap features -- subqueries, VIEWs, set operations, NATURAL/
+-- RIGHT/FULL OUTER JOIN, COALESCE/CASE WHEN, INSERT ... SELECT, upsert,
+-- composite UNIQUE/PRIMARY KEY -- and Phase B's systems features --
+-- users/privileges, triggers, stored procedures -- have all been added and
+-- are demonstrated as real, working commands above. What remains below is
+-- deliberately out of scope, documented in docs/LANGUAGE.md's "Honest
+-- scope"/"Things to know" notes rather than left unmentioned.)
 --   SAVEPOINT (a transaction can only be committed or rolled back whole)
---   Stored procedures, functions, cursors, triggers (no PL/SQL equivalent)
+--   Fine-grained privileges: schema-level roles, column-level grants,
+--     WITH GRANT OPTION (grants here are per (database, table) only)
+--   Procedural control flow inside a trigger/procedure body: loops, local
+--     variables beyond the parameters themselves, a procedure's return value
+--     (AGAR...KHATAM expressions are the only "if" available, same as
+--     everywhere else in MeraDB)
 --   MERGE's full "match a source table, insert/update/delete" form (the
 --     simplified TAKRAAV PAR BADLO upsert above only rescues a conflict
 --     against an existing row -- it isn't a full MERGE statement)
+--   Multi-column (composite) FOREIGN KEY (SANDARBH is single-column only;
+--     composite UNIQUE/PRIMARY KEY above are unrelated to this)
 -- Everything else in both hand-outs -- DDL, all constraint types (including
 -- composite), DML (including INSERT ... SELECT and upsert), SELECT/WHERE/
 -- ORDER BY/LIMIT, aggregates, GROUP BY/HAVING, every join kind (cross/inner/
 -- self/natural/left/right/full outer), subqueries, VIEWs, set operations,
--- COALESCE/CASE WHEN, transactions, and query plans -- is a real, working
--- MeraDB command, demonstrated above.
+-- COALESCE/CASE WHEN, transactions, query plans, users/privileges, triggers
+-- and stored procedures -- is a real, working MeraDB command, demonstrated
+-- above.
 -- ============================================================================

@@ -63,6 +63,18 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `AGAR ... TAB ... WARNA ... KHATAM` | CASE WHEN ... THEN ... ELSE ... END | agar/tab/khatam = if/then/end |
 | `TAKRAAV PAR BADLO` | ON CONFLICT DO UPDATE | takraav = collision |
 | `ANOKHA (a, b)` / `MUKHYA KUNJI (a, b)` | composite UNIQUE / PRIMARY KEY | multi-column constraint |
+| `BANAO USER ... GUPT` | CREATE USER ... IDENTIFIED BY | gupt = secret (password) |
+| `HATAO USER`      | DROP USER       | hatao = remove         |
+| `ADHIKAR DO ... PAR ... KO` | GRANT ... ON ... TO | adhikar do = give privilege |
+| `ADHIKAR WAPAS ... PAR ... SE` | REVOKE ... ON ... FROM | adhikar wapas = take back privilege |
+| `SAB` (after `ADHIKAR DO`) | ALL             | sab = all              |
+| `BANAO TRIGGER`   | CREATE TRIGGER  | banao = make            |
+| `HATAO TRIGGER`   | DROP TRIGGER    | hatao = remove          |
+| `PEHLE` / `BAAD`  | BEFORE / AFTER  | pehle/baad = before/after |
+| `NAYA` / `PURANA` (alias inside a trigger body) | NEW / OLD | naya/purana = new/old |
+| `BANAO PROCEDURE` | CREATE PROCEDURE | banao = make           |
+| `HATAO PROCEDURE` | DROP PROCEDURE  | hatao = remove          |
+| `CHALAO`          | CALL            | chalao = run/execute    |
 
 ## Data types
 
@@ -153,6 +165,126 @@ A view can be read from, but never written to: `DAALO`/`BADLO`/`MITAO`/`SUDHARO`
 selects from change shape or disappear, the view simply fails the next time it's read
 (same as most real databases without a dependency check at `BANAO VIEW` time beyond a
 first sanity run).
+
+## Users & privileges
+
+A small, **server-wide** user store (one `users.json` at the top of the data folder, not
+one per database -- see `docs/ARCHITECTURE.md`). Passwords are hashed
+(`hashlib.pbkdf2_hmac`, stdlib only), never stored in the clear.
+
+```sql
+BANAO USER ravi GUPT 'secret123';         -- CREATE USER ravi, password 'secret123'
+HATAO USER ravi;                          -- DROP USER
+
+ADHIKAR DO DIKHAO, DAALO PAR students KO ravi;   -- GRANT SELECT, INSERT ON students TO ravi
+ADHIKAR DO SAB PAR students KO ravi;             -- GRANT ALL (all 4 privileges) ...
+ADHIKAR WAPAS DIKHAO PAR students SE ravi;       -- REVOKE SELECT ON students FROM ravi
+```
+
+The four grantable privileges are named after the statement verbs themselves: `DIKHAO`
+(SELECT), `DAALO` (INSERT), `BADLO` (UPDATE), `MITAO` (DELETE). A view participates in the
+exact same `database.name` grant keyspace as a table -- granting `DIKHAO` on a view's name
+lets a restricted user read it **without** needing direct grants on the tables the view
+itself queries (same trick real databases use views for).
+
+**How a session becomes "restricted":** an embedded `Engine` (local mode, every test in
+this project, `--local` on the CLI) never has a username at all, so it is always a
+**superuser** -- unaffected by any of this, 100% backward compatible. Only a *server*
+client that connects with `-U/--user` (see `docs/SERVER.md`) authenticates as a specific
+user and becomes subject to privilege checks from that point on.
+
+**Honest scope (see the top of this doc's intro and `docs/ARCHITECTURE.md`):**
+- Grants are per `(database, table)` -- there are no schema-level roles, no column-level
+  grants, and no `WITH GRANT OPTION` (a granted user can never grant to someone else).
+- Once a session HAS authenticated as a (non-super) user, it can run **only**
+  `DIKHAO`/`DAALO`/`BADLO`/`MITAO` against tables/views it holds the matching privilege
+  on. Every DDL statement (`BANAO`/`HATAO`/`SUDHARO`/`SAAF`/`SIKODO TABLE`, `VIEW`,
+  `TRIGGER`, `PROCEDURE`), user/grant management (`BANAO`/`HATAO USER`, `ADHIKAR`), and
+  every transaction command (`SHURU`/`PAKKA`/`WAPAS`) is **superuser-only** from that point
+  -- kept simple and strict rather than a fine-grained "who can ALTER what" model.
+- A trigger or stored procedure body runs with the **invoking session's own privileges**
+  (no "definer rights") -- a restricted user needs grants on every table a trigger/procedure
+  they trigger touches, not just the one they directly wrote to.
+- There is no password rotation/expiry, no account lockout, and no `WITH GRANT OPTION` --
+  this is a teaching-project user store, not a production one.
+
+## Triggers
+
+```sql
+BANAO TRIGGER before_insert_students PEHLE DAALO PAR students SHURU
+    BADLO log_table RAKHO events = events + 1 JAHAN naam = 'insert_count';
+KHATAM;
+
+HATAO TRIGGER before_insert_students;
+```
+
+`PEHLE`/`BAAD` (BEFORE/AFTER) combine with `DAALO`/`BADLO`/`MITAO` (INSERT/UPDATE/DELETE)
+on one table. The body is one or more `;`-terminated statements between `SHURU` and
+`KHATAM` (the same BEGIN/END keywords used for transactions -- a different grammar
+position, no ambiguity), parse-validated when the trigger is created.
+
+Inside the body, `NAYA.column`/`PURANA.column` (NEW/OLD) refer to the affected row's new
+and old values -- exactly like a table alias, substituted with the actual value right
+before the statement runs:
+
+```sql
+BANAO TRIGGER audit_umar BAAD BADLO PAR students SHURU
+    DAALO MEIN audit MAAN (NAYA.naam, PURANA.umar, NAYA.umar);
+KHATAM;
+```
+
+- A `PEHLE DAALO`/`BAAD DAALO` trigger only has `NAYA` (there is no old row yet).
+- A `PEHLE MITAO`/`BAAD MITAO` trigger only has `PURANA` (the row is going away).
+- A `BADLO` trigger has both.
+- Multiple triggers on the same `(timing, event, table)` fire **in the order they were
+  created**.
+
+**Honest scope:**
+- A trigger fires **once per affected row**, running a fixed list of stored statements
+  with `NAYA`/`PURANA` substituted in as literal values -- there is no procedural control
+  flow (no loops; `AGAR...KHATAM` inside an ordinary expression is the only "if" available,
+  same as everywhere else in MeraDB).
+- A `PEHLE` (BEFORE) trigger's error **aborts the whole outer `DAALO`/`BADLO`/`MITAO`** --
+  a real and useful way to veto a write from a trigger.
+- A `BAAD` (AFTER) trigger's error also propagates up to the caller, but it does **not**
+  roll back row(s) already written by the same outer statement -- it only prevents
+  anything scheduled after it (in the same batch, or later in the outer statement) from
+  happening. There is no automatic "undo the whole batch" if an AFTER trigger fails.
+- `TAKRAAV PAR BADLO` (upsert): a row that collides with an existing one and gets updated
+  fires `BADLO` triggers (it really is an update); a row that gets freshly inserted fires
+  `DAALO` triggers.
+- `SAMJHAO` (EXPLAIN) is trigger-unaware: triggers are a side effect of *running* DML, not
+  something a query plan involves.
+
+## Stored procedures
+
+```sql
+BANAO PROCEDURE badhao_umar (p_id INT, p_kitna INT) SHURU
+    BADLO students RAKHO umar = umar + p_kitna JAHAN id = p_id;
+KHATAM;
+
+CHALAO badhao_umar(1, 2);
+
+HATAO PROCEDURE badhao_umar;
+```
+
+A stored procedure is a **named, parameterised sequence of statements** -- a macro, not a
+procedural language. Parameters are declared with a type (any of the usual column types),
+purely so `CHALAO`'s arguments get `coerce()`d to that type -- a clean type-mismatch error
+instead of a confusing one deep inside the first statement that uses the wrong value.
+`CHALAO`'s arguments must be constant expressions (literals, arithmetic on literals, ...):
+there is no outer row to reference a column against at a bare `CHALAO` call site.
+
+**Honest scope:**
+- No loops, no local variables beyond the parameters themselves, and **no return value** --
+  a procedure *does* something (a sequence of writes/reads); it doesn't compute and hand
+  back a value the way a query does.
+- **Name-collision caveat:** inside the body, a bare (unqualified) column reference that
+  happens to share its name with a parameter is **always** treated as the parameter -- there
+  is no separate namespace. Prefixing every parameter name with `p_` (as in the example
+  above) sidesteps this entirely; every example/doc in this project follows that
+  convention.
+- Like triggers, a procedure runs with the **invoking session's own privileges**.
 
 ## DML: Data Manipulation Language
 
@@ -305,6 +437,8 @@ script      = statement { ";" statement } [ ";" ] ;
 statement   = create_db | drop_db | use_db | create_tbl | drop_tbl | alter_tbl
             | truncate | compact | describe | show_tables | show_views
             | create_view | drop_view
+            | create_user | drop_user | grant_stmt | revoke_stmt
+            | create_trigger | drop_trigger | create_procedure | drop_procedure | call_proc
             | insert | select_stmt | update | delete
             | "SHURU" | "PAKKA" | "WAPAS" | "SAMJHAO" statement ;
 
@@ -333,6 +467,25 @@ show_tables = "DIKHAO" "TABLES" ;
 show_views  = "DIKHAO" "VIEWS" ;
 create_view = "BANAO" "VIEW" IDENT "KAHO" select ;              (* select's SOURCE TEXT is stored *)
 drop_view   = "HATAO" "VIEW" IDENT ;
+
+create_user = "BANAO" "USER" IDENT "GUPT" STRING ;
+drop_user   = "HATAO" "USER" IDENT ;
+privilege   = "DIKHAO" | "DAALO" | "BADLO" | "MITAO" ;
+priv_list   = "SAB" | privilege { "," privilege } ;
+grant_stmt  = "ADHIKAR" "DO" priv_list "PAR" IDENT "KO" IDENT ;
+revoke_stmt = "ADHIKAR" "WAPAS" priv_list "PAR" IDENT "SE" IDENT ;
+
+block_body  = "SHURU" statement ";" { statement ";" } "KHATAM" ;   (* 1+ statements; raw SOURCE
+                                                                       TEXT between SHURU/KHATAM
+                                                                       is what's actually stored *)
+create_trigger = "BANAO" "TRIGGER" IDENT ( "PEHLE" | "BAAD" ) ( "DAALO" | "BADLO" | "MITAO" )
+                 "PAR" IDENT block_body ;
+drop_trigger   = "HATAO" "TRIGGER" IDENT ;
+
+proc_param     = IDENT TYPE ;
+create_procedure = "BANAO" "PROCEDURE" IDENT "(" [ proc_param { "," proc_param } ] ")" block_body ;
+drop_procedure   = "HATAO" "PROCEDURE" IDENT ;
+call_proc        = "CHALAO" IDENT "(" [ expr { "," expr } ] ")" ;
 
 insert      = "DAALO" "MEIN" IDENT [ "(" IDENT { "," IDENT } ")" ]
               ( "MAAN" tuple { "," tuple } | select )
@@ -417,3 +570,10 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   -- write the columns out explicitly if you want each name only once.
 - **A view is not a table.** It has no rows of its own, no index, and always does a full scan of
   its freshly re-run query -- see the VIEWs section above and `docs/ARCHITECTURE.md`.
+- **No username = superuser.** Privilege checking only ever applies to a session that
+  authenticated with `-U/--user` against a running server -- every embedded/`--local`
+  session, and every test in this project, is unaffected. See "Users & privileges" above
+  and `docs/SERVER.md`.
+- **Triggers and stored procedures run with the invoking session's own privileges**, not
+  "definer rights" -- a restricted user needs grants on every table their trigger/procedure
+  touches, not just the one they directly wrote to.

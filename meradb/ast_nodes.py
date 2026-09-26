@@ -337,3 +337,89 @@ class Update(Statement):
 class Delete(Statement):
     table: str
     where: Optional[Expr] = None
+
+
+# ============================================================================
+# Phase B: users/privileges, triggers, stored procedures
+# ============================================================================
+# See docs/LANGUAGE.md "Users & privileges" / "Triggers" / "Stored procedures"
+# sections for the honest-scope limitations of each of these.
+
+
+@dataclass
+class CreateUser(Statement):
+    """BANAO USER naam GUPT 'password'"""
+
+    name: str
+    password: str
+
+
+@dataclass
+class DropUser(Statement):
+    name: str
+
+
+@dataclass
+class Grant(Statement):
+    """ADHIKAR DO DIKHAO, DAALO PAR table KO user -- `privileges` is a list of
+    "DIKHAO"/"DAALO"/"BADLO"/"MITAO" (SAB is expanded to all four by the parser)."""
+
+    privileges: list[str]
+    table: str
+    user: str
+
+
+@dataclass
+class Revoke(Statement):
+    """ADHIKAR WAPAS DIKHAO PAR table SE user"""
+
+    privileges: list[str]
+    table: str
+    user: str
+
+
+@dataclass
+class CreateTrigger(Statement):
+    """BANAO TRIGGER naam PEHLE|BAAD DAALO|BADLO|MITAO PAR table SHURU ... KHATAM
+    `body_text` is the raw source of the statements between SHURU and KHATAM --
+    reparsed fresh every time the trigger fires (same pattern as CreateView)."""
+
+    name: str
+    timing: str  # "PEHLE" | "BAAD"
+    event: str  # "DAALO" | "BADLO" | "MITAO"
+    table: str
+    body_text: str
+
+
+@dataclass
+class DropTrigger(Statement):
+    name: str
+
+
+@dataclass
+class ProcParam:
+    name: str
+    type_name: str  # normalised, same as ColumnDef.type_name
+
+
+@dataclass
+class CreateProcedure(Statement):
+    """BANAO PROCEDURE naam (p1 TYPE, p2 TYPE, ...) SHURU ... KHATAM"""
+
+    name: str
+    params: list[ProcParam]
+    body_text: str
+
+
+@dataclass
+class DropProcedure(Statement):
+    name: str
+
+
+@dataclass
+class CallProcedure(Statement):
+    """CHALAO naam(expr, expr, ...) -- args are evaluated as CONSTANT
+    expressions (no outer row context exists at a bare CHALAO call site)."""
+
+    name: str
+    args: list[Expr]

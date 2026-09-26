@@ -83,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("-p", "--port", type=int, help=f"server ka port (default {DEFAULT_PORT}, ya MERADB_PORT)")
         p.add_argument("-d", "--database", help="shuru mein ye database istemal karo")
         p.add_argument("-W", "--password", action="store_true", help="password poocho (ya MERADB_PASSWORD)")
+        p.add_argument("-U", "--user", default=os.environ.get("MERADB_USER"),
+                       help="is USERNAME se login karo (ya MERADB_USER) -- privileges ke saath, "
+                            "server-wide password ki jagah")
         p.add_argument("--local", action="store_true", help="server ke bina, seedha data folder kholo")
 
     p = sub.add_parser("server", help="server isi terminal mein chalao (Ctrl+C se band)")
@@ -149,6 +152,12 @@ def open_backend(args, password: str | None = None):
     if password is None:
         password = get_password(args)
     if args.local:
+        if getattr(args, "user", None):
+            # --local means "trust the person running this process completely"
+            # -- there is no server and no authentication, so a username has
+            # nothing to check against. Note it and proceed as superuser,
+            # rather than erroring (see docs/SERVER.md).
+            note(f"(--local mode mein -U/--user '{args.user}' ka koi matlab nahi -- ignore kiya, superuser ki tarah chal raha hai)")
         return open_local(args)
 
     # Flags are an explicit choice (no fallback to local mode if that server is down);
@@ -162,7 +171,7 @@ def open_backend(args, password: str | None = None):
         info = read_pid_file(os.path.abspath(args.data))
         port = int(info["port"]) if info and "port" in info else DEFAULT_PORT
     try:
-        return Connection(host, port, password, args.database)
+        return Connection(host, port, password, args.database, user=getattr(args, "user", None))
     except ServerUnavailable:
         if explicit:
             raise

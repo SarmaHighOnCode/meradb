@@ -108,6 +108,18 @@ KEYWORDS = {
     "TAB",  # ... THEN
     "KHATAM",  # ... END (also used by Phase B for trigger/procedure blocks)
     "TAKRAAV",  # CONFLICT     (TAKRAAV PAR BADLO = ON CONFLICT DO UPDATE)
+    # --- Phase B: users/privileges, triggers, stored procedures ---
+    "USER",  # BANAO USER / HATAO USER
+    "GUPT",  # PASSWORD      (BANAO USER ravi GUPT 'secret')
+    "ADHIKAR",  # PRIVILEGE  (ADHIKAR DO = GRANT, ADHIKAR WAPAS = REVOKE)
+    "DO",  # GIVE           (ADHIKAR DO ... KO ravi = GRANT ... TO ravi)
+    "KO",  # TO             (ADHIKAR DO ... KO ravi)
+    "SAB",  # ALL            (ADHIKAR DO SAB PAR students KO ravi)
+    "TRIGGER",  # BANAO TRIGGER / HATAO TRIGGER
+    "PEHLE",  # BEFORE        (PEHLE DAALO = BEFORE INSERT)
+    "BAAD",  # AFTER          (BAAD DAALO = AFTER INSERT)
+    "PROCEDURE",  # BANAO PROCEDURE / HATAO PROCEDURE
+    "CHALAO",  # CALL/EXECUTE  (CHALAO naam(args))
 }
 
 # Two-character symbols must be checked BEFORE one-character ones,

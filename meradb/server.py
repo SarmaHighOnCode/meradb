@@ -88,21 +88,38 @@ class ClientHandler(socketserver.StreamRequestHandler):
             return
         if not hello or hello.get("type") != "hello":
             return
-        if server.password and not hmac.compare_digest(str(hello.get("password") or ""), server.password):
-            send(self.wfile, {"ok": False, "error": "[Connection Galti] Password galat hai"})
+
+        user = hello.get("user")
+        if user:
+            # A per-user login SUPERSEDES the single shared server password --
+            # the whole-server password check below is skipped entirely for
+            # this connection (see docs/SERVER.md "no username = superuser").
+            if not server.instance.users.verify(str(user), str(hello.get("password") or "")):
+                # bare message: the client wraps this in a ConnectionFailed exception,
+                # whose own __str__ already adds "[Connection Galti] " -- adding it here
+                # too would print it twice
+                send(self.wfile, {"ok": False, "error": "User ya password galat hai"})
+                server.log(f"{peer}  login fail (galat user/password: {user!r})")
+                return
+        elif server.password and not hmac.compare_digest(str(hello.get("password") or ""), server.password):
+            send(self.wfile, {"ok": False, "error": "Password galat hai"})  # bare: see note above
             server.log(f"{peer}  login fail (galat password)")
             return
 
         session = Engine(server.instance)
+        if user:
+            session.user = str(user)
         server.track(+1)
-        server.log(f"{peer}  connected  (active sessions: {server.sessions})")
+        server.log(f"{peer}  connected{f' as {user!r}' if user else ''}  (active sessions: {server.sessions})")
         try:
             database = hello.get("database")
             if database:
                 try:
                     session.execute_statement(ast.UseDatabase(str(database)))
                 except MeraDBError as e:
-                    send(self.wfile, {"ok": False, "error": str(e)})
+                    # .message not str(e): the client wraps this in ConnectionFailed,
+                    # which would double the "[Stage Galti] " tag otherwise
+                    send(self.wfile, {"ok": False, "error": e.message})
                     return
             send(self.wfile, {"ok": True, "server": f"MeraDB {__version__}", "protocol": PROTOCOL_VERSION,
                               "database": session.current_db})
@@ -154,7 +171,7 @@ class ClientHandler(socketserver.StreamRequestHandler):
             try:
                 return {"ok": True, "tree": session.schema_tree()}, False
             except MeraDBError as e:
-                return {"ok": False, "error": str(e)}, False
+                return {"ok": False, "error": e.message}, False  # see note above: schema_tree() also wraps in ConnectionFailed
 
         if kind == "status":
             return {

@@ -18,7 +18,18 @@ class MeraDBError(Exception):
     stage = "MeraDB"
 
     def __str__(self) -> str:
-        return f"[{self.stage} Galti] {self.args[0] if self.args else ''}"
+        return f"[{self.stage} Galti] {self.message}"
+
+    @property
+    def message(self) -> str:
+        """The raw text, without the '[Stage Galti] ' tag `str()` adds.
+
+        Use this whenever the message is about to be wrapped in ANOTHER
+        MeraDBError (e.g. the server relaying an error to a client, which
+        gets wrapped in ConnectionFailed there) -- otherwise the tag is
+        applied twice, e.g. "[Connection Galti] [Execution Galti] ...".
+        """
+        return self.args[0] if self.args else ""
 
 
 class TokenizerError(MeraDBError):

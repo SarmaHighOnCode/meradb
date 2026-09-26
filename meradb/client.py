@@ -21,7 +21,7 @@ from .protocol import DEFAULT_HOST, DEFAULT_PORT, PROTOCOL_VERSION, ProtocolErro
 
 class Connection:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, password: str | None = None,
-                 database: str | None = None, timeout: float = 60.0):
+                 database: str | None = None, timeout: float = 60.0, user: str | None = None):
         self.host, self.port = host, port
         try:
             self._sock = socket.create_connection((host, port), timeout=5)
@@ -32,8 +32,11 @@ class Connection:
         self._rfile = self._sock.makefile("rb")
         self._wfile = self._sock.makefile("wb")
 
+        # `user`, if given, authenticates as that SPECIFIC user (checked against
+        # users.json, see users.py) instead of the single shared server password
+        # -- see docs/SERVER.md "no username = superuser".
         reply = self._request({"type": "hello", "version": PROTOCOL_VERSION,
-                               "password": password, "database": database})
+                               "password": password, "database": database, "user": user})
         if not reply.get("ok"):
             self.close()
             raise ConnectionFailed(reply.get("error", "Server ne connection mana kar diya"))

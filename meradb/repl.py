@@ -341,6 +341,32 @@ HELP_REFERENCE: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("SAMJHAO query", "EXPLAIN", "query chalaye bina uska plan dikhao"),
         ],
     ),
+    (
+        "Users & privileges",
+        [
+            ("BANAO USER naam GUPT 'pw'", "CREATE USER ... IDENTIFIED BY", "naya server-wide user banao"),
+            ("HATAO USER naam", "DROP USER", "user hatao"),
+            ("ADHIKAR DO privs PAR t KO user", "GRANT privs ON t TO user", "adhikar do (DIKHAO/DAALO/BADLO/MITAO/SAB)"),
+            ("ADHIKAR WAPAS privs PAR t SE user", "REVOKE privs ON t FROM user", "adhikar wapas lo"),
+        ],
+    ),
+    (
+        "Triggers",
+        [
+            ("BANAO TRIGGER naam PEHLE|BAAD DAALO|BADLO|MITAO PAR t SHURU ... KHATAM",
+             "CREATE TRIGGER ... BEFORE|AFTER ...", "row-level trigger banao"),
+            ("HATAO TRIGGER naam", "DROP TRIGGER", "trigger hatao"),
+            ("NAYA.col / PURANA.col (trigger body ke andar)", "NEW.col / OLD.col", "naya/purana row value"),
+        ],
+    ),
+    (
+        "Stored procedures",
+        [
+            ("BANAO PROCEDURE naam (p TYPE, ...) SHURU ... KHATAM", "CREATE PROCEDURE", "parameterised statement macro banao"),
+            ("CHALAO naam(args)", "CALL naam(args)", "procedure chalao"),
+            ("HATAO PROCEDURE naam", "DROP PROCEDURE", "procedure hatao"),
+        ],
+    ),
 ]
 
 SHELL_COMMANDS_HELP = f"""{_c("Shell commands", 1, 35)}

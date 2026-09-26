@@ -5,8 +5,15 @@ Big databases use compact binary protocols; ours is deliberately simple and read
 **one JSON object per line** ("newline-delimited JSON"). You could even talk to
 the server by hand with a raw TCP tool.
 
-    client -> server   {"type": "hello", "version": 1, "password": "...", "database": "main"}
+    client -> server   {"type": "hello", "version": 1, "password": "...", "database": "main",
+                        "user": null}
     server -> client   {"ok": true, "server": "MeraDB 1.0.0", "database": "main"}
+
+Optional "user" (Phase B): if present, the server authenticates that SPECIFIC user
+against users.json (see users.py) instead of the single shared server password, and
+that session becomes subject to privilege checks from then on. Absent/null "user" =
+today's behaviour exactly (shared-password check only, unrestricted superuser session)
+-- see docs/SERVER.md "Users and privileges".
 
     client -> server   {"type": "query", "text": "DIKHAO * SE s;"}
     server -> client   {"ok": true, "database": "main", "in_transaction": false,

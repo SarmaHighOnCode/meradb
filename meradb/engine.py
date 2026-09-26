@@ -88,6 +88,7 @@ from .planner import Scope, bind, natural_join_condition
 from .protocol import default_data_dir, running_server
 from .storage import HeapFile, encode_row
 from .table import MaterializedTable, Table
+from .users import UserStore
 
 DEFAULT_DATABASE = "main"
 SNAPSHOT_DIR = ".wapas"  # where transactions keep their "before" copy
@@ -168,6 +169,9 @@ class Instance:
         self.lock = threading.RLock()
         self.catalogs: dict[str, Catalog] = {}
         self.indexes: dict[tuple, dict] = {}  # (database, table) -> {column: {value: row_id}}
+        # Users are a SERVER-WIDE concept (one file at the top of the data dir,
+        # not one per database) -- see users.py and docs/LANGUAGE.md "Users & privileges".
+        self.users = UserStore(self.data_dir)
         self.recovered = self._recover()
         os.makedirs(self.db_dir(DEFAULT_DATABASE), exist_ok=True)
 
@@ -250,6 +254,12 @@ class Engine:
         self.instance = data if isinstance(data, Instance) else Instance(data)
         self.current_db = DEFAULT_DATABASE
         self.txn_db: Optional[str] = None  # database of the open transaction, if any
+        # The session's authenticated username, or None. None means SUPERUSER
+        # (unrestricted) -- every embedded Engine and every session that
+        # connects without a username (server clients only) behaves this way,
+        # which is exactly today's behaviour for 100% backward compatibility.
+        # See docs/SERVER.md "no username = superuser".
+        self.user: Optional[str] = None
 
     # ------------------------------------------------------------------
     # public API (the REPL, workbench, server and tests all use only these)
@@ -294,7 +304,70 @@ class Engine:
             if not os.path.isdir(self.instance.db_dir(self.current_db)):
                 gone, self.current_db = self.current_db, DEFAULT_DATABASE
                 raise ExecutionError(f"Database '{gone}' ab exist nahi karta. Ab '{DEFAULT_DATABASE}' use ho raha hai.")
+            self._check_privileges(stmt)
             return handler(stmt)
+
+    # ------------------------------------------------------------------
+    # privileges (see users.py and docs/LANGUAGE.md "Users & privileges")
+    # ------------------------------------------------------------------
+    def _check_privileges(self, stmt: ast.Statement) -> None:
+        """
+        Backward compatibility is essential here: a session that never
+        authenticated with a username (self.user is None) is a SUPERUSER --
+        checking is SKIPPED ENTIRELY, exactly matching every embedded Engine
+        and every session that connects without a username (today's only
+        behaviour, and every existing test's behaviour).
+
+        Once a session HAS authenticated as a specific user, it can only run
+        DML (DIKHAO/DAALO/BADLO/MITAO) against tables/views it has been
+        granted the matching privilege on -- DDL, user/grant management and
+        TCL are superuser-only from that point (kept simple and strict; see
+        docs/LANGUAGE.md).
+        """
+        if self.user is None:
+            return
+        if isinstance(stmt, ast.Explain):
+            self._check_privileges(stmt.statement)
+            return
+        if isinstance(stmt, ast.SetOp):
+            return  # _exec_SetOp re-enters execute_statement for each side, which re-checks it
+        if isinstance(stmt, ast.Select):
+            for table in self._tables_read(stmt):
+                self._require_privilege("DIKHAO", table)
+            return
+        if isinstance(stmt, ast.Insert):
+            self._require_privilege("DAALO", stmt.table)
+            if stmt.select is not None:
+                for table in self._tables_read(stmt.select):
+                    self._require_privilege("DIKHAO", table)
+            return
+        if isinstance(stmt, ast.Update):
+            self._require_privilege("BADLO", stmt.table)
+            return
+        if isinstance(stmt, ast.Delete):
+            self._require_privilege("MITAO", stmt.table)
+            return
+        # Everything else: DDL (BANAO/HATAO/SUDHARO/SAAF/SIKODO TABLE, VIEW,
+        # TRIGGER, PROCEDURE), user/grant management (BANAO/HATAO USER,
+        # ADHIKAR), and transactions (SHURU/PAKKA/WAPAS).
+        raise ExecutionError(
+            f"'{self.user}' superuser nahi hai -- '{type(stmt).__name__}' jaisa DDL/admin command "
+            f"sirf superuser (bina username connect kiya session) chala sakta hai"
+        )
+
+    @staticmethod
+    def _tables_read(stmt: ast.Select) -> list[str]:
+        """Every table/view a DIKHAO reads directly: the FROM table plus every
+        MILAO'd table -- NOT tables read only through a VIEW's own stored
+        definition (that inner SELECT runs via _resolve_source -> _exec_Select
+        directly, never through execute_statement, so it is never re-checked;
+        granting DIKHAO on the VIEW NAME ITSELF is how a restricted user is
+        meant to read one, exactly like a real database)."""
+        return [stmt.table] + [j.table for j in stmt.joins]
+
+    def _require_privilege(self, privilege: str, table: str) -> None:
+        if not self.instance.users.has_privilege(self.user, self.current_db, table, privilege):
+            raise ExecutionError(f"'{self.user}' ko table '{table}' par {privilege} ka adhikar nahi hai")
 
     def schema_tree(self) -> list[dict]:
         """Every database -> table -> column, as plain dicts (sent as JSON by the server)."""
@@ -417,6 +490,196 @@ class Engine:
             raise ExecutionError(f"View '{stmt.name}' exist nahi karta")
         self.catalog.remove_view(stmt.name)
         return Result(message=f"View '{stmt.name}' hata diya")
+
+    # ------------------------------------------------------------------
+    # users & privileges (server-wide -- see users.py)
+    # ------------------------------------------------------------------
+    def _exec_CreateUser(self, stmt: ast.CreateUser) -> Result:
+        self.instance.users.create(stmt.name, stmt.password)
+        return Result(message=f"User '{stmt.name}' ban gaya")
+
+    def _exec_DropUser(self, stmt: ast.DropUser) -> Result:
+        self.instance.users.drop(stmt.name)
+        return Result(message=f"User '{stmt.name}' hata diya")
+
+    def _exec_Grant(self, stmt: ast.Grant) -> Result:
+        self.instance.users.grant(stmt.user, self.current_db, stmt.table, stmt.privileges)
+        return Result(
+            message=f"'{stmt.user}' ko '{self.current_db}.{stmt.table}' par {', '.join(stmt.privileges)} ka adhikar mil gaya"
+        )
+
+    def _exec_Revoke(self, stmt: ast.Revoke) -> Result:
+        self.instance.users.revoke(stmt.user, self.current_db, stmt.table, stmt.privileges)
+        return Result(
+            message=f"'{stmt.user}' se '{self.current_db}.{stmt.table}' par {', '.join(stmt.privileges)} ka adhikar wapas le liya"
+        )
+
+    # ------------------------------------------------------------------
+    # triggers (fire once per affected row on DAALO/BADLO/MITAO -- see
+    # docs/LANGUAGE.md "Triggers" for the honest-scope limitations)
+    # ------------------------------------------------------------------
+    def _exec_CreateTrigger(self, stmt: ast.CreateTrigger) -> Result:
+        if stmt.name in self.catalog.triggers:
+            raise ExecutionError(f"Trigger '{stmt.name}' pehle se hai")
+        if self.catalog.find(stmt.table) is None:
+            raise ExecutionError(f"Table '{stmt.table}' exist nahi karta -- trigger sirf ek REAL table par lag sakta hai")
+        parse(stmt.body_text)  # sanity check: the body must parse cleanly
+        self.catalog.add_trigger(stmt.name, stmt.timing, stmt.event, stmt.table, stmt.body_text)
+        return Result(message=f"Trigger '{stmt.name}' ban gaya ({stmt.timing} {stmt.event} PAR {stmt.table})")
+
+    def _exec_DropTrigger(self, stmt: ast.DropTrigger) -> Result:
+        if stmt.name not in self.catalog.triggers:
+            raise ExecutionError(f"Trigger '{stmt.name}' exist nahi karta")
+        self.catalog.remove_trigger(stmt.name)
+        return Result(message=f"Trigger '{stmt.name}' hata diya")
+
+    def _fire_triggers(
+        self, timing: str, event: str, table: str, new_row: Optional[dict] = None, old_row: Optional[dict] = None
+    ) -> None:
+        """
+        Run every trigger matching (timing, event, table), IN CREATION ORDER
+        (a plain dict already preserves insertion order -- see Catalog.triggers_for).
+        Each statement in the trigger's body is re-parsed fresh (same
+        "store source text, reparse when used" idea as BANAO VIEW) and every
+        `NAYA.col`/`PURANA.col` reference in it is replaced by a Literal of
+        the matching value from new_row/old_row BEFORE it runs.
+
+        A PEHLE (BEFORE) trigger's error propagates and ABORTS the outer
+        DAALO/BADLO/MITAO entirely -- this doubles as a real, useful way to
+        veto a write from a trigger. A BAAD (AFTER) trigger's error also
+        propagates, but -- known limitation, see docs/ARCHITECTURE.md -- it
+        does NOT roll back the row(s) already written; it only prevents
+        anything scheduled after it in the same batch from happening.
+        """
+        for _name, trig in self.catalog.triggers_for(timing, event, table):
+
+            def replace(ref, new_row=new_row, old_row=old_row):
+                if ref.table == "naya" and new_row is not None and ref.name in new_row:
+                    return True, new_row[ref.name]
+                if ref.table == "purana" and old_row is not None and ref.name in old_row:
+                    return True, old_row[ref.name]
+                return False, None
+
+            for body_stmt in parse(trig["body_text"]):
+                self.execute_statement(self._substitute_statement(body_stmt, replace))
+
+    # ------------------------------------------------------------------
+    # stored procedures (a named, parameterised sequence of statements --
+    # see docs/LANGUAGE.md "Stored procedures" for the honest-scope limits)
+    # ------------------------------------------------------------------
+    def _exec_CreateProcedure(self, stmt: ast.CreateProcedure) -> Result:
+        if stmt.name in self.catalog.procedures:
+            raise ExecutionError(f"Procedure '{stmt.name}' pehle se hai")
+        names = [p.name for p in stmt.params]
+        if len(set(names)) != len(names):
+            raise ExecutionError(f"Procedure '{stmt.name}': ek parameter naam do baar diya hai")
+        parse(stmt.body_text)  # sanity check: the body must parse cleanly
+        self.catalog.add_procedure(stmt.name, [(p.name, p.type_name) for p in stmt.params], stmt.body_text)
+        return Result(message=f"Procedure '{stmt.name}' ban gaya ({len(stmt.params)} parameter(s))")
+
+    def _exec_DropProcedure(self, stmt: ast.DropProcedure) -> Result:
+        if stmt.name not in self.catalog.procedures:
+            raise ExecutionError(f"Procedure '{stmt.name}' exist nahi karta")
+        self.catalog.remove_procedure(stmt.name)
+        return Result(message=f"Procedure '{stmt.name}' hata diya")
+
+    def _exec_CallProcedure(self, stmt: ast.CallProcedure) -> Result:
+        proc = self.catalog.procedures.get(stmt.name)
+        if proc is None:
+            raise ExecutionError(f"Procedure '{stmt.name}' exist nahi karta")
+        params: list = proc["params"]  # [[name, type], ...]
+        if len(stmt.args) != len(params):
+            raise ExecutionError(f"Procedure '{stmt.name}' ko {len(params)} argument(s) chahiye, {len(stmt.args)} mile")
+
+        # Arguments are evaluated as CONSTANT expressions -- there is no outer
+        # row at a bare CHALAO call site, so a column reference here can only
+        # be an error (evaluate() will raise a clear one on its own).
+        values = {}
+        for (name, type_name), arg_expr in zip(params, stmt.args):
+            values[name] = coerce(evaluate(arg_expr, {}), type_name, name)
+
+        def replace(ref):
+            # Only a BARE (unqualified) reference matching a parameter name is
+            # substituted -- see docs/LANGUAGE.md for the name-collision caveat
+            # if a touched table happens to have a same-named column.
+            if ref.table is None and ref.name in values:
+                return True, values[ref.name]
+            return False, None
+
+        statements = parse(proc["body_text"])
+        results = [self.execute_statement(self._substitute_statement(s, replace)) for s in statements]
+        summary = "; ".join(r.message for r in results if r.message)
+        return Result(message=f"Procedure '{stmt.name}' chal gaya ({len(statements)} statement(s)): {summary}")
+
+    # ------------------------------------------------------------------
+    # generic AST substitution -- shared by triggers (NAYA/PURANA) and
+    # stored procedures (parameter names). Same recursive shape as
+    # _correlate() above, but replaces via an arbitrary predicate instead of
+    # "resolve against a subquery's own scope".
+    # ------------------------------------------------------------------
+    def _substitute(self, expr, replace):
+        """`replace(ref) -> (found: bool, value)` -- every ColumnRef for which
+        `found` is True becomes `ast.Literal(value)`; everything else is
+        recursed into unchanged."""
+        if expr is None or isinstance(expr, (ast.Literal, ast.Star)):
+            return expr
+        if isinstance(expr, ast.ColumnRef):
+            found, value = replace(expr)
+            return ast.Literal(value) if found else expr
+        if isinstance(expr, ast.BinaryOp):
+            return ast.BinaryOp(expr.op, self._substitute(expr.left, replace), self._substitute(expr.right, replace))
+        if isinstance(expr, ast.UnaryOp):
+            return ast.UnaryOp(expr.op, self._substitute(expr.operand, replace))
+        if isinstance(expr, ast.IsNull):
+            return ast.IsNull(self._substitute(expr.expr, replace), expr.negated)
+        if isinstance(expr, ast.FuncCall):
+            return ast.FuncCall(expr.name, self._substitute(expr.arg, replace))
+        if isinstance(expr, ast.Coalesce):
+            return ast.Coalesce([self._substitute(a, replace) for a in expr.args])
+        if isinstance(expr, ast.CaseWhen):
+            return ast.CaseWhen(
+                [(self._substitute(c, replace), self._substitute(v, replace)) for c, v in expr.branches],
+                self._substitute(expr.else_, replace) if expr.else_ is not None else None,
+            )
+        if isinstance(expr, (ast.Subquery, ast.InSubquery)):
+            return expr  # out of scope: a nested subquery inside a trigger/procedure body is left untouched
+        raise ExecutionError(f"Unknown expression: {expr!r}")
+
+    def _substitute_statement(self, stmt: ast.Statement, replace) -> ast.Statement:
+        """Rewrite every Expr inside one trigger-body/procedure-body statement.
+        Only the statement shapes that can meaningfully appear there are
+        handled (DML + CHALAO, i.e. procedures calling procedures); anything
+        else (DDL, transactions, ...) is returned as-is -- there is nothing a
+        NAYA/PURANA/parameter substitution could mean there anyway."""
+        sub = lambda e: self._substitute(e, replace)  # noqa: E731
+        if isinstance(stmt, ast.Insert):
+            rows = [[sub(e) for e in row] for row in stmt.rows] if stmt.rows is not None else None
+            select = self._substitute_statement(stmt.select, replace) if stmt.select is not None else None
+            on_conflict = (
+                [(c, sub(e)) for c, e in stmt.on_conflict_update] if stmt.on_conflict_update is not None else None
+            )
+            return ast.Insert(stmt.table, stmt.columns, rows=rows, select=select, on_conflict_update=on_conflict)
+        if isinstance(stmt, ast.Update):
+            assignments = [(c, sub(e)) for c, e in stmt.assignments]
+            where = sub(stmt.where) if stmt.where is not None else None
+            return ast.Update(stmt.table, assignments, where)
+        if isinstance(stmt, ast.Delete):
+            where = sub(stmt.where) if stmt.where is not None else None
+            return ast.Delete(stmt.table, where)
+        if isinstance(stmt, ast.Select):
+            columns = [sub(c) for c in stmt.columns]
+            joins = [ast.Join(j.table, j.alias, sub(j.on) if j.on is not None else None, j.kind) for j in stmt.joins]
+            where = sub(stmt.where) if stmt.where is not None else None
+            group_by = [sub(g) for g in stmt.group_by]
+            having = sub(stmt.having) if stmt.having is not None else None
+            order_by = [ast.OrderItem(sub(o.expr), o.descending) for o in stmt.order_by]
+            return ast.Select(
+                columns, stmt.table, alias=stmt.alias, joins=joins, where=where, group_by=group_by,
+                having=having, order_by=order_by, limit=stmt.limit, distinct=stmt.distinct, aliases=list(stmt.aliases),
+            )
+        if isinstance(stmt, ast.CallProcedure):
+            return ast.CallProcedure(stmt.name, [sub(a) for a in stmt.args])
+        return stmt
 
     # ------------------------------------------------------------------
     # transactions
@@ -797,7 +1060,12 @@ class Engine:
         if stmt.on_conflict_update is None:
             self._check_unique(table, new_rows)
             self._check_fk(table, new_rows)
+            new_dicts = [dict(zip(schema.column_names, r)) for r in new_rows]
+            for nr in new_dicts:
+                self._fire_triggers("PEHLE", "DAALO", stmt.table, new_row=nr)
             table.insert_many(new_rows)
+            for nr in new_dicts:
+                self._fire_triggers("BAAD", "DAALO", stmt.table, new_row=nr)
             return Result(message=f"{len(new_rows)} row(s) daal di")
 
         # TAKRAAV PAR BADLO (simplified upsert): rows colliding with an EXISTING
@@ -814,6 +1082,9 @@ class Engine:
 
         self._check_unique(table, to_insert)
         self._check_fk(table, to_insert)
+        insert_dicts = [dict(zip(schema.column_names, r)) for r in to_insert]
+        for nr in insert_dicts:
+            self._fire_triggers("PEHLE", "DAALO", stmt.table, new_row=nr)
 
         updated_targets, updated_new_rows = [], []
         assignments = [(schema.index_of(col), expr) for col, expr in stmt.on_conflict_update]
@@ -831,9 +1102,19 @@ class Engine:
         if updated_new_rows:
             self._check_unique(table, updated_new_rows, ignore_row_ids={rid for rid, _ in updated_targets})
             self._check_fk(table, updated_new_rows)
+            # a TAKRAAV collision is really an UPDATE of an existing row, so it
+            # fires BADLO triggers (not DAALO) -- matches real upsert semantics
+            old_dicts = [dict(zip(schema.column_names, ov)) for _, ov in updated_targets]
+            updated_dicts = [dict(zip(schema.column_names, nv)) for nv in updated_new_rows]
+            for od, nd in zip(old_dicts, updated_dicts):
+                self._fire_triggers("PEHLE", "BADLO", stmt.table, new_row=nd, old_row=od)
             table.delete_many(updated_targets)
             table.insert_many(updated_new_rows)
+            for od, nd in zip(old_dicts, updated_dicts):
+                self._fire_triggers("BAAD", "BADLO", stmt.table, new_row=nd, old_row=od)
         table.insert_many(to_insert)
+        for nr in insert_dicts:
+            self._fire_triggers("BAAD", "DAALO", stmt.table, new_row=nr)
         return Result(message=f"{len(to_insert)} row(s) daali, {len(updated_new_rows)} row(s) TAKRAAV par badli")
 
     def _find_conflict(self, table: Table, values: list) -> Optional[int]:
@@ -1211,11 +1492,20 @@ class Engine:
             overrides = {row_id: new for (row_id, _), new in zip(targets, new_rows)}
             self._check_no_children(schema, changed_by_column, overrides=overrides)
 
+        # Plain {column: value} dicts for trigger NAYA/PURANA substitution --
+        # independent of Scope's "table.col" aliasing, which triggers don't use.
+        old_dicts = [dict(zip(schema.column_names, values)) for _, values in targets]
+        new_dicts = [dict(zip(schema.column_names, nv)) for nv in new_rows]
+        for od, nd in zip(old_dicts, new_dicts):
+            self._fire_triggers("PEHLE", "BADLO", stmt.table, new_row=nd, old_row=od)
+
         # An update = delete old versions + insert new versions. All deletes
         # happen first, so an index entry moved from one row to another (e.g.
         # swapping two ids) is never removed by mistake.
         table.delete_many(targets)
         table.insert_many(new_rows)
+        for od, nd in zip(old_dicts, new_dicts):
+            self._fire_triggers("BAAD", "BADLO", stmt.table, new_row=nd, old_row=od)
         return Result(message=f"{len(new_rows)} row(s) badal di")
 
     def _exec_Delete(self, stmt: ast.Delete) -> Result:
@@ -1241,7 +1531,12 @@ class Engine:
         if deleted_by_column:
             self._check_no_children(schema, deleted_by_column, exempt_row_ids={rid for rid, _ in doomed})
 
+        old_dicts = [dict(zip(schema.column_names, values)) for _, values in doomed]
+        for od in old_dicts:
+            self._fire_triggers("PEHLE", "MITAO", stmt.table, old_row=od)
         table.delete_many(doomed)
+        for od in old_dicts:
+            self._fire_triggers("BAAD", "MITAO", stmt.table, old_row=od)
         return Result(message=f"{len(doomed)} row(s) mita di")
 
     # ------------------------------------------------------------------

@@ -127,6 +127,9 @@ class Parser:
             "WAPAS": ast.Rollback,
             # SAMJHAO <statement>: the thing to explain is itself a whole statement
             "SAMJHAO": lambda: ast.Explain(self._parse_statement()),
+            # Phase B: users/privileges, triggers, stored procedures
+            "ADHIKAR": self._parse_adhikar,
+            "CHALAO": self._parse_chalao,
         }
         handler = dispatch.get(tok.value)
         if handler is None:
@@ -145,6 +148,21 @@ class Parser:
         # BANAO VIEW naam KAHO DIKHAO ...
         if self._match_kw("VIEW"):
             return self._parse_create_view()
+
+        # BANAO USER naam GUPT 'password'
+        if self._match_kw("USER"):
+            name = self._expect_ident("user ka naam")
+            self._expect_kw("GUPT")
+            password = self._expect_string("password")
+            return ast.CreateUser(name, password)
+
+        # BANAO TRIGGER naam PEHLE|BAAD DAALO|BADLO|MITAO PAR table SHURU ... KHATAM
+        if self._match_kw("TRIGGER"):
+            return self._parse_create_trigger()
+
+        # BANAO PROCEDURE naam (p1 TYPE, ...) SHURU ... KHATAM
+        if self._match_kw("PROCEDURE"):
+            return self._parse_create_procedure()
 
         # BANAO TABLE name ( coldef | table-constraint, ... )
         self._expect_kw("TABLE")
@@ -204,6 +222,81 @@ class Parser:
         if not isinstance(select_stmt, ast.Select):
             raise self._error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai")
         return ast.CreateView(name, query_text)
+
+    def _parse_block_body(self, what: str) -> str:
+        """SHURU stmt; stmt; ... KHATAM -- captures the RAW SOURCE TEXT of the
+        statements between SHURU and KHATAM (same "store source text, reparse
+        fresh later" idea as BANAO VIEW/SHART), parse-validating each
+        statement NOW so a typo is caught at CREATE time rather than the
+        first time the trigger fires / the procedure is CHALAO'd. Shared by
+        BANAO TRIGGER and BANAO PROCEDURE."""
+        self._expect_kw("SHURU")
+        start = self._peek().start
+        statements = []
+        while not self._check_kw("KHATAM"):
+            if self._check(TokenType.EOF):
+                raise self._error(f"{what} ka SHURU...KHATAM band nahi hua (KHATAM missing)")
+            statements.append(self._parse_statement())
+            self._expect_sym(";")
+        if not statements:
+            raise self._error(f"{what} ke SHURU...KHATAM ke andar kam se kam ek statement chahiye")
+        end = self.tokens[self.pos - 1].end
+        body_text = self.text[start:end]
+        self._expect_kw("KHATAM")
+        return body_text
+
+    def _parse_create_trigger(self) -> ast.CreateTrigger:
+        name = self._expect_ident("trigger ka naam")
+        if self._match_kw("PEHLE"):
+            timing = "PEHLE"
+        elif self._match_kw("BAAD"):
+            timing = "BAAD"
+        else:
+            raise self._error("BANAO TRIGGER naam ke baad PEHLE ya BAAD expected tha")
+        event = None
+        for kw in ("DAALO", "BADLO", "MITAO"):
+            if self._match_kw(kw):
+                event = kw
+                break
+        if event is None:
+            raise self._error("PEHLE/BAAD ke baad DAALO, BADLO ya MITAO expected tha")
+        self._expect_kw("PAR")
+        table = self._expect_ident("table ka naam")
+        body_text = self._parse_block_body("TRIGGER")
+        return ast.CreateTrigger(name, timing, event, table, body_text)
+
+    def _parse_create_procedure(self) -> ast.CreateProcedure:
+        name = self._expect_ident("procedure ka naam")
+        self._expect_sym("(")
+        params = []
+        if not self._check_sym(")"):
+            params.append(self._parse_proc_param())
+            while self._match_sym(","):
+                params.append(self._parse_proc_param())
+        self._expect_sym(")")
+        body_text = self._parse_block_body("PROCEDURE")
+        return ast.CreateProcedure(name, params, body_text)
+
+    def _parse_proc_param(self) -> ast.ProcParam:
+        name = self._expect_ident("parameter ka naam")
+        type_tok = self._peek()
+        type_name = normalize_type(str(type_tok.value)) if type_tok.type == TokenType.IDENT else None
+        if type_name is None:
+            raise self._error(
+                f"Parameter '{name}' ka type expected tha (INT/ANK, FLOAT, TEXT/SHABD, BOOL, DATE/TAREEKH, ...)"
+            )
+        self._advance()
+        return ast.ProcParam(name, type_name)
+
+    def _check_sym(self, sym: str) -> bool:
+        return self._check(TokenType.SYMBOL, sym)
+
+    def _expect_string(self, what: str) -> str:
+        tok = self._peek()
+        if tok.type != TokenType.STRING:
+            raise self._error(f"{what} (quotes ke andar ek string) expected tha")
+        self._advance()
+        return tok.value
 
     def _parse_column_def(self) -> ast.ColumnDef:
         # coldef := name TYPE [ "(" INTEGER [ "," INTEGER ] ")" ]
@@ -278,8 +371,65 @@ class Parser:
             return ast.DropDatabase(self._expect_ident("database ka naam"))
         if self._match_kw("VIEW"):
             return ast.DropView(self._expect_ident("view ka naam"))
+        if self._match_kw("USER"):
+            return ast.DropUser(self._expect_ident("user ka naam"))
+        if self._match_kw("TRIGGER"):
+            return ast.DropTrigger(self._expect_ident("trigger ka naam"))
+        if self._match_kw("PROCEDURE"):
+            return ast.DropProcedure(self._expect_ident("procedure ka naam"))
         self._expect_kw("TABLE")
         return ast.DropTable(self._expect_ident("table ka naam"))
+
+    # ------------------------------------------------------------------
+    # users / privileges / stored procedures (statement-level, not DDL/DML)
+    # ------------------------------------------------------------------
+    PRIVILEGE_KEYWORDS = ("DIKHAO", "DAALO", "BADLO", "MITAO")
+
+    def _parse_adhikar(self) -> ast.Statement:
+        # ADHIKAR DO priv, priv PAR table KO user      -- GRANT
+        # ADHIKAR WAPAS priv, priv PAR table SE user    -- REVOKE
+        if self._match_kw("DO"):
+            privileges = self._parse_privilege_list()
+            self._expect_kw("PAR")
+            table = self._expect_ident("table/view ka naam")
+            self._expect_kw("KO")
+            user = self._expect_ident("user ka naam")
+            return ast.Grant(privileges, table, user)
+        if self._match_kw("WAPAS"):
+            privileges = self._parse_privilege_list()
+            self._expect_kw("PAR")
+            table = self._expect_ident("table/view ka naam")
+            self._expect_kw("SE")
+            user = self._expect_ident("user ka naam")
+            return ast.Revoke(privileges, table, user)
+        raise self._error("ADHIKAR ke baad DO (grant) ya WAPAS (revoke) expected tha")
+
+    def _parse_privilege_list(self) -> list[str]:
+        if self._match_kw("SAB"):
+            return list(self.PRIVILEGE_KEYWORDS)
+        privileges = [self._expect_privilege()]
+        while self._match_sym(","):
+            privileges.append(self._expect_privilege())
+        return privileges
+
+    def _expect_privilege(self) -> str:
+        tok = self._peek()
+        if tok.type == TokenType.KEYWORD and tok.value in self.PRIVILEGE_KEYWORDS:
+            self._advance()
+            return tok.value
+        raise self._error("Adhikar ka naam expected tha (DIKHAO, DAALO, BADLO, MITAO, ya SAB)")
+
+    def _parse_chalao(self) -> ast.Statement:
+        # CHALAO naam(expr, expr, ...)
+        name = self._expect_ident("procedure ka naam")
+        self._expect_sym("(")
+        args = []
+        if not self._check_sym(")"):
+            args.append(self._parse_expr())
+            while self._match_sym(","):
+                args.append(self._parse_expr())
+        self._expect_sym(")")
+        return ast.CallProcedure(name, args)
 
     def _parse_sudharo(self) -> ast.Statement:
         # SUDHARO TABLE name JODO [COLUMN] coldef

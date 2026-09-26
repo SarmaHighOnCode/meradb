@@ -19,6 +19,7 @@ a **server** process owns the data files, and **clients** connect to it over TCP
 | Data folder | per-user folder (below) | `-D` / `MERADB_DATA` |
 | Password | none | `--password` on the server; `-W` / `MERADB_PASSWORD` on clients |
 | Server address for clients | `127.0.0.1` | `-H` / `MERADB_HOST` |
+| Username (per-user login) | none (superuser) | `-U` / `MERADB_USER` on clients |
 
 ## Install once
 
@@ -90,6 +91,7 @@ All of `shell`, `workbench` and `run` accept:
 | `-H HOST` / `-p PORT` | Which server (default `127.0.0.1:6372`) |
 | `-d DATABASE` | Start in this database instead of `main` |
 | `-W` | Ask for a password (or set `MERADB_PASSWORD`) |
+| `-U USERNAME` | Log in as this user (or set `MERADB_USER`) -- see "Users and privileges" below |
 | `--local` | Don't use a server: open the data folder directly (embedded, like SQLite) |
 | `-D FOLDER` | The data folder, for `--local` |
 
@@ -129,6 +131,41 @@ Connects from another machine on the network.
 The password travels as plain text (there is no encryption).
 That's fine on your own machine or LAN, but not across the internet.
 
+## Users and privileges
+
+**This is a security-relevant behaviour: understand it before deploying MeraDB for
+real use.** There are two completely separate ways to authenticate:
+
+1. **The single shared server password** (`--password` / `-W` above) -- anyone who knows
+   it connects as an unrestricted **superuser**. This is what every example above uses.
+2. **A per-user login** (`-U`/`--user`, or `MERADB_USER`) -- the server checks the given
+   username + password against `users.json` (created with `BANAO USER ...` -- see
+   `docs/LANGUAGE.md` "Users & privileges"). A per-user login **supersedes** the shared
+   password check entirely for that connection.
+
+```bash
+meradb shell -U ravi -W        # log in as ravi (asks for ravi's password)
+```
+
+**The rule that matters: no username = superuser.** A session that connects WITHOUT
+`-U`/`MERADB_USER` at all -- which is every embedded/`--local` session, every existing
+script, and the default for `meradb shell`/`workbench`/`run` -- is **never** subject to
+privilege checks, even if `users.json` has users and grants in it. Privilege enforcement
+only ever switches on for a session that explicitly authenticated as a specific,
+non-superuser username. This keeps the feature 100% backward compatible: nothing about
+existing scripts, the REPL, or embedded use changes just because someone somewhere ran
+`BANAO USER`.
+
+A username is meaningless with `--local` (there's no server, so nothing to authenticate
+against) -- passing `-U` there is noted and ignored, not an error, since `--local` has
+always meant "trust the person running this process completely".
+
+Once a session HAS authenticated as a specific user, it can only run `DIKHAO`/`DAALO`/
+`BADLO`/`MITAO` against tables/views it has been granted the matching privilege on via
+`ADHIKAR DO` -- every DDL statement, user/grant management, and every transaction command
+becomes superuser-only from that point. See `docs/LANGUAGE.md` for the full grant syntax
+and its honest-scope limitations.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -161,7 +198,7 @@ Clients and server exchange **one JSON object per line** over TCP. It's readable
 to debug by hand:
 
 ```
--> {"type": "hello", "version": 1, "password": null, "database": "main"}
+-> {"type": "hello", "version": 1, "password": null, "database": "main", "user": null}
 <- {"ok": true, "server": "MeraDB 1.0.0", "protocol": 1, "database": "main"}
 -> {"type": "query", "text": "DIKHAO * SE t;"}
 <- {"ok": true, "database": "main", "in_transaction": false,

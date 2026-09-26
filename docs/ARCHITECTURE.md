@@ -267,6 +267,52 @@ when a column it uses is renamed -- `SUDHARO TABLE ... COLUMN ... NAYA_NAAM` the
 refuses the rename instead of silently leaving a CHECK that mentions a column that no
 longer exists.
 
+## Users, privileges, triggers, procedures (Phase B)
+
+**None of these three are being built SQL-standard-complete** -- doing so would be many
+times the size of the rest of the project. Each is a genuinely useful, clearly-simplified
+version, and knowing exactly WHERE the simplification is matters more for a viva than the
+feature working at all:
+
+- **Privileges are one shared, server-wide user table with per-`(database, table)`
+  grants** -- not schema-level roles, not column-level grants, not `WITH GRANT OPTION`.
+  A user is stored in `users.py`'s `UserStore`, one JSON file (`users.json`) at the TOP of
+  the data directory (not inside any one database's folder), because a MeraDB *server*
+  (one `Instance`) can hold several databases, and a login is a property of the server, not
+  of any one database -- exactly the split real databases make between "server-level
+  logins" and "database-level objects". Passwords are hashed with
+  `hashlib.pbkdf2_hmac("sha256", ..., 100_000 iterations)` and a random per-user salt --
+  stdlib only, no bcrypt/passlib, "good enough for a teaching project", explicitly not
+  production-grade (no configurable work factor, no pepper, no lockout).
+- **Backward compatibility is the whole design constraint here.** `Engine.user` defaults
+  to `None`, meaning superuser/unrestricted -- `Engine._check_privileges()` (in
+  `engine.py`, called once from `execute_statement()` before every statement) returns
+  immediately whenever `self.user is None`. Every embedded `Engine`, every `--local`
+  session, and every one of the 235 tests that existed before this phase never sets
+  `self.user` at all, so privilege checking is invisible to all of them. Only a *server*
+  client that authenticates with `-U`/`--user` (see `docs/SERVER.md`) gets `Engine.user`
+  set by `server.py`'s handshake, and only THAT session is ever checked.
+- **Triggers fire once per affected row**, running a fixed list of stored statements with
+  `NAYA`/`PURANA` substituted in as literals -- no procedural control flow beyond what
+  `AGAR...KHATAM` expressions already give. A trigger's body is stored as raw SOURCE TEXT
+  in `Catalog.triggers` (`name -> {timing, event, table, body_text}`), exactly like a
+  `BANAO VIEW`'s query text -- reparsed fresh every time it fires (`_fire_triggers()` in
+  `engine.py`), rather than caching an AST that can't round-trip through `catalog.json`.
+  `NAYA.col`/`PURANA.col` substitution reuses the SAME recursive-AST-rewrite shape as
+  `Engine._correlate()` (written for correlated subqueries) -- see `Engine._substitute()`,
+  a generic "replace this ColumnRef with a Literal" walk shared by triggers AND procedures,
+  so the recursion logic exists exactly once in the codebase.
+- **Stored procedures are a named, parameterised macro, not a language**: no loops, no
+  local variables beyond the parameters, no return value. Bodies are stored as raw source
+  text too (`Catalog.procedures`), reparsed on every `CHALAO`. Parameter substitution is
+  the same `Engine._substitute()` walk, matching bare (unqualified) `ColumnRef`s by name --
+  which is also why a procedure touching a table with a same-named column is a real
+  (documented) footgun: there's no separate namespace, hence the `p_` prefix convention.
+- **A trigger/procedure body executes via `self.execute_statement()`**, so it is subject to
+  the SAME privilege checks as anything else the session runs -- i.e., "invoker rights",
+  not "definer rights" (a real database sometimes offers the latter as an option; MeraDB
+  keeps only the simpler, stricter one).
+
 ## Design decisions (good viva material)
 
 1. **Why a binary format and not JSON/CSV?** Fixed-size numbers, no parsing, and
@@ -307,5 +353,19 @@ longer exists.
     already have a hash index (see "Constraints" above) -- the FK check is then a plain
     dict lookup, not a table scan, with no extra index-maintenance code required.
 14. **What's still missing vs. a real DB?** B-tree indexes, MVCC, a write-ahead log, a
-    cost-based optimizer, pages and a buffer pool, users and permissions, TLS encryption,
-    and `ON DELETE CASCADE` for foreign keys.
+    cost-based optimizer, pages and a buffer pool, schema-level roles and column-level
+    grants, TLS encryption, and `ON DELETE CASCADE` for foreign keys.
+15. **Why is `users.json` server-wide instead of per-database, like `catalog.json`?** A
+    MeraDB server (one `Instance`, one data directory) can serve several databases; a login
+    is a property of the SERVER you connect to, not of any one database inside it -- the
+    same split MySQL/Postgres make between server-level logins and database-level objects.
+16. **Why do triggers/procedures store raw SOURCE TEXT instead of an AST, again?** The same
+    reason as `SHART` and `BANAO VIEW`: `catalog.json` is JSON, and a parsed `BinaryOp`/
+    `ColumnRef` tree isn't JSON-serialisable. Reparsing on every fire/call is simplicity over
+    micro-optimisation -- trigger/procedure bodies are small, and `parser.parse()` is fast.
+17. **Why do triggers/procedures run with invoker rights, not definer rights?** Simplicity:
+    "run with whatever the calling session is already checked against" needs zero new
+    machinery (it's just `self.execute_statement()`), whereas definer rights would need a
+    second identity threaded through every check. The honest cost: a restricted user needs
+    direct grants on every table a trigger/procedure they invoke touches, not just the one
+    they wrote to -- documented plainly in `docs/LANGUAGE.md` rather than hidden.

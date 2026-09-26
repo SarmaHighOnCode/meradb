@@ -69,10 +69,16 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
 - **Query plans:** `EXPLAIN` shows index lookup vs full scan and hash join vs nested loop
 - **Hash indexes:** automatic on PRIMARY KEY and UNIQUE columns
 - **SQL-correct NULL handling:** three-valued logic
+- **Users & privileges:** `CREATE USER`/`DROP USER` (hashed passwords), `GRANT`/`REVOKE`
+  per `(database, table)`, enforced only for a server session that logged in with a
+  username (see `docs/LANGUAGE.md`)
+- **Triggers:** `CREATE TRIGGER`/`DROP TRIGGER`, `BEFORE`/`AFTER` × `INSERT`/`UPDATE`/`DELETE`,
+  `NEW`/`OLD` row substitution
+- **Stored procedures:** `CREATE PROCEDURE`/`DROP PROCEDURE`/`CALL`, typed parameters
 - **Client–server:**
   - TCP server, several clients at once
   - one session per client, transactions isolated from each other
-  - optional password
+  - optional password, or per-user login with privileges
 - **Three clients:**
   - `meradb workbench`: full-screen UI, like MySQL Workbench
   - `meradb shell`: command-line shell
@@ -237,6 +243,7 @@ meradb stop --force
 | `-p, --port PORT` | `6372` | Server port |
 | `-d, --database DB` | `main` | Database to start in |
 | `-W, --password` | | Ask for the password |
+| `-U, --user USERNAME` | | Log in as this user (privileges apply -- see `docs/SERVER.md`) |
 | `--local` | | Don't use a server: open the data folder directly |
 | `-D, --data DIR` | per-user folder | Data folder, for local mode |
 
@@ -261,6 +268,7 @@ falling back to local mode.
 | `MERADB_HOST` | Default server address for clients |
 | `MERADB_PORT` | Default port, for server and clients |
 | `MERADB_PASSWORD` | Password, so you don't need `-W` |
+| `MERADB_USER` | Username, so you don't need `-U` |
 
 ---
 
@@ -335,6 +343,11 @@ The full reference with the formal grammar is in [docs/LANGUAGE.md](docs/LANGUAG
 | `DAHINA MILAO` / `DONO MILAO` | RIGHT JOIN / FULL OUTER JOIN | | `SAMAAN MILAO` | NATURAL JOIN |
 | `PEHLA(...)` | COALESCE(...) / NVL | | `AGAR ... TAB ... WARNA ... KHATAM` | CASE WHEN ... THEN ... ELSE ... END |
 | `TAKRAAV PAR BADLO` | ON CONFLICT DO UPDATE | | `ANOKHA (a,b)` / `MUKHYA KUNJI (a,b)` | composite UNIQUE / PRIMARY KEY |
+| `BANAO USER ... GUPT` | CREATE USER ... IDENTIFIED BY | | `HATAO USER` | DROP USER |
+| `ADHIKAR DO ... PAR ... KO` | GRANT ... ON ... TO | | `ADHIKAR WAPAS ... PAR ... SE` | REVOKE ... ON ... FROM |
+| `SAB` (with `ADHIKAR DO`) | ALL (privileges) | | `BANAO`/`HATAO TRIGGER` | CREATE/DROP TRIGGER |
+| `PEHLE` / `BAAD` | BEFORE / AFTER | | `NAYA` / `PURANA` | NEW / OLD |
+| `BANAO`/`HATAO PROCEDURE` | CREATE/DROP PROCEDURE | | `CHALAO` | CALL |
 
 Aggregates: `GINO` (COUNT), `KUL` (SUM), `AUSAT` (AVG), `NYUNTAM` (MIN), `ADHIKTAM` (MAX).
 The English names `COUNT SUM AVG MIN MAX` work too.
@@ -564,8 +577,13 @@ directly in the grid, and the visual ER-diagram designer.
 MeraDB is a learning-scale database:
 - It runs one statement at a time, so clients take turns.
 - Indexes are hash indexes on primary-key and unique columns, and they speed up `=` lookups only.
-- There are no subqueries, views, triggers or stored procedures.
-- Security is one optional password, with no user accounts or encryption.
+- Triggers have no procedural control flow (no loops), and stored procedures have no
+  return value or local variables -- both are simplified, not SQL-standard-complete (see
+  `docs/LANGUAGE.md`).
+- Privileges are per `(database, table)` only -- no schema-level roles, no column-level
+  grants, no `WITH GRANT OPTION`.
+- Security is one optional server-wide password, or per-user hashed-password logins with
+  privileges -- either way, no TLS encryption.
 - It is comfortable up to around 100,000 rows per table.
 
 ---
