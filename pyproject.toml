@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meradb"
+version = "1.0.0"
+description = "A relational database engine built from scratch, with a Hinglish query language"
+readme = "README.md"
+requires-python = ">=3.10"
+# The engine, server, client and shell need NOTHING outside the standard library.
+dependencies = []
+
+[project.optional-dependencies]
+# Only the full-screen workbench needs Textual. Pinned to 8.x because
+# meradb/tui.py overrides a private TextArea method for syntax highlighting.
+workbench = ["textual>=8.2,<9"]
+
+[project.scripts]
+meradb = "meradb.cli:main"
+
+[tool.setuptools]
+packages = ["meradb"]

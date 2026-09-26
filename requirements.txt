@@ -1,0 +1,6 @@
+# Preferred:  pip install -e .[workbench]     (also gives you the `meradb` command)
+#
+# The engine, server, shell and client need NOTHING outside the Python standard library.
+# This is only for the full-screen workbench (meradb workbench).
+# Pinned to 8.x because meradb/tui.py overrides a private TextArea method for highlighting.
+textual>=8.2,<9
