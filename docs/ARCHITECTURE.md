@@ -122,6 +122,59 @@ the right side with KHALI.
 
 `SAMJHAO` prints these decisions without running the query.
 
+**Joins beyond INNER/LEFT.** `DAHINA MILAO` (RIGHT) is built symmetrically to LEFT --
+the hash index goes on the LEFT rows instead, and the loop is driven by the RIGHT rows,
+but the output columns still appear in the order written (left columns, then right). `DONO
+MILAO` (FULL OUTER) runs LEFT semantics first (every left row, matched or KHALI-padded),
+then separately finds right rows that matched nothing at all and appends those too,
+KHALI-padded on the left side -- i.e. FULL = LEFT ∪ (unmatched RIGHT rows). `SAMAAN MILAO`
+(NATURAL JOIN) has no `PAR` clause at all: the planner looks at every column name the new
+table shares with any table already joined so far and ANDs together `earlier.col =
+new.col` for each one (the leftmost earlier table wins if more than one shares a name);
+zero shared names is an error, since there is nothing to join on.
+
+## Subqueries: uncorrelated-once vs correlated-per-row
+
+A `(DIKHAO ...)` used as an ordinary value -- as a scalar (`x = (DIKHAO ...)`) or as an
+`x MEIN (DIKHAO ...)` membership list -- is deliberately NOT handled by a general derived-table
+planner. Instead, `Engine._run_subquery` runs the subquery's OWN `_exec_Select` fresh, and the
+result is reduced to a scalar or list by `Engine._reduce_subquery_result` (scalar: exactly 1
+column, 0 or 1 row for THIS outer row; list: exactly 1 column, any number of rows).
+
+The tricky part is a CORRELATED subquery, where an inner column reference (like `s2.dept_id` in
+`JAHAN s2.dept_id = s.dept_id`) actually means the OUTER query's current row, not anything in the
+subquery's own tables. MeraDB does this with an AST rewrite rather than threading a parent scope
+through the whole planner: `Engine._correlate` walks the subquery's WHERE/columns/etc, and for
+every `ColumnRef` that does NOT resolve against the subquery's OWN scope, it substitutes an
+`ast.Literal` holding that value from the current outer row (found by matching `alias.column`, or
+by column name alone if unambiguous). The rewritten statement is then planned and run completely
+normally -- the planner and evaluator have no idea a correlation ever happened.
+
+Whether a subquery is correlated is a STRUCTURAL fact (it depends only on which column names the
+outer row's keys have, not on their values), so `Engine._precompute_subqueries` decides it with
+ONE dry run against the first outer row: if the substitution never fires, the subquery is
+uncorrelated and its single result is shared across every row; if it does fire, the subquery is
+re-run once per outer row. Either way, the ENGINE computes a `subqueries: dict[id(node) -> value]`
+before calling `evaluate()` -- the evaluator itself never executes anything, it only looks the
+precomputed answer up by AST node identity (`evaluator.find_subqueries` mirrors `find_aggregates`
+for this purpose). This keeps `evaluator.py` free of any Engine/Catalog/planner imports.
+
+## Views: materialized fresh on every read
+
+`BANAO VIEW naam KAHO DIKHAO ...` stores only the SELECT's raw SOURCE TEXT in
+`Catalog.views` (same idea as a `SHART`/CHECK constraint) -- never a parsed AST, since
+`catalog.json` is plain JSON. Every time the view's name is used in `SE`/`MILAO`,
+`Engine._resolve_source` re-parses that text and runs it via `_exec_Select` right then,
+wrapping the resulting rows in a small `table.MaterializedTable` (schema inferred from the
+first non-KHALI value in each output column, defaulting to TEXT) so the rest of
+`_plan_select`/`_join`/etc can treat it exactly like a `Table`. This means a view always
+reflects the CURRENT schema and data of whatever it selects from -- there is no cached,
+stale copy -- at the cost of re-running the whole query every time (no view is ever
+materialized once and reused across statements). `planner.choose_access` refuses to build
+an index lookup against a `MaterializedTable` (`table.is_view`), so a view as the first
+`SE` source is always a full scan of its just-computed rows; this is correct, just not
+index-accelerated, exactly like a real view over a complex query would be.
+
 ## How grouping works (`SAMOOH`)
 
 ```sql

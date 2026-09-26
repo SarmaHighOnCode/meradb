@@ -74,6 +74,40 @@ class FuncCall(Expr):
     arg: Expr
 
 
+@dataclass
+class Subquery(Expr):
+    """`(DIKHAO ...)` used as an ordinary value -- scalar or IN-list context.
+    See Engine._run_subquery for how it is executed (evaluator.py never runs it
+    itself, it only looks up a pre-computed result by id(expr))."""
+
+    statement: "Select"
+
+
+@dataclass
+class InSubquery(Expr):
+    """`x MEIN (DIKHAO ...)` -- membership against a subquery's rows, instead of
+    the literal-list `x MEIN (1, 2, 3)` which parses as a chain of `=`/`YA`."""
+
+    left: Expr
+    subquery: Subquery
+    negated: bool = False
+
+
+@dataclass
+class Coalesce(Expr):
+    """`PEHLA(a, b, c)` / `COALESCE(a, b, c)`: first non-KHALI argument."""
+
+    args: list[Expr]
+
+
+@dataclass
+class CaseWhen(Expr):
+    """`AGAR cond1 TAB val1 AGAR cond2 TAB val2 WARNA elseval KHATAM`."""
+
+    branches: list[tuple[Expr, Expr]]
+    else_: Optional[Expr] = None
+
+
 # ============================================================================
 # Statements -- one per kind of command
 # ============================================================================
@@ -109,6 +143,25 @@ class Describe(Statement):
     table: str
 
 
+@dataclass
+class CreateView(Statement):
+    """BANAO VIEW naam KAHO DIKHAO ...  -- `query_text` is the raw SELECT source,
+    reparsed fresh every time the view is used (see docs/ARCHITECTURE.md)."""
+
+    name: str
+    query_text: str
+
+
+@dataclass
+class DropView(Statement):
+    name: str
+
+
+@dataclass
+class ShowViews(Statement):
+    pass
+
+
 # ---- DDL ----
 @dataclass
 class ColumnDef:
@@ -128,6 +181,18 @@ class ColumnDef:
 class CreateTable(Statement):
     name: str
     columns: list[ColumnDef]
+    # table-level constraints (ANOKHA (a, b) / MUKHYA KUNJI (a, b)), see docs/LANGUAGE.md
+    composite_unique: list[list[str]] = field(default_factory=list)
+    composite_pk: Optional[list[str]] = None
+
+
+@dataclass
+class AlterAddComposite(Statement):
+    """SUDHARO TABLE t JODO ANOKHA (a, b)  /  JODO MUKHYA KUNJI (a, b)"""
+
+    table: str
+    kind: str  # "ANOKHA" | "MUKHYA"
+    columns: list[str]
 
 
 @dataclass
@@ -202,7 +267,12 @@ class Explain(Statement):
 class Insert(Statement):
     table: str
     columns: Optional[list[str]]  # None means "all columns, in table order"
-    rows: list[list[Expr]]
+    # Exactly one of these two is populated by the parser: literal MAAN tuples,
+    # or an INSERT ... DIKHAO (multi-table insert / "INSERT ... SELECT").
+    rows: Optional[list[list[Expr]]] = None
+    select: Optional["Select"] = None
+    # TAKRAAV PAR BADLO col = expr, ...: simplified upsert (ON CONFLICT DO UPDATE)
+    on_conflict_update: Optional[list[tuple[str, Expr]]] = None
 
 
 @dataclass
@@ -213,12 +283,18 @@ class OrderItem:
 
 @dataclass
 class Join:
-    """`[BAAYAN] MILAO courses c PAR s.cid = c.id`"""
+    """`[BAAYAN|DAHINA|DONO|SAMAAN] MILAO courses c [PAR s.cid = c.id]`
+
+    kind: "INNER" (plain MILAO) | "LEFT" (BAAYAN) | "RIGHT" (DAHINA) |
+          "FULL" (DONO) | "NATURAL" (SAMAAN, no PAR -- synthesised at bind time).
+    `on` is None only for a NATURAL join (parser never writes a PAR clause
+    there); the planner fills it in during `_plan_select`.
+    """
 
     table: str
     alias: str
-    on: Expr
-    left: bool = False  # BAAYAN MILAO = LEFT JOIN
+    on: Optional[Expr]
+    kind: str = "INNER"
 
 
 @dataclass
@@ -237,6 +313,17 @@ class Select(Statement):
     # length as `columns`. Kept as a parallel list (not wrapped into `columns`)
     # so `columns` stays a plain list[Expr], like before KAHO existed.
     aliases: list[Optional[str]] = field(default_factory=list)
+
+
+@dataclass
+class SetOp(Statement):
+    """`left SANYUKT|SAAJHA|CHHODKAR right` -- UNION/INTERSECT/EXCEPT, dedupe-only
+    (no ALL variant, see docs/LANGUAGE.md). Left-associative chaining nests these
+    (`a SANYUKT b SANYUKT c` -> SetOp(SetOp(a, b), c))."""
+
+    op: str  # "SANYUKT" | "SAAJHA" | "CHHODKAR"
+    left: Statement
+    right: Statement
 
 
 @dataclass

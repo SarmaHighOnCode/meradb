@@ -48,6 +48,17 @@ class Table:
         payload = self.heap.read(row_id)
         return None if payload is None else decode_row(payload, self.schema.types)
 
+    @staticmethod
+    def _index_key(col, values: list):
+        """`col` is either a single column POSITION (single-column ANOKHA/MUKHYA
+        KUNJI) or a tuple of positions (a composite constraint) -- see
+        `_composite_keys`. Returns the value/tuple to use as the index key, or
+        None if it shouldn't be indexed (KHALI never participates)."""
+        if isinstance(col, tuple):
+            key = tuple(values[p] for p in col)
+            return None if None in key else key
+        return values[col] if values[col] is not None else None
+
     # ---- writing (keeps the indexes in sync) ----
     def insert_many(self, rows: list[list]) -> None:
         row_ids = self.heap.insert_many([encode_row(values, self.schema.types) for values in rows])
@@ -55,8 +66,9 @@ class Table:
         if indexes is not None:  # if not built yet, it will be built from the file later
             for values, row_id in zip(rows, row_ids):
                 for col, index in indexes.items():
-                    if values[col] is not None:
-                        index[values[col]] = row_id
+                    key = self._index_key(col, values)
+                    if key is not None:
+                        index[key] = row_id
 
     def delete_many(self, rows: list[tuple[int, list]]) -> None:
         """Delete (row_id, values) pairs. The values are needed to find the index entries."""
@@ -65,21 +77,40 @@ class Table:
         if indexes is not None:
             for row_id, values in rows:
                 for col, index in indexes.items():
+                    key = self._index_key(col, values)
                     # only remove the entry if it still points at THIS row (see UPDATE)
-                    if values[col] is not None and index.get(values[col]) == row_id:
-                        del index[values[col]]
+                    if key is not None and index.get(key) == row_id:
+                        del index[key]
 
     # ---- indexes ----
+    def _composite_keys(self) -> list[tuple[int, ...]]:
+        """Every composite constraint (ANOKHA/MUKHYA KUNJI over 2+ columns) as a
+        tuple of column POSITIONS, e.g. (1, 2) for `ANOKHA (student_id, course_id)`."""
+        schema = self.schema
+        groups = list(schema.composite_unique)
+        if schema.composite_pk:
+            groups.append(schema.composite_pk)
+        return [tuple(schema.index_of(c) for c in group) for group in groups]
+
     def indexes(self) -> dict[int, dict]:
-        """{column position -> {value -> row_id}} for every unique column. Built lazily."""
+        """{column position -> {value -> row_id}} for every unique column, PLUS
+        one entry per composite constraint keyed by a tuple of column positions
+        (e.g. (1, 2)) whose dict is in turn keyed by a TUPLE of values instead
+        of a single value. Built lazily."""
         indexes = self._cache.get(self._key)
         if indexes is None:
-            indexes = {i: {} for i, c in enumerate(self.schema.columns) if c.is_unique}
+            single = {i: {} for i, c in enumerate(self.schema.columns) if c.is_unique}
+            composite = {positions: {} for positions in self._composite_keys()}
+            indexes = {**single, **composite}
             if indexes:
                 for row_id, values in self.rows():
-                    for col, index in indexes.items():
+                    for col, index in single.items():
                         if values[col] is not None:
                             index[values[col]] = row_id
+                    for positions, index in composite.items():
+                        key = tuple(values[p] for p in positions)
+                        if None not in key:  # KHALI never participates in a uniqueness violation
+                            index[key] = row_id
             self._cache[self._key] = indexes
         return indexes
 
@@ -93,3 +124,27 @@ class Table:
 
     def invalidate_indexes(self) -> None:
         self._cache.pop(self._key, None)
+
+
+# ============================================================================
+# MaterializedTable: a VIEW's result set, dressed up just enough to be used
+# wherever a Table is used in SE/MILAO (see Engine._plan_select). It has no
+# real storage -- a row_id is just its position in the materialized rows --
+# and it deliberately does NOT support insert/delete/indexes: planner.choose_access
+# guards against it (see `is_view`), so a view as the first FROM source always
+# does a full scan of its (already computed) rows.
+# ============================================================================
+
+
+class MaterializedTable:
+    is_view = True
+
+    def __init__(self, schema: TableSchema, rows: list[list]):
+        self.schema = schema
+        self._rows = rows
+
+    def rows(self) -> Iterator[tuple[int, list]]:
+        return iter(enumerate(self._rows))
+
+    def get(self, row_id: int) -> Optional[list]:
+        return self._rows[row_id] if 0 <= row_id < len(self._rows) else None

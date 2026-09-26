@@ -123,7 +123,50 @@ def bind(expr, scope: Scope):
         return ast.IsNull(bind(expr.expr, scope), expr.negated)
     if isinstance(expr, ast.FuncCall):
         return ast.FuncCall(expr.name, bind(expr.arg, scope))
+    if isinstance(expr, ast.Coalesce):
+        return ast.Coalesce([bind(a, scope) for a in expr.args])
+    if isinstance(expr, ast.CaseWhen):
+        return ast.CaseWhen(
+            [(bind(c, scope), bind(v, scope)) for c, v in expr.branches],
+            bind(expr.else_, scope) if expr.else_ is not None else None,
+        )
+    if isinstance(expr, ast.Subquery):
+        # The subquery's OWN columns are bound separately, against its OWN
+        # scope, when it is planned (see Engine._run_subquery) -- not here.
+        # We only need to bind the OUTER references that _correlate() leaves
+        # behind after substitution, which by then are no longer ColumnRefs.
+        return expr
+    if isinstance(expr, ast.InSubquery):
+        return ast.InSubquery(bind(expr.left, scope), expr.subquery, expr.negated)
     raise ExecutionError(f"Unknown expression: {expr!r}")
+
+
+def natural_join_condition(scope: Scope, right_index: int) -> ast.Expr:
+    """
+    SAMAAN MILAO (NATURAL JOIN): the ON condition the user did NOT write.
+    For every column name shared between the RIGHT table and any table already
+    joined so far (0..right_index-1), AND together `earlier.col = right.col`.
+    If a name is shared by more than one earlier table, the FIRST (leftmost)
+    one wins -- kept simple on purpose (see docs/LANGUAGE.md).
+    """
+    right_alias, right_schema = scope.sources[right_index]
+    first_match: dict[str, str] = {}  # column name -> "alias.column" of the FIRST earlier source that has it
+    for j in range(right_index):
+        alias, schema = scope.sources[j]
+        for col in schema.column_names:
+            first_match.setdefault(col, f"{alias}.{col}")
+
+    shared = [col for col in right_schema.column_names if col in first_match]
+    if not shared:
+        other = scope.sources[0][0] if right_index > 0 else ""
+        raise ExecutionError(
+            f"'{right_alias}' ka SAMAAN MILAO fail hua -- '{other}' se koi column naam match nahi karta"
+        )
+    conds = [ast.BinaryOp("=", ast.ColumnRef(first_match[col]), ast.ColumnRef(f"{right_alias}.{col}")) for col in shared]
+    result = conds[0]
+    for c in conds[1:]:
+        result = ast.BinaryOp("AUR", result, c)
+    return result
 
 
 def conjuncts(expr) -> list:
@@ -160,6 +203,8 @@ def choose_access(table: Table, scope: Scope, where) -> Optional[IndexLookup]:
     scan. The full JAHAN is still checked on the row afterwards, so this can
     only make the query faster, never change its answer. None = full scan.
     """
+    if getattr(table, "is_view", False):
+        return None  # a VIEW has no real index -- always a full scan of its materialized rows
     alias, schema = scope.sources[0]
     for cond in conjuncts(where):
         if not (isinstance(cond, ast.BinaryOp) and cond.op == "="):

@@ -23,6 +23,40 @@ statements from different clients never interleave. A transaction (SHURU) keeps
 holding the lock until PAKKA/WAPAS, so other clients wait for it to finish.
 This is the simplest correct approach ("serial execution"); real databases use
 row-level locks or MVCC to let clients work in parallel.
+
+---------------------------------------------------------------------------
+PHASE B NOTES (users/privileges/triggers/procedures build on top of this):
+
+- Statement dispatch is `execute_statement()` below: it looks up `_exec_<ClassName>`
+  by the AST node's class name and calls it while holding `self.instance.lock`
+  (see `_locked()`). A new statement type (e.g. `ast.CreateTrigger`) just needs
+  a matching `_exec_CreateTrigger` method here -- no dispatch table to edit.
+- Row-level hooks for triggers: `_exec_Insert` builds `new_rows` (validated,
+  ready to write) right before `table.insert_many(new_rows)` -- a BEFORE/AFTER
+  INSERT trigger point goes right around that call. Same shape in `_exec_Update`
+  around `table.delete_many(targets); table.insert_many(new_rows)`, and in
+  `_exec_Delete` around `table.delete_many(doomed)`. All three already collect
+  the "old" and "new" row dicts you'd want to pass to a trigger body.
+- Privileges: the natural place to check "can this session do X" is the top of
+  each `_exec_*` method, or once in `execute_statement()` if a single
+  (statement-class -> required-privilege) table is enough -- current dispatch
+  already isolates one statement per handler, so per-statement privilege checks
+  don't need restructuring.
+- Views (this phase) are stored as RAW SOURCE TEXT in `Catalog.views` (name ->
+  SELECT text), re-parsed and re-planned fresh every time they're used --
+  reuse the same pattern for stored procedure bodies if you go that route.
+- Users/sessions: `Engine.__init__` takes a data dir or shared `Instance`; a
+  session-identity field (current user) would live on `Engine`, next to
+  `self.current_db`, and would need to survive whatever the REPL/server does
+  to keep one `Engine` per connected client (see server.py).
+- Subqueries (this phase) are pre-computed by the ENGINE (not the evaluator)
+  into a `subqueries: dict[id(node) -> value]` passed into every `evaluate()`
+  call for a row -- see `_run_subquery`/`_correlate` below and
+  `evaluator.find_subqueries`. If Phase B needs its own per-row side data
+  (e.g. an audit trigger reading "current user"), the same
+  pre-compute-then-pass-a-dict shape is reusable rather than threading a new
+  positional parameter through every `evaluate()` call site.
+---------------------------------------------------------------------------
 """
 
 import os
@@ -39,12 +73,21 @@ from . import planner
 from .catalog import Catalog, Column, TableSchema
 from .datatypes import coerce, format_value
 from .errors import ExecutionError, MeraDBError
-from .evaluator import agg_key, column_ref_nodes, column_refs, evaluate, expr_label, find_aggregates, is_true
+from .evaluator import (
+    agg_key,
+    column_ref_nodes,
+    column_refs,
+    evaluate,
+    expr_label,
+    find_aggregates,
+    find_subqueries,
+    is_true,
+)
 from .parser import parse, parse_expression
-from .planner import Scope, bind
+from .planner import Scope, bind, natural_join_condition
 from .protocol import default_data_dir, running_server
 from .storage import HeapFile, encode_row
-from .table import Table
+from .table import MaterializedTable, Table
 
 DEFAULT_DATABASE = "main"
 SNAPSHOT_DIR = ".wapas"  # where transactions keep their "before" copy
@@ -83,6 +126,25 @@ def _wire_decode(value):
     if isinstance(value, dict) and "$date" in value:
         return date.fromisoformat(value["$date"])
     return value
+
+
+def _infer_column_type(rows: list[list], position: int) -> str:
+    """A VIEW's MaterializedTable has no declared column types -- infer one
+    from the FIRST non-KHALI value in that column, defaulting to TEXT (see
+    docs/ARCHITECTURE.md's view-materialization section)."""
+    for row in rows:
+        value = row[position]
+        if value is not None:
+            if isinstance(value, bool):
+                return "BOOL"
+            if isinstance(value, int):
+                return "INT"
+            if isinstance(value, float):
+                return "FLOAT"
+            if isinstance(value, date):
+                return "DATE"
+            return "TEXT"
+    return "TEXT"
 
 
 # ============================================================================
@@ -310,6 +372,8 @@ class Engine:
         return Result(["table"], [[n] for n in names], f"{len(names)} table(s) in '{self.current_db}'")
 
     def _exec_Describe(self, stmt: ast.Describe) -> Result:
+        if self.catalog.find(stmt.table) is None and stmt.table in self.catalog.views:
+            return Result(["definition"], [[self.catalog.views[stmt.table]]], f"VIEW '{stmt.table}'")
         schema = self.catalog.get(stmt.table)
         rows = []
         for c in schema.columns:
@@ -328,7 +392,31 @@ class Engine:
             if c.check:
                 flags.append(f"SHART ({c.check})")
             rows.append([c.name, type_display, " ".join(flags)])
+        for group in schema.composite_unique:
+            rows.append([f"({', '.join(group)})", "", "ANOKHA"])
+        if schema.composite_pk:
+            rows.append([f"({', '.join(schema.composite_pk)})", "", "MUKHYA KUNJI"])
         return Result(["column", "type", "constraints"], rows, f"Table '{schema.name}'")
+
+    def _exec_ShowViews(self, stmt: ast.ShowViews) -> Result:
+        names = sorted(self.catalog.views)
+        return Result(["view"], [[n] for n in names], f"{len(names)} view(s) in '{self.current_db}'")
+
+    def _exec_CreateView(self, stmt: ast.CreateView) -> Result:
+        if self.catalog.find(stmt.name) is not None:
+            raise ExecutionError(f"Table '{stmt.name}' pehle se hai -- VIEW usi naam se nahi ban sakti")
+        if stmt.name in self.catalog.views:
+            raise ExecutionError(f"View '{stmt.name}' pehle se hai")
+        select_stmt = parse(stmt.query_text)[0]
+        self._exec_Select(select_stmt)  # sanity check: must run cleanly against the CURRENT schema
+        self.catalog.add_view(stmt.name, stmt.query_text)
+        return Result(message=f"View '{stmt.name}' ban gaya")
+
+    def _exec_DropView(self, stmt: ast.DropView) -> Result:
+        if stmt.name not in self.catalog.views:
+            raise ExecutionError(f"View '{stmt.name}' exist nahi karta")
+        self.catalog.remove_view(stmt.name)
+        return Result(message=f"View '{stmt.name}' hata diya")
 
     # ------------------------------------------------------------------
     # transactions
@@ -363,6 +451,10 @@ class Engine:
     # DDL
     # ------------------------------------------------------------------
     def _table(self, name: str) -> Table:
+        """A REAL table only -- used by DAALO/BADLO/MITAO/SUDHARO/SAAF/SIKODO/HATAO
+        TABLE, which a VIEW can never be the target of."""
+        if self.catalog.find(name) is None and name in self.catalog.views:
+            raise ExecutionError(f"'{name}' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte")
         return Table(
             self.catalog.get(name), self.catalog.table_path(name), self.instance.indexes, (self.current_db, name)
         )
@@ -370,14 +462,27 @@ class Engine:
     def _exec_CreateTable(self, stmt: ast.CreateTable) -> Result:
         if self.catalog.find(stmt.name):
             raise ExecutionError(f"Table '{stmt.name}' pehle se hai")
+        if stmt.name in self.catalog.views:
+            raise ExecutionError(f"'{stmt.name}' ek VIEW hai -- table usi naam se nahi ban sakti")
         names = [c.name for c in stmt.columns]
         dupes = {n for n in names if names.count(n) > 1}
         if dupes:
             raise ExecutionError(f"Column naam do baar diya: {', '.join(sorted(dupes))}")
         if sum(c.primary_key for c in stmt.columns) > 1:
             raise ExecutionError("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai")
+        if stmt.composite_pk is not None and any(c.primary_key for c in stmt.columns):
+            raise ExecutionError("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai (single- ya multi-column, dono nahi)")
+        self._check_composite_columns(stmt.name, names, stmt.composite_unique, stmt.composite_pk)
 
         schema = TableSchema(stmt.name, [self._make_column(c) for c in stmt.columns])
+        # a composite PRIMARY KEY's columns must all be NOT NULL, exactly like
+        # a normal (single-column) PK -- mark this ONCE, here, rather than
+        # re-deriving it every validation (see docs/ARCHITECTURE.md)
+        if stmt.composite_pk:
+            for name in stmt.composite_pk:
+                schema.get_column(name).not_null = True
+        schema.composite_unique = [list(g) for g in stmt.composite_unique]
+        schema.composite_pk = list(stmt.composite_pk) if stmt.composite_pk else None
         for col in schema.columns:
             if col.ref_table:
                 self._check_fk_target(col, self_schema=schema)
@@ -386,6 +491,15 @@ class Engine:
         HeapFile(self.catalog.table_path(stmt.name)).create()
         self.catalog.add(schema)
         return Result(message=f"Table '{stmt.name}' ban gaya ({len(schema.columns)} columns)")
+
+    @staticmethod
+    def _check_composite_columns(table: str, column_names: list[str], composite_unique: list[list[str]], composite_pk: Optional[list[str]]) -> None:
+        for group in composite_unique + ([composite_pk] if composite_pk else []):
+            for name in group:
+                if name not in column_names:
+                    raise ExecutionError(f"Table '{table}': composite constraint mein column '{name}' nahi hai")
+            if len(set(group)) != len(group):
+                raise ExecutionError(f"Table '{table}': composite constraint mein ek column do baar diya hai")
 
     @staticmethod
     def _make_column(col_def: ast.ColumnDef) -> Column:
@@ -521,6 +635,42 @@ class Engine:
         self.catalog.add(new_schema)
         return Result(message=f"Column '{new_col.name}' '{schema.name}' mein jod diya")
 
+    def _exec_AlterAddComposite(self, stmt: ast.AlterAddComposite) -> Result:
+        table = self._table(stmt.table)
+        schema = table.schema
+        self._check_composite_columns(stmt.table, schema.column_names, [stmt.columns], None)
+        if stmt.kind == "MUKHYA":
+            if schema.composite_pk is not None or any(c.primary_key for c in schema.columns):
+                raise ExecutionError("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai")
+            for name in stmt.columns:
+                schema.get_column(name).not_null = True
+            schema.composite_pk = list(stmt.columns)
+        else:
+            schema.composite_unique.append(list(stmt.columns))
+
+        # existing data must already satisfy the new constraint
+        table.invalidate_indexes()
+        positions = tuple(schema.index_of(c) for c in stmt.columns)
+        seen = set()
+        for _, values in table.rows():
+            key = tuple(values[p] for p in positions)
+            if stmt.kind == "MUKHYA" and None in key:
+                raise ExecutionError(
+                    f"Table '{stmt.table}' mein columns {list(stmt.columns)!r} ki maujooda rows mein KHALI hai -- "
+                    f"MUKHYA KUNJI ke liye ZAROORI (NOT NULL) chahiye"
+                )
+            if None in key:
+                continue
+            if key in seen:
+                raise ExecutionError(
+                    f"Duplicate value {key!r} columns {list(stmt.columns)!r} mein -- maujooda data ye constraint todta hai"
+                )
+            seen.add(key)
+
+        self.catalog.add(schema)
+        kind_label = "MUKHYA KUNJI" if stmt.kind == "MUKHYA" else "ANOKHA"
+        return Result(message=f"Table '{stmt.table}' mein {kind_label} ({', '.join(stmt.columns)}) jod diya")
+
     def _exec_AlterDropColumn(self, stmt: ast.AlterDropColumn) -> Result:
         table = self._table(stmt.table)
         schema = table.schema
@@ -621,18 +771,89 @@ class Engine:
         # Validate EVERY row before writing ANY -- so a bad 3rd row doesn't
         # leave rows 1 and 2 half-inserted. (A tiny taste of atomicity.)
         new_rows = []
-        for tuple_ in stmt.rows:
-            if len(tuple_) != len(target_cols):
-                raise ExecutionError(f"{len(target_cols)} values chahiye thi, {len(tuple_)} mili")
-            values = [c.default for c in schema.columns]  # WARNA values (KHALI if none)
-            for col, expr in zip(target_cols, tuple_):
-                values[schema.index_of(col)] = evaluate(expr, {})
-            new_rows.append(self._validate_row(schema, values))
+        if stmt.select is not None:
+            # INSERT ... SELECT: values already come out typed (real Python
+            # values, not Expr) -- coerce() in _validate_row still widens them
+            # the same way it would widen a literal (e.g. INT into a FLOAT column).
+            select_result = self._exec_Select(stmt.select)
+            if len(select_result.columns) != len(target_cols):
+                raise ExecutionError(
+                    f"{len(target_cols)} values chahiye thi, DIKHAO ne {len(select_result.columns)} columns di"
+                )
+            for row in select_result.rows:
+                values = [c.default for c in schema.columns]
+                for col, value in zip(target_cols, row):
+                    values[schema.index_of(col)] = value
+                new_rows.append(self._validate_row(schema, values))
+        else:
+            for tuple_ in stmt.rows:
+                if len(tuple_) != len(target_cols):
+                    raise ExecutionError(f"{len(target_cols)} values chahiye thi, {len(tuple_)} mili")
+                values = [c.default for c in schema.columns]  # WARNA values (KHALI if none)
+                for col, expr in zip(target_cols, tuple_):
+                    values[schema.index_of(col)] = evaluate(expr, {})
+                new_rows.append(self._validate_row(schema, values))
 
-        self._check_unique(table, new_rows)
-        self._check_fk(table, new_rows)
-        table.insert_many(new_rows)
-        return Result(message=f"{len(new_rows)} row(s) daal di")
+        if stmt.on_conflict_update is None:
+            self._check_unique(table, new_rows)
+            self._check_fk(table, new_rows)
+            table.insert_many(new_rows)
+            return Result(message=f"{len(new_rows)} row(s) daal di")
+
+        # TAKRAAV PAR BADLO (simplified upsert): rows colliding with an EXISTING
+        # row (by any unique/PK column, single or composite) get UPDATEd instead
+        # of inserted. A collision against another row IN THIS SAME BATCH is
+        # still a hard error, exactly like today -- only pre-existing rows are rescued.
+        to_insert, to_update = [], []
+        for new in new_rows:
+            existing_row_id = self._find_conflict(table, new)
+            if existing_row_id is None:
+                to_insert.append(new)
+            else:
+                to_update.append((existing_row_id, new))
+
+        self._check_unique(table, to_insert)
+        self._check_fk(table, to_insert)
+
+        updated_targets, updated_new_rows = [], []
+        assignments = [(schema.index_of(col), expr) for col, expr in stmt.on_conflict_update]
+        for row_id, attempted in to_update:
+            old_values = table.get(row_id)
+            # assignments see the ATTEMPTED (incoming) row's values, not the
+            # existing row's -- so `TAKRAAV PAR BADLO naam = naam` means
+            # "keep inserting naam" (see docs/LANGUAGE.md)
+            env = dict(zip(schema.column_names, attempted))
+            new_values = list(old_values)
+            for position, expr in assignments:
+                new_values[position] = evaluate(expr, env)
+            updated_targets.append((row_id, old_values))
+            updated_new_rows.append(self._validate_row(schema, new_values))
+        if updated_new_rows:
+            self._check_unique(table, updated_new_rows, ignore_row_ids={rid for rid, _ in updated_targets})
+            self._check_fk(table, updated_new_rows)
+            table.delete_many(updated_targets)
+            table.insert_many(updated_new_rows)
+        table.insert_many(to_insert)
+        return Result(message=f"{len(to_insert)} row(s) daali, {len(updated_new_rows)} row(s) TAKRAAV par badli")
+
+    def _find_conflict(self, table: Table, values: list) -> Optional[int]:
+        """Does `values` collide with an EXISTING row on any unique/PK column
+        (single or composite)? Returns that row's id, or None."""
+        indexes = table.indexes()
+        for col, index in indexes.items():
+            if isinstance(col, tuple):  # composite constraint
+                key = tuple(values[p] for p in col)
+                if None in key:
+                    continue
+                row_id = index.get(key)
+            else:
+                v = values[col]
+                if v is None:
+                    continue
+                row_id = index.get(v)
+            if row_id is not None:
+                return row_id
+        return None
 
     def _candidates(self, table: Table, access: Optional[planner.IndexLookup]) -> list[tuple[int, list]]:
         """The rows worth looking at: one index lookup, or every row (full scan)."""
@@ -654,25 +875,34 @@ class Engine:
         # 2. JOIN (MILAO) each further table
         for i, (join, on, hash_keys) in enumerate(plan.joins, start=1):
             right_rows = [scope.row(i, values) for _, values in plan.tables[i].rows()]
-            rows = _join(rows, right_rows, on, hash_keys, join.left, scope.null_row(i))
+            null_left = {}
+            for j in range(i):
+                null_left.update(scope.null_row(j))
+            rows = _join(rows, right_rows, on, hash_keys, join.kind, null_left, scope.null_row(i))
 
-        # 3. FILTER (JAHAN)
+        # 3. FILTER (JAHAN) -- any WHERE subquery is pre-computed per outer row
+        #    (once, if uncorrelated; per row, if correlated -- see _precompute_subqueries)
         if plan.where is not None:
-            rows = [r for r in rows if is_true(evaluate(plan.where, r))]
+            subq = self._precompute_subqueries([plan.where], rows)
+            rows = [r for r, sq in zip(rows, subq) if is_true(evaluate(plan.where, r, sq))]
 
         # 4. GROUP (SAMOOH) + compute aggregates, then filter groups (JINKA)
         if plan.grouped:
             rows = self._group(rows, plan.group_by, plan.aggregates, scope)
             if plan.having is not None:
-                rows = [r for r in rows if is_true(evaluate(plan.having, r))]
+                subq = self._precompute_subqueries([plan.having], rows)
+                rows = [r for r, sq in zip(rows, subq) if is_true(evaluate(plan.having, r, sq))]
 
         # 5. SORT (KRAM). Python's sort is *stable*, so sorting by the LAST key
         #    first and the FIRST key last gives a correct multi-column sort.
         for item in reversed(plan.order_by):
-            rows.sort(key=lambda r: _sort_key(evaluate(item.expr, r)), reverse=item.descending)
+            subq = self._precompute_subqueries([item.expr], rows)
+            paired = sorted(zip(rows, subq), key=lambda p: _sort_key(evaluate(item.expr, p[0], p[1])), reverse=item.descending)
+            rows = [r for r, _ in paired]
 
         # 6. PROJECT (pick / compute the output columns)
-        out_rows = [[evaluate(e, r) for e in plan.outputs] for r in rows]
+        subq = self._precompute_subqueries(plan.outputs, rows)
+        out_rows = [[evaluate(e, r, sq) for e in plan.outputs] for r, sq in zip(rows, subq)]
 
         # 7. DISTINCT (ALAG): keep the first copy of each row, preserving order
         if stmt.distinct:
@@ -690,10 +920,27 @@ class Engine:
 
         return Result(plan.labels, out_rows, f"{len(out_rows)} row(s)")
 
-    def _plan_select(self, stmt: ast.Select) -> "SelectPlan":
+    def _resolve_source(self, name: str) -> "Table | MaterializedTable":
+        """A SE/MILAO source: a real Table, or -- if `name` isn't a table --
+        a VIEW, materialized fresh by re-running its stored DIKHAO text (so it
+        always reflects the CURRENT schema of whatever it selects from)."""
+        if self.catalog.find(name) is not None:
+            return self._table(name)
+        if name in self.catalog.views:
+            view_stmt = parse(self.catalog.views[name])[0]
+            result = self._exec_Select(view_stmt)
+            columns = [Column(label, _infer_column_type(result.rows, i)) for i, label in enumerate(result.columns)]
+            return MaterializedTable(TableSchema(name, columns), result.rows)
+        raise ExecutionError(f"Table '{name}' exist nahi karta")
+
+    def _select_sources_scope(self, stmt: ast.Select) -> tuple[list, list, Scope]:
         sources = [(stmt.alias or stmt.table, stmt.table)] + [(j.alias, j.table) for j in stmt.joins]
-        tables = [self._table(name) for _, name in sources]
+        tables = [self._resolve_source(name) for _, name in sources]
         scope = Scope([(alias, table.schema) for (alias, _), table in zip(sources, tables)])
+        return sources, tables, scope
+
+    def _plan_select(self, stmt: ast.Select) -> "SelectPlan":
+        sources, tables, scope = self._select_sources_scope(stmt)
 
         # KAHO: an output alias becomes the column header, and (only) KRAM may
         # refer back to it by name -- JAHAN/JINKA do not (standard SQL: they
@@ -735,10 +982,193 @@ class Engine:
 
         plan.access = planner.choose_access(tables[0], scope, plan.where)
         for i, join in enumerate(stmt.joins, start=1):
-            on = bind(join.on, scope)
+            if join.kind == "NATURAL":
+                # no PAR written by the user -- synthesise `earlier.col = new.col`
+                # for every column name shared with an already-joined table
+                on = natural_join_condition(scope, i)
+            else:
+                on = bind(join.on, scope)
             planner.check_join_condition(on, scope, i)
             plan.joins.append((join, on, planner.choose_join(on, scope, i)))
         return plan
+
+    # ------------------------------------------------------------------
+    # subqueries (WHERE-clause scalar / IN-list, correlated or not)
+    # ------------------------------------------------------------------
+    def _run_subquery(self, subquery: ast.Subquery, outer_row: Optional[dict] = None) -> tuple[Result, bool]:
+        """
+        Runs `subquery` and returns (its Result, whether it turned out to be
+        CORRELATED). With outer_row=None it's simply executed as-is (used for
+        BANAO VIEW's sanity check and other non-row contexts). With an
+        outer_row, every ColumnRef inside the subquery's own WHERE/columns/etc
+        that its OWN scope can't resolve is replaced by the matching value
+        from outer_row (see _correlate) -- if that substitution never fires,
+        the subquery is uncorrelated and its result doesn't depend on
+        outer_row's VALUES at all (only its KEYS, which are the same for
+        every row of the same outer query -- see _precompute_subqueries).
+        """
+        stmt = subquery.statement
+        if outer_row is None:
+            return self._exec_Select(stmt), False
+        _, _, subquery_scope = self._select_sources_scope(stmt)
+        new_stmt, fired = self._correlate_select(stmt, subquery_scope, outer_row)
+        return self._exec_Select(new_stmt), fired
+
+    def _correlate_select(self, stmt: ast.Select, subquery_scope: Scope, outer_row: dict) -> tuple[ast.Select, bool]:
+        fired = [False]
+
+        def corr(e):
+            return self._correlate(e, subquery_scope, outer_row, fired)
+
+        new_stmt = ast.Select(
+            columns=[corr(c) for c in stmt.columns],
+            table=stmt.table,
+            alias=stmt.alias,
+            joins=[ast.Join(j.table, j.alias, corr(j.on) if j.on is not None else None, j.kind) for j in stmt.joins],
+            where=corr(stmt.where) if stmt.where is not None else None,
+            group_by=[corr(g) for g in stmt.group_by],
+            having=corr(stmt.having) if stmt.having is not None else None,
+            order_by=[ast.OrderItem(corr(o.expr), o.descending) for o in stmt.order_by],
+            limit=stmt.limit,
+            distinct=stmt.distinct,
+            aliases=list(stmt.aliases),
+        )
+        return new_stmt, fired[0]
+
+    def _correlate(self, expr, subquery_scope: Scope, outer_row: dict, fired: list) -> ast.Expr:
+        """Replace every ColumnRef in `expr` that does NOT resolve against the
+        subquery's OWN scope with a Literal of the matching outer_row value.
+        Recurses through every expression shape exactly like planner.bind()."""
+        if expr is None or isinstance(expr, (ast.Literal, ast.Star)):
+            return expr
+        if isinstance(expr, ast.ColumnRef):
+            try:
+                subquery_scope.resolve(expr)
+                return expr  # resolves locally -- this is NOT a correlation
+            except ExecutionError:
+                pass
+            if expr.table is not None:
+                key = f"{expr.table}.{expr.name}"
+                if key not in outer_row:
+                    raise ExecutionError(f"'{key}' na is subquery mein na outer query mein mila")
+            else:
+                matches = [k for k in outer_row if k.endswith(f".{expr.name}")]
+                if not matches:
+                    raise ExecutionError(f"Column '{expr.name}' na is subquery mein na outer query mein mila")
+                if len(matches) > 1:
+                    raise ExecutionError(
+                        f"Column '{expr.name}' outer query mein ek se zyada tables mein hai -- "
+                        f"{' ya '.join(matches)} likho"
+                    )
+                key = matches[0]
+            fired[0] = True
+            return ast.Literal(outer_row[key])
+        if isinstance(expr, ast.BinaryOp):
+            return ast.BinaryOp(expr.op, self._correlate(expr.left, subquery_scope, outer_row, fired), self._correlate(expr.right, subquery_scope, outer_row, fired))
+        if isinstance(expr, ast.UnaryOp):
+            return ast.UnaryOp(expr.op, self._correlate(expr.operand, subquery_scope, outer_row, fired))
+        if isinstance(expr, ast.IsNull):
+            return ast.IsNull(self._correlate(expr.expr, subquery_scope, outer_row, fired), expr.negated)
+        if isinstance(expr, ast.FuncCall):
+            return ast.FuncCall(expr.name, self._correlate(expr.arg, subquery_scope, outer_row, fired))
+        if isinstance(expr, ast.Coalesce):
+            return ast.Coalesce([self._correlate(a, subquery_scope, outer_row, fired) for a in expr.args])
+        if isinstance(expr, ast.CaseWhen):
+            return ast.CaseWhen(
+                [(self._correlate(c, subquery_scope, outer_row, fired), self._correlate(v, subquery_scope, outer_row, fired)) for c, v in expr.branches],
+                self._correlate(expr.else_, subquery_scope, outer_row, fired) if expr.else_ is not None else None,
+            )
+        if isinstance(expr, (ast.Subquery, ast.InSubquery)):
+            return expr  # a NESTED subquery correlates against ITS OWN nesting when IT runs
+        raise ExecutionError(f"Unknown expression: {expr!r}")
+
+    def _reduce_subquery_result(self, node, result: Result):
+        """Scalar context (ast.Subquery): exactly 1 column, 0 or 1 row.
+        List context (ast.InSubquery): exactly 1 column, any number of rows."""
+        if len(result.columns) != 1:
+            raise ExecutionError("Subquery sirf 1 column return kar sakti hai is jagah")
+        if isinstance(node, ast.Subquery):
+            if len(result.rows) > 1:
+                raise ExecutionError("Subquery ek se zyada rows return kar rahi hai -- sirf 1 row honi chahiye")
+            return result.rows[0][0] if result.rows else None
+        return [r[0] for r in result.rows]
+
+    def _precompute_subqueries(self, exprs: list, rows: list[dict]) -> list[dict]:
+        """One `subqueries` dict per row, ready to pass into evaluate(). A
+        subquery is structurally either correlated or not -- whether its
+        columns resolve locally depends only on which KEYS the outer row has,
+        not their values, and every row here has the same keys -- so ONE dry
+        run (against the first row) decides correlated-vs-not for ALL rows:
+        uncorrelated results are computed once and shared; correlated ones are
+        recomputed per row."""
+        nodes, seen = [], set()
+        for e in exprs:
+            for node in find_subqueries(e):
+                if id(node) not in seen:
+                    seen.add(id(node))
+                    nodes.append(node)
+        if not nodes or not rows:
+            return [{} for _ in rows]
+
+        uncorrelated_value = {}
+        correlated = set()
+        probe = rows[0]
+        for node in nodes:
+            sub = node if isinstance(node, ast.Subquery) else node.subquery
+            result, fired = self._run_subquery(sub, probe)
+            if fired:
+                correlated.add(id(node))
+            else:
+                uncorrelated_value[id(node)] = self._reduce_subquery_result(node, result)
+
+        out = []
+        for row in rows:
+            d = dict(uncorrelated_value)
+            for node in nodes:
+                if id(node) in correlated:
+                    sub = node if isinstance(node, ast.Subquery) else node.subquery
+                    result, _fired = self._run_subquery(sub, row)
+                    d[id(node)] = self._reduce_subquery_result(node, result)
+            out.append(d)
+        return out
+
+    # ------------------------------------------------------------------
+    # set operations: SANYUKT (UNION), SAAJHA (INTERSECT), CHHODKAR (EXCEPT)
+    # ------------------------------------------------------------------
+    def _exec_SetOp(self, stmt: ast.SetOp) -> Result:
+        op_name = {"SANYUKT": "UNION", "SAAJHA": "INTERSECT", "CHHODKAR": "EXCEPT"}[stmt.op]
+        left = self.execute_statement(stmt.left)
+        right = self.execute_statement(stmt.right)
+        if len(left.columns) != len(right.columns):
+            raise ExecutionError(
+                f"{stmt.op} ({op_name}) ke dono taraf {len(left.columns)} columns chahiye, "
+                f"{len(left.columns)} aur {len(right.columns)} mile"
+            )
+        left_tuples = [tuple(r) for r in left.rows]
+        right_tuples = [tuple(r) for r in right.rows]
+
+        if stmt.op == "SANYUKT":  # UNION: dedupe, preserving first-occurrence order
+            seen, out = set(), []
+            for row in left_tuples + right_tuples:
+                if row not in seen:
+                    seen.add(row)
+                    out.append(row)
+        elif stmt.op == "SAAJHA":  # INTERSECT: in BOTH, deduped, left's order
+            right_set = set(right_tuples)
+            seen, out = set(), []
+            for row in left_tuples:
+                if row in right_set and row not in seen:
+                    seen.add(row)
+                    out.append(row)
+        else:  # CHHODKAR: EXCEPT -- in left but NOT right, deduped, left's order
+            right_set = set(right_tuples)
+            seen, out = set(), []
+            for row in left_tuples:
+                if row not in right_set and row not in seen:
+                    seen.add(row)
+                    out.append(row)
+
+        return Result(left.columns, [list(r) for r in out], f"{len(out)} row(s)")
 
     def _exec_Update(self, stmt: ast.Update) -> Result:
         table = self._table(stmt.table)
@@ -750,18 +1180,21 @@ class Engine:
         # Collect matching rows FIRST, then modify. If we updated while scanning,
         # the re-inserted rows (appended at the end of the file) would be scanned
         # again and updated twice -- the famous "Halloween problem".
-        targets = [
-            (row_id, values)
-            for row_id, values in self._candidates(table, planner.choose_access(table, scope, where))
-            if where is None or is_true(evaluate(where, scope.row(0, values)))
-        ]
+        candidates = self._candidates(table, planner.choose_access(table, scope, where))
+        if where is not None:
+            candidate_rows = [scope.row(0, values) for _, values in candidates]
+            subq = self._precompute_subqueries([where], candidate_rows)
+            targets = [c for c, r, sq in zip(candidates, candidate_rows, subq) if is_true(evaluate(where, r, sq))]
+        else:
+            targets = list(candidates)
 
+        old_rows = [scope.row(0, values) for _, values in targets]  # SET expressions see the OLD values
+        set_subq = self._precompute_subqueries([expr for _, expr in assignments], old_rows)
         new_rows = []
-        for _, values in targets:
-            old = scope.row(0, values)  # SET expressions see the OLD values
+        for (_, values), old, sq in zip(targets, old_rows, set_subq):
             new = list(values)
             for position, expr in assignments:
-                new[position] = evaluate(expr, old)
+                new[position] = evaluate(expr, old, sq)
             new_rows.append(self._validate_row(schema, new))
 
         self._check_unique(table, new_rows, ignore_row_ids={row_id for row_id, _ in targets})
@@ -791,11 +1224,13 @@ class Engine:
         scope = Scope([(stmt.table, schema)])
         where = bind(stmt.where, scope)
 
-        doomed = [
-            (row_id, values)
-            for row_id, values in self._candidates(table, planner.choose_access(table, scope, where))
-            if where is None or is_true(evaluate(where, scope.row(0, values)))
-        ]
+        candidates = self._candidates(table, planner.choose_access(table, scope, where))
+        if where is not None:
+            candidate_rows = [scope.row(0, values) for _, values in candidates]
+            subq = self._precompute_subqueries([where], candidate_rows)
+            doomed = [c for c, r, sq in zip(candidates, candidate_rows, subq) if is_true(evaluate(where, r, sq))]
+        else:
+            doomed = list(candidates)
 
         # RESTRICT: refuse if any child row still references a value about to be deleted
         deleted_by_column: dict[int, set] = {}
@@ -816,6 +1251,13 @@ class Engine:
         inner = stmt.statement
         if isinstance(inner, ast.Select):
             lines = self._explain_select(inner, self._plan_select(inner))
+        elif isinstance(inner, ast.SetOp):
+            op_name = {"SANYUKT": "UNION", "SAAJHA": "INTERSECT", "CHHODKAR": "EXCEPT"}[inner.op]
+            lines = [f"{inner.op} ({op_name}) of:"]
+            for side, label in ((inner.left, "LEFT"), (inner.right, "RIGHT")):
+                sub_lines = self._explain_one(side)
+                lines.append(f"  {label}:")
+                lines.extend(f"    {line}" for line in sub_lines)
         elif isinstance(inner, (ast.Update, ast.Delete)):
             table = self._table(inner.table)
             scope = Scope([(inner.table, table.schema)])
@@ -831,19 +1273,29 @@ class Engine:
         numbered = [[f"{i}. {line}"] for i, line in enumerate(lines, start=1)]
         return Result(["plan"], numbered, "Query plan (query chalayi nahi gayi)")
 
-    @staticmethod
-    def _explain_select(stmt: ast.Select, plan: "SelectPlan") -> list[str]:
+    def _explain_one(self, stmt: ast.Statement) -> list[str]:
+        """One side of a SetOp -- itself a Select or (recursively) a SetOp."""
+        if isinstance(stmt, ast.SetOp):
+            op_name = {"SANYUKT": "UNION", "SAAJHA": "INTERSECT", "CHHODKAR": "EXCEPT"}[stmt.op]
+            lines = [f"{stmt.op} ({op_name}) of:"]
+            for side in (stmt.left, stmt.right):
+                lines.extend(f"  {line}" for line in self._explain_one(side))
+            return lines
+        return self._explain_select(stmt, self._plan_select(stmt))
+
+    JOIN_LABEL = {"INNER": "", "LEFT": "LEFT ", "RIGHT": "RIGHT ", "FULL": "FULL ", "NATURAL": "NATURAL "}
+
+    def _explain_select(self, stmt: ast.Select, plan: "SelectPlan") -> list[str]:
         first = plan.tables[0]
         alias = f" {stmt.alias}" if stmt.alias else ""
         lines = [plan.access.describe(first) if plan.access else f"FULL SCAN {stmt.table}{alias}"]
         for join, on, hash_keys in plan.joins:
-            kind = "HASH JOIN" if hash_keys else "NESTED LOOP JOIN"
-            if join.left:
-                kind = "LEFT " + kind
+            kind = self.JOIN_LABEL[join.kind] + ("HASH JOIN" if hash_keys else "NESTED LOOP JOIN")
             name = join.table if join.alias == join.table else f"{join.table} {join.alias}"
-            lines.append(f"{kind} {name} PAR {expr_label(join.on)}")
+            lines.append(f"{kind} {name} PAR {expr_label(on)}")
         if stmt.where is not None:
             lines.append(f"FILTER  JAHAN {expr_label(stmt.where)}")
+        lines.extend(self._explain_subqueries([stmt.where], plan.scope))
         if plan.grouped:
             aggs = ", ".join(expr_label(a) for a in plan.aggregates) or "-"
             if stmt.group_by:
@@ -852,14 +1304,37 @@ class Engine:
                 lines.append(f"AGGREGATE saari rows ek group  [aggregates: {aggs}]")
         if stmt.having is not None:
             lines.append(f"FILTER GROUPS  JINKA {expr_label(stmt.having)}")
+            lines.extend(self._explain_subqueries([stmt.having], plan.scope))
         if stmt.order_by:
             keys = ", ".join(expr_label(o.expr) + (" ULTA" if o.descending else "") for o in stmt.order_by)
             lines.append(f"SORT  KRAM {keys}")
         lines.append(f"PROJECT  {', '.join(plan.labels)}")
+        lines.extend(self._explain_subqueries(plan.outputs, plan.scope))
         if stmt.distinct:
             lines.append("DISTINCT  ALAG")
         if stmt.limit is not None:
             lines.append(f"LIMIT  SIRF {stmt.limit}")
+        return lines
+
+    def _explain_subqueries(self, exprs: list, scope: Scope) -> list[str]:
+        """One line per DISTINCT subquery node found in `exprs`, naming
+        whether it's correlated -- see docs/ARCHITECTURE.md. Deliberately
+        shallow: only the subquery's OWN first plan line is shown, not its
+        whole nested plan tree."""
+        lines, seen = [], set()
+        dummy_outer = {k: None for k in scope.all_keys()}
+        for e in exprs:
+            for node in find_subqueries(e):
+                sub = node if isinstance(node, ast.Subquery) else node.subquery
+                if id(sub) in seen:
+                    continue
+                seen.add(id(sub))
+                _, _, subquery_scope = self._select_sources_scope(sub.statement)
+                substituted, fired = self._correlate_select(sub.statement, subquery_scope, dummy_outer)
+                inner_plan = self._plan_select(substituted)
+                first_line = self._explain_select(substituted, inner_plan)[0]
+                kind = "correlated" if fired else "uncorrelated"
+                lines.append(f"SUBQUERY ({kind}): {first_line}")
         return lines
 
     # ------------------------------------------------------------------
@@ -949,23 +1424,35 @@ class Engine:
     @staticmethod
     def _check_unique(table: Table, new_rows: list[list], ignore_row_ids: frozenset = frozenset()) -> None:
         """
-        Enforce ANOKHA / MUKHYA KUNJI using the hash indexes: O(1) per value
-        instead of scanning the whole table. `ignore_row_ids` are rows that are
-        being replaced (UPDATE), so their old values don't count.
+        Enforce ANOKHA / MUKHYA KUNJI (single-column AND composite) using the
+        hash indexes: O(1) per value instead of scanning the whole table.
+        `ignore_row_ids` are rows that are being replaced (UPDATE), so their
+        old values don't count. A composite constraint's index is keyed by a
+        tuple of column POSITIONS (see Table._composite_keys), so its `seen`
+        set and its value are both tuples instead of single values.
         """
         indexes = table.indexes()
-        seen: dict[int, set] = {col: set() for col in indexes}  # values within this statement
+        seen: dict = {col: set() for col in indexes}  # values within this statement
         for values in new_rows:
             for col, index in indexes.items():
-                v = values[col]
-                if v is None:
-                    continue  # like SQL: many KHALI values are allowed in an ANOKHA column
-                existing = index.get(v)
-                if (existing is not None and existing not in ignore_row_ids) or v in seen[col]:
-                    name = table.schema.columns[col].name
-                    raise ExecutionError(
-                        f"Duplicate value {v!r} column '{name}' mein -- is column mein har value alag honi chahiye"
-                    )
+                if isinstance(col, tuple):  # composite constraint
+                    v = tuple(values[p] for p in col)
+                    if None in v:
+                        continue  # KHALI never participates in a uniqueness violation
+                    existing = index.get(v)
+                    if (existing is not None and existing not in ignore_row_ids) or v in seen[col]:
+                        names = [table.schema.columns[p].name for p in col]
+                        raise ExecutionError(f"Duplicate value {v!r} columns {names!r} mein -- ye combination alag hona chahiye")
+                else:
+                    v = values[col]
+                    if v is None:
+                        continue  # like SQL: many KHALI values are allowed in an ANOKHA column
+                    existing = index.get(v)
+                    if (existing is not None and existing not in ignore_row_ids) or v in seen[col]:
+                        name = table.schema.columns[col].name
+                        raise ExecutionError(
+                            f"Duplicate value {v!r} column '{name}' mein -- is column mein har value alag honi chahiye"
+                        )
                 seen[col].add(v)
 
     def _check_fk(self, table: Table, new_rows: list[list]) -> None:
@@ -1054,7 +1541,7 @@ class SelectPlan:
     joins: list[tuple] = field(default_factory=list)  # (Join, bound PAR, hash keys or None)
 
 
-def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, keep_unmatched: bool, null_right: dict):
+def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, kind: str, null_left: dict, null_right: dict):
     """
     Combine every left row with the right rows that satisfy PAR.
 
@@ -1062,9 +1549,48 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, keep_unm
     keyed by y, then each left row finds its partners in O(1).  O(n + m)
     NESTED LOOP (anything else): try every pair.                  O(n * m)
 
-    keep_unmatched = BAAYAN MILAO (LEFT JOIN): a left row with no partner is
-    still kept once, with KHALI for all of the right table's columns.
+    kind:
+      INNER/NATURAL  -- only matched rows (NATURAL just has a synthesised `on`)
+      LEFT   (BAAYAN MILAO)  -- every left row kept once, KHALI-padded if unmatched
+      RIGHT  (DAHINA MILAO)  -- every right row kept once, KHALI-padded if unmatched
+      FULL   (DONO MILAO)    -- both: LEFT semantics, PLUS any right row that
+                                 matched nothing, KHALI-padded on the left side
     """
+    if kind == "RIGHT":
+        # Symmetric to LEFT but on the OTHER side: build the hash index on
+        # left_rows, drive the loop from right_rows -- but the OUTPUT still
+        # looks like "left columns then right columns" (dict order doesn't
+        # matter for evaluate(), only the keys do).
+        if hash_keys is not None:
+            left_key, right_key = hash_keys
+            buckets: dict = {}
+            for l in left_rows:
+                if l[left_key] is not None:
+                    buckets.setdefault(l[left_key], []).append(l)
+
+            def partners(r_row):
+                return buckets.get(r_row[right_key], []) if r_row[right_key] is not None else []
+
+        else:
+
+            def partners(r_row):
+                return left_rows
+
+        out = []
+        for r_row in right_rows:
+            matched = False
+            for l_row in partners(r_row):
+                combined = {**l_row, **r_row}
+                if is_true(evaluate(on, combined)):
+                    out.append(combined)
+                    matched = True
+            if not matched:
+                out.append({**null_left, **r_row})
+        return out
+
+    keep_left_unmatched = kind in ("LEFT", "FULL")
+    keep_right_unmatched = kind == "FULL"
+
     if hash_keys is not None:
         left_key, right_key = hash_keys
         buckets: dict = {}
@@ -1081,6 +1607,7 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, keep_unm
             return right_rows
 
     out = []
+    matched_right_ids: set = set()
     for l_row in left_rows:
         matched = False
         for r_row in partners(l_row):
@@ -1088,8 +1615,16 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, keep_unm
             if is_true(evaluate(on, combined)):  # re-check the full PAR (it may have more conditions)
                 out.append(combined)
                 matched = True
-        if keep_unmatched and not matched:
+                if keep_right_unmatched:
+                    matched_right_ids.add(id(r_row))
+        if keep_left_unmatched and not matched:
             out.append({**l_row, **null_right})
+
+    if keep_right_unmatched:
+        # FULL = LEFT (matched + left-unmatched-padded) UNION right-only-unmatched
+        for r_row in right_rows:
+            if id(r_row) not in matched_right_ids:
+                out.append({**null_left, **r_row})
     return out
 
 

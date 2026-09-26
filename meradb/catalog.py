@@ -73,6 +73,11 @@ class Column:
 class TableSchema:
     name: str
     columns: list[Column] = field(default_factory=list)
+    # Composite (multi-column) constraints -- a plain single-column ANOKHA/MUKHYA
+    # KUNJI still lives on the Column itself (see is_unique above); these are
+    # ONLY for the table-level `ANOKHA (a, b)` / `MUKHYA KUNJI (a, b)` form.
+    composite_unique: list[list[str]] = field(default_factory=list)
+    composite_pk: Optional[list[str]] = None
 
     @property
     def column_names(self) -> list[str]:
@@ -93,7 +98,14 @@ class TableSchema:
 
     @staticmethod
     def from_dict(d: dict) -> "TableSchema":
-        return TableSchema(d["name"], [Column.from_dict(c) for c in d["columns"]])
+        # `composite_unique`/`composite_pk` are backward-compat: older
+        # catalog.json files were written before these existed.
+        return TableSchema(
+            d["name"],
+            [Column.from_dict(c) for c in d["columns"]],
+            composite_unique=d.get("composite_unique", []),
+            composite_pk=d.get("composite_pk"),
+        )
 
 
 class Catalog:
@@ -103,23 +115,34 @@ class Catalog:
         self.db_dir = db_dir
         self.path = os.path.join(db_dir, self.FILE_NAME)
         self.tables: dict[str, TableSchema] = {}
+        self.views: dict[str, str] = {}  # view name -> its DIKHAO source text
         self._load()
 
     def _load(self) -> None:
         if not os.path.exists(self.path):
             self.tables = {}
+            self.views = {}
             return
         with open(self.path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.tables = {name: TableSchema.from_dict(t) for name, t in data["tables"].items()}
+        self.views = data.get("views", {})  # "views" key: absent in old catalog.json files
 
     def save(self) -> None:
         # Same temp-file-then-replace trick as HeapFile.rewrite: never leave
         # a half-written catalog behind if we crash mid-write.
         tmp = self.path + ".tmp"
-        tables = {n: {"name": t.name, "columns": [c.to_dict() for c in t.columns]} for n, t in self.tables.items()}
+        tables = {
+            n: {
+                "name": t.name,
+                "columns": [c.to_dict() for c in t.columns],
+                "composite_unique": t.composite_unique,
+                "composite_pk": t.composite_pk,
+            }
+            for n, t in self.tables.items()
+        }
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"tables": tables}, f, indent=2)
+            json.dump({"tables": tables, "views": self.views}, f, indent=2)
         os.replace(tmp, self.path)
 
     def table_path(self, table: str) -> str:
@@ -140,4 +163,12 @@ class Catalog:
 
     def remove(self, table: str) -> None:
         del self.tables[table]
+        self.save()
+
+    def add_view(self, name: str, query_text: str) -> None:
+        self.views[name] = query_text
+        self.save()
+
+    def remove_view(self, name: str) -> None:
+        del self.views[name]
         self.save()

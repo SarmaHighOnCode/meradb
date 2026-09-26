@@ -262,6 +262,8 @@ HELP_REFERENCE: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Insert / update / delete",
         [
             ("DAALO MEIN t (...) MAAN (...)", "INSERT INTO ... VALUES", "ek ya zyada rows daalo"),
+            ("DAALO MEIN t (...) DIKHAO ...", "INSERT INTO ... SELECT", "query ke result rows daalo"),
+            ("... TAKRAAV PAR BADLO col = expr", "ON CONFLICT DO UPDATE", "collide karne wali row ko UPDATE karo (upsert)"),
             ("BADLO t RAKHO col = expr JAHAN cond", "UPDATE ... SET ... WHERE", "rows badlo"),
             ("MITAO SE t JAHAN cond", "DELETE FROM ... WHERE", "rows hatao"),
         ],
@@ -278,6 +280,10 @@ HELP_REFERENCE: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("umar BEECH a AUR b", "BETWEEN a AND b", "a aur b ke beech, dono included"),
             ("id MEIN (a, b, ...)", "IN (a, b, ...)", "list mein hai kya"),
             ("col HAI [NAHI] KHALI", "IS [NOT] NULL", "KHALI (NULL) check"),
+            ("PEHLA(a, b, ...)", "COALESCE(a, b, ...)", "pehla non-KHALI argument"),
+            ("AGAR c TAB v ... WARNA v KHATAM", "CASE WHEN ... END", "conditional value"),
+            ("col = (DIKHAO ...)", "scalar subquery", "1 column, 0/1 row -- ordinary value ki jagah"),
+            ("col MEIN (DIKHAO ...)", "IN (subquery)", "1 column, koi bhi rows -- membership list"),
         ],
     ),
     (
@@ -298,6 +304,32 @@ HELP_REFERENCE: list[tuple[str, list[tuple[str, str, str]]]] = [
         [
             ("SE t1 a MILAO t2 b PAR cond", "JOIN ... ON", "sirf matching rows (INNER JOIN)"),
             ("SE t1 a BAAYAN MILAO t2 b PAR cond", "LEFT JOIN ... ON", "har t1 row; match na mile to KHALI"),
+            ("SE t1 a DAHINA MILAO t2 b PAR cond", "RIGHT JOIN ... ON", "har t2 row; match na mile to KHALI"),
+            ("SE t1 a DONO MILAO t2 b PAR cond", "FULL OUTER JOIN ... ON", "har row dono taraf se, KHALI-padded"),
+            ("SE t1 SAMAAN MILAO t2", "NATURAL JOIN", "PAR nahi likhna -- shared column names khud match hote hain"),
+        ],
+    ),
+    (
+        "Views",
+        [
+            ("BANAO VIEW naam KAHO DIKHAO ...", "CREATE VIEW ... AS", "saved query -- har baar fresh chalti hai"),
+            ("HATAO VIEW naam", "DROP VIEW", "view hatao"),
+            ("DIKHAO VIEWS", "SHOW VIEWS", "saari views list karo"),
+        ],
+    ),
+    (
+        "Set operations",
+        [
+            ("q1 SANYUKT q2", "q1 UNION q2", "dono ki rows, deduped"),
+            ("q1 SAAJHA q2", "q1 INTERSECT q2", "sirf dono mein maujood rows"),
+            ("q1 CHHODKAR q2", "q1 EXCEPT q2", "q1 ki rows jo q2 mein nahi hain"),
+        ],
+    ),
+    (
+        "Composite constraints",
+        [
+            ("ANOKHA (a, b)", "UNIQUE (a, b)", "multi-column uniqueness"),
+            ("MUKHYA KUNJI (a, b)", "PRIMARY KEY (a, b)", "multi-column primary key"),
         ],
     ),
     (

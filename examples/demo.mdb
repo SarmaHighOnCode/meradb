@@ -68,6 +68,73 @@ DIKHAO c.title, GINO(s.id) KAHO enrolled, AUSAT(s.cgpa) KAHO avg_cgpa
     SE courses c BAAYAN MILAO students s PAR s.cid = c.id
     SAMOOH c.title KRAM enrolled ULTA;
 
+-- ======================= SUBQUERIES =======================
+DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);                 -- scalar subquery
+DIKHAO title SE courses JAHAN id MEIN (DIKHAO cid SE students JAHAN cid HAI NAHI KHALI); -- IN subquery
+DIKHAO s.naam SE students s
+    JAHAN s.cgpa > (DIKHAO AUSAT(s2.cgpa) SE students s2 JAHAN s2.shehar = s.shehar);  -- correlated
+SAMJHAO DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);
+
+-- ======================= VIEWS =======================
+BANAO VIEW delhi_students KAHO DIKHAO naam, cgpa SE students JAHAN shehar = 'Delhi';
+DIKHAO * SE delhi_students KRAM naam;
+DIKHAO VIEWS;
+BATAO delhi_students;
+DAALO MEIN delhi_students MAAN ('X', 1);                     -- FAILS ON PURPOSE: can't insert into a VIEW
+HATAO VIEW delhi_students;
+
+-- ======================= SET OPERATIONS =======================
+DIKHAO naam SE students JAHAN shehar = 'Delhi'
+SANYUKT
+DIKHAO naam SE students JAHAN shehar = 'Mumbai';                                       -- UNION
+DIKHAO naam SE students JAHAN cgpa > 8
+SAAJHA
+DIKHAO naam SE students JAHAN shehar = 'Delhi';                                        -- INTERSECT
+DIKHAO naam SE students
+CHHODKAR
+DIKHAO naam SE students JAHAN shehar = 'Delhi';                                        -- EXCEPT
+
+-- ======================= NATURAL / RIGHT / FULL OUTER JOIN =======================
+BANAO TABLE depts (dept_id INT MUKHYA KUNJI, dname TEXT);
+BANAO TABLE staff (id INT MUKHYA KUNJI, naam TEXT, dept_id INT);
+DAALO MEIN depts MAAN (1, 'CS'), (2, 'EE'), (3, 'ME');
+DAALO MEIN staff MAAN (1, 'Meena', 1), (2, 'Rohit', 2), (3, 'Zara', KHALI);
+DIKHAO naam, dname SE staff SAMAAN MILAO depts;                             -- NATURAL JOIN
+DIKHAO naam, dname SE staff DAHINA MILAO depts PAR staff.dept_id = depts.dept_id;  -- RIGHT JOIN: ME has no staff
+DIKHAO naam, dname SE staff DONO MILAO depts PAR staff.dept_id = depts.dept_id;    -- FULL OUTER JOIN: both sides
+HATAO TABLE staff;
+HATAO TABLE depts;
+
+-- ======================= PEHLA (COALESCE) / CASE WHEN =======================
+DIKHAO naam, PEHLA(shehar, 'Unknown') SE students KRAM naam;
+DIKHAO naam,
+    AGAR cgpa >= 9 TAB 'Excellent'
+    AGAR cgpa >= 8 TAB 'Good'
+    WARNA 'Average'
+    KHATAM KAHO grade
+    SE students KRAM naam;
+
+-- ======================= INSERT ... DIKHAO and TAKRAAV PAR BADLO (upsert) =======================
+BANAO TABLE toppers (id INT MUKHYA KUNJI, naam TEXT);
+DAALO MEIN toppers (id, naam) DIKHAO id, naam SE students JAHAN cgpa > 8.5;
+DIKHAO * SE toppers KRAM id;
+DAALO MEIN toppers MAAN (2, 'Priya Verma') TAKRAAV PAR BADLO naam = naam;  -- id 2 already exists -> UPDATE not INSERT
+DIKHAO * SE toppers JAHAN id = 2;
+HATAO TABLE toppers;
+
+-- ======================= composite (multi-column) ANOKHA / MUKHYA KUNJI =======================
+BANAO TABLE enrollments (
+    id         INT MUKHYA KUNJI,
+    student_id INT SANDARBH students(id),
+    course_id  INT SANDARBH courses(id),
+    grade      TEXT,
+    ANOKHA (student_id, course_id)                          -- a student can enroll in a course only once
+);
+DAALO MEIN enrollments MAAN (1, 1, 10, 'A'), (2, 1, 20, 'B');
+DAALO MEIN enrollments MAAN (3, 1, 10, 'C');                 -- FAILS ON PURPOSE: (1, 10) already used
+BATAO enrollments;
+HATAO TABLE enrollments;
+
 -- ======================= QUERY PLANS (SAMJHAO = EXPLAIN) =======================
 SAMJHAO DIKHAO * SE students JAHAN id = 3;                  -- uses the hash index
 SAMJHAO DIKHAO * SE students JAHAN cgpa > 8;                -- full scan

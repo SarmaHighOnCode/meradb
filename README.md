@@ -52,13 +52,18 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
   - create, drop and use databases
   - create, drop, truncate, alter (add, drop, rename column) and rename tables
   - describe a table, list tables
-- **Constraints:** PRIMARY KEY, NOT NULL, UNIQUE, DEFAULT, FOREIGN KEY (RESTRICT), CHECK
+- **Constraints:** PRIMARY KEY, NOT NULL, UNIQUE, DEFAULT, FOREIGN KEY (RESTRICT), CHECK,
+  composite (multi-column) UNIQUE / PRIMARY KEY
 - **Full DML:**
-  - multi-row INSERT, UPDATE, DELETE
+  - multi-row INSERT (including `INSERT ... SELECT`), UPDATE, DELETE
+  - a simplified upsert: `ON CONFLICT DO UPDATE`
   - SELECT with `WHERE`, `ORDER BY`, `LIMIT`, `DISTINCT`, column aliases, `GROUP BY` / `HAVING`
   - `COUNT SUM AVG MIN MAX`
-  - `LIKE`, `BETWEEN`, `IN`, `IS NULL`, arithmetic
-- **Joins:** INNER and LEFT, with table aliases (`s.naam`)
+  - `LIKE`, `BETWEEN`, `IN`, `IS NULL`, arithmetic, `COALESCE`/NVL, `CASE WHEN`
+  - subqueries: scalar, `IN (subquery)`, correlated
+  - `UNION` / `INTERSECT` / `EXCEPT`
+- **Views:** `CREATE VIEW`/`DROP VIEW`, re-materialized fresh on every read
+- **Joins:** INNER, LEFT, RIGHT, FULL OUTER and NATURAL, with table aliases (`s.naam`)
 - **Types:** INT, FLOAT, TEXT, BOOL, DATE, `VARCHAR(n)`, `NUMBER(p,s)`
 - **Transactions:** `BEGIN / COMMIT / ROLLBACK`, with crash recovery
 - **Query plans:** `EXPLAIN` shows index lookup vs full scan and hash join vs nested loop
@@ -325,7 +330,11 @@ The full reference with the formal grammar is in [docs/LANGUAGE.md](docs/LANGUAG
 | `WARNA` | DEFAULT | | `KHALI` | NULL |
 | `SANDARBH` | REFERENCES (foreign key) | | `SACH` / `JHOOTH` | TRUE / FALSE |
 | `SHART` | CHECK | | `SHURU` / `PAKKA` / `WAPAS` | BEGIN / COMMIT / ROLLBACK |
-| | | | `SAMJHAO` | EXPLAIN |
+| `BANAO VIEW ... KAHO` | CREATE VIEW ... AS | | `SAMJHAO` | EXPLAIN |
+| `HATAO VIEW` / `DIKHAO VIEWS` | DROP VIEW / SHOW VIEWS | | `SANYUKT` / `SAAJHA` / `CHHODKAR` | UNION / INTERSECT / EXCEPT |
+| `DAHINA MILAO` / `DONO MILAO` | RIGHT JOIN / FULL OUTER JOIN | | `SAMAAN MILAO` | NATURAL JOIN |
+| `PEHLA(...)` | COALESCE(...) / NVL | | `AGAR ... TAB ... WARNA ... KHATAM` | CASE WHEN ... THEN ... ELSE ... END |
+| `TAKRAAV PAR BADLO` | ON CONFLICT DO UPDATE | | `ANOKHA (a,b)` / `MUKHYA KUNJI (a,b)` | composite UNIQUE / PRIMARY KEY |
 
 Aggregates: `GINO` (COUNT), `KUL` (SUM), `AUSAT` (AVG), `NYUNTAM` (MIN), `ADHIKTAM` (MAX).
 The English names `COUNT SUM AVG MIN MAX` work too.

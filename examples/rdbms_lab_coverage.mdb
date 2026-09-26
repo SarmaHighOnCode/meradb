@@ -1,0 +1,391 @@
+-- ============================================================================
+-- RDBMS Lab & Theory coverage script  (CSC2103 / CSC2131, MUJ)
+--
+-- Every topic in the two course hand-outs, run as a REAL MeraDB command.
+-- Run it with:
+--     meradb run examples/rdbms_lab_coverage.mdb
+-- or paste sections into `meradb shell` / `meradb workbench` one at a time.
+--
+-- Each section is headed "-- Lab N:" or "-- Theory:" matching the hand-out's
+-- own numbering, so you can trace every query back to the syllabus line it
+-- demonstrates. Where MeraDB has NO equivalent command at all (GRANT/REVOKE,
+-- SAVEPOINT, PL/SQL procedures/cursors/triggers -- users/privileges/triggers/
+-- procedures are a separate, later phase of work), that is stated plainly in
+-- a comment right there -- nothing here pretends to support something it
+-- doesn't. See the "NOT SUPPORTED" summary at the very end for the complete
+-- list in one place. Subqueries, VIEWs, set operations, NATURAL/RIGHT/FULL
+-- OUTER JOIN, COALESCE/CASE WHEN, INSERT ... SELECT/upsert and composite
+-- UNIQUE/PRIMARY KEY are now real, working MeraDB commands -- see the
+-- sections below.
+--
+-- Schema: a small "college" -- departments, teachers (self-referencing, for
+-- the self-join topic), courses, students, enrollments.
+-- ============================================================================
+
+BANAO DATABASE college_lab;
+ISTEMAL college_lab;
+
+
+-- ============================================================================
+-- Lab 1: ER diagram -> relational model
+--   "Convert a Logical Model to a Relational Model / Mapping Entities and
+--    Attributes / Mapping Primary and Foreign Keys"
+-- MeraDB has no ER-diagram tool (draw that in ERDplus/Dia as the lab asks);
+-- what follows is the RELATIONAL SCHEMA that diagram maps to -- entities
+-- become tables, attributes become columns, relationships become foreign
+-- keys (SANDARBH). This one script IS "Lab 3" and "Lab 4" too (DDL and
+-- constraints), since MeraDB does both in the same BANAO TABLE statement.
+-- ============================================================================
+
+-- Lab 3: DDL -- creating tables, data types (INT/ANK, FLOAT/DASHAMLAV,
+-- TEXT/SHABD, VARCHAR(n), DATE/TAREEKH, BOOL/HAAN_NA)
+-- Lab 4: Constraints -- NOT NULL (ZAROORI), UNIQUE (ANOKHA),
+--        PRIMARY KEY (MUKHYA KUNJI), FOREIGN KEY (SANDARBH), CHECK (SHART)
+
+BANAO TABLE departments (
+    id    INT         MUKHYA KUNJI,
+    naam  VARCHAR(40)  ZAROORI ANOKHA
+);
+
+BANAO TABLE teachers (
+    id        INT         MUKHYA KUNJI,
+    naam      VARCHAR(40) ZAROORI,
+    dept_id   INT         SANDARBH departments(id),
+    mentor_id INT         SANDARBH teachers(id),   -- self-reference: a teacher's head of dept
+    salary    FLOAT       SHART (salary > 0)
+);
+
+BANAO TABLE courses (
+    id         INT         MUKHYA KUNJI,
+    title      VARCHAR(60) ZAROORI ANOKHA,
+    dept_id    INT         SANDARBH departments(id),
+    teacher_id INT         SANDARBH teachers(id),
+    credits    INT         WARNA 3 SHART (credits BEECH 1 AUR 6)
+);
+
+BANAO TABLE students (
+    id       INT         MUKHYA KUNJI,
+    naam     VARCHAR(40) ZAROORI,
+    dob      DATE,
+    cgpa     FLOAT       WARNA 0.0 SHART (cgpa BEECH 0 AUR 10),
+    dept_id  INT         SANDARBH departments(id)
+);
+
+-- Enrollment is the classic many-to-many "junction table" between students
+-- and courses. A composite (multi-column) UNIQUE constraint enforces that a
+-- student can only enroll in the same course once -- the engine rejects a
+-- second (student_id, course_id) pair, not just a data-entry discipline.
+BANAO TABLE enrollments (
+    id          INT  MUKHYA KUNJI,
+    student_id  INT  SANDARBH students(id),
+    course_id   INT  SANDARBH courses(id),
+    grade       VARCHAR(2),
+    ANOKHA (student_id, course_id)
+);
+
+DIKHAO TABLES;
+BATAO departments;
+BATAO teachers;
+BATAO courses;
+BATAO students;
+BATAO enrollments;
+
+
+-- ============================================================================
+-- Lab 3 (continued): "Modifying a Table" -- ALTER TABLE equivalents
+-- ============================================================================
+
+SUDHARO TABLE students JODO email TEXT;          -- ALTER TABLE ... ADD COLUMN
+SUDHARO TABLE students HATAO email;              -- ALTER TABLE ... DROP COLUMN
+SUDHARO TABLE courses COLUMN title NAYA_NAAM course_title;   -- RENAME COLUMN
+SUDHARO TABLE courses COLUMN course_title NAYA_NAAM title;   -- (renamed back)
+
+
+-- ============================================================================
+-- Lab 4 (continued): constraints doing their job -- each of these FAILS
+-- on purpose, to prove the constraint is real, not just decoration.
+-- ============================================================================
+
+DAALO MEIN departments (id, naam) MAAN (1, 'Computer Science');  -- ok
+DAALO MEIN departments (id, naam) MAAN (1, 'Duplicate id');      -- FAILS: MUKHYA KUNJI
+DAALO MEIN departments (id) MAAN (2);                            -- FAILS: naam ZAROORI
+DAALO MEIN courses (id, title, dept_id) MAAN (900, 'X', 999);    -- FAILS: SANDARBH (999 not a dept)
+DAALO MEIN students (id, naam, cgpa) MAAN (900, 'Bad', 11);      -- FAILS: SHART cgpa <= 10
+
+
+-- ============================================================================
+-- Lab 5: DML -- INSERT statements, updating column values, deleting rows,
+-- DEFAULT values, INSERT ... SELECT (multi-table insert from a query), and a
+-- simplified upsert (TAKRAAV PAR BADLO -- MeraDB's honestly-scoped equivalent
+-- of MERGE: it only rescues a conflict against an EXISTING row, it doesn't
+-- do MERGE's full "match a source table, insert or update or delete" dance).
+-- ============================================================================
+
+DAALO MEIN departments (id, naam) MAAN (2, 'Electronics'), (3, 'Mechanical');
+
+DAALO MEIN teachers (id, naam, dept_id, mentor_id, salary) MAAN
+    (1, 'Dr. Rao',   1, KHALI, 120000),   -- head of CS: no mentor
+    (2, 'Dr. Iyer',  1, 1,     90000),    -- mentored by Dr. Rao
+    (3, 'Dr. Menon', 2, KHALI, 110000);
+
+DAALO MEIN courses (id, title, dept_id, teacher_id, credits) MAAN
+    (10, 'DBMS', 1, 1, 4),
+    (20, 'Operating Systems', 1, 2, 4),
+    (30, 'Digital Circuits', 2, 3, 3),
+    (40, 'Data Structures', 1, 2, KHALI);      -- credits left out -> WARNA default 3
+
+DAALO MEIN students (id, naam, dob, cgpa, dept_id) MAAN
+    (1, 'Ravi',  '2004-05-12', 8.4, 1),
+    (2, 'Priya', '2004-08-20', 9.1, 1),
+    (3, 'Aman',  '2003-11-02', 7.2, 2),
+    (4, 'Sneha', '2004-01-15', 8.8, 1),
+    (5, 'Karan', KHALI,        6.9, 3);        -- dob left out -> KHALI
+
+DAALO MEIN enrollments (id, student_id, course_id, grade) MAAN
+    (1, 1, 10, 'A'), (2, 1, 20, 'B'), (3, 2, 10, 'A'), (4, 2, 40, 'A'),
+    (5, 3, 30, 'C'), (6, 4, 10, 'B'), (7, 4, 30, 'B'), (8, 5, 30, KHALI);
+
+-- INSERT ... SELECT: copy rows straight from a query (no MAAN tuples needed)
+BANAO TABLE cs_students (id INT MUKHYA KUNJI, naam VARCHAR(40));
+DAALO MEIN cs_students (id, naam) DIKHAO id, naam SE students JAHAN dept_id = 1;
+DIKHAO * SE cs_students;
+HATAO TABLE cs_students;
+
+-- Simplified upsert: TAKRAAV PAR BADLO ("on conflict, update"). id 1
+-- already exists, so this UPDATEs it instead of failing -- the value stays
+-- the same ('Computer Science') on purpose, so later sections that refer to
+-- it by name still work; only the "0 inserted, 1 updated" message proves the
+-- collision was actually caught and rescued, not just silently skipped.
+DAALO MEIN departments (id, naam) MAAN (1, 'Computer Science') TAKRAAV PAR BADLO naam = naam;
+
+-- UPDATE ... SET, DELETE FROM
+BADLO teachers RAKHO salary = salary + 5000 JAHAN id = 2;
+DAALO MEIN students (id, naam, cgpa) MAAN (99, 'Temp', 5.0);
+MITAO SE students JAHAN id = 99;
+
+DIKHAO * SE students;
+DIKHAO * SE enrollments;
+
+
+-- ============================================================================
+-- Lab 6: SELECT and WHERE -- columns, rows, LIMIT, comparison operators
+-- ============================================================================
+
+DIKHAO naam, cgpa SE students;                          -- choosing columns
+DIKHAO * SE students JAHAN dept_id = 1;                 -- filtering rows
+DIKHAO naam SE students KRAM cgpa ULTA SIRF 2;           -- LIMIT rows selected
+DIKHAO naam, cgpa SE students JAHAN cgpa >= 8 AUR cgpa != 9.1;  -- comparison operators
+
+
+-- ============================================================================
+-- Lab 7: WHERE, ORDER BY, group functions
+--   logical comparisons & precedence, sorting rows, COUNT/DISTINCT/AVG/MAX/MIN,
+--   GROUP BY and HAVING
+-- NVL/COALESCE is PEHLA(...), and CASE WHEN is AGAR ... TAB ... WARNA ... KHATAM.
+-- ============================================================================
+
+-- logical comparisons and precedence (AUR binds tighter than YA, like AND/OR)
+DIKHAO naam SE students JAHAN dept_id = 1 YA cgpa > 9;
+DIKHAO naam SE students JAHAN (dept_id = 1 YA dept_id = 2) AUR cgpa > 7;
+
+-- sorting rows
+DIKHAO naam, dept_id SE students KRAM dept_id SEEDHA, cgpa ULTA;
+
+-- group functions: COUNT, DISTINCT, AVG, MAX, MIN  (GINO, ALAG, AUSAT, ADHIKTAM, NYUNTAM)
+DIKHAO GINO(*) KAHO total_students SE students;
+DIKHAO ALAG dept_id SE students;
+DIKHAO AUSAT(cgpa) KAHO avg_cgpa, ADHIKTAM(cgpa) KAHO topper, NYUNTAM(cgpa) KAHO lowest SE students;
+
+-- HAI KHALI still tests for NULL, e.g. an ungraded enrollment
+DIKHAO course_id SE enrollments JAHAN grade HAI KHALI;
+
+-- PEHLA/COALESCE: first non-KHALI argument (NVL's equivalent)
+DIKHAO course_id, PEHLA(grade, 'Ungraded') SE enrollments;
+
+-- CASE WHEN
+DIKHAO naam,
+    AGAR cgpa >= 9 TAB 'Distinction'
+    AGAR cgpa >= 7 TAB 'First Class'
+    WARNA 'Needs Improvement'
+    KHATAM KAHO remark
+    SE students;
+
+-- GROUP BY and HAVING
+DIKHAO dept_id, GINO(*) KAHO students_here, AUSAT(cgpa) KAHO avg_cgpa
+    SE students SAMOOH dept_id KRAM avg_cgpa ULTA;
+DIKHAO dept_id SE students SAMOOH dept_id JINKA GINO(*) > 1;   -- HAVING
+
+
+-- ============================================================================
+-- Lab 8: JOINs -- cross, natural, inner, self, equijoin/cartesian, outer
+-- ============================================================================
+
+-- Cross join / Cartesian product: PAR SACH (always true) matches every row
+-- with every row, exactly like CROSS JOIN / a comma join with no WHERE.
+DIKHAO d.naam, c.title SE departments d MILAO courses c PAR SACH SIRF 6;
+
+-- Natural join: SAMAAN MILAO needs no PAR at all -- it matches every column
+-- name shared between the two tables (here: dept_id, present in both).
+DIKHAO students.naam, departments.naam SE students SAMAAN MILAO departments SIRF 3;
+
+-- Inner join / equijoin
+DIKHAO s.naam, d.naam SE students s MILAO departments d PAR s.dept_id = d.id;
+
+-- Self join: the same table, two aliases -- teacher and their mentor
+DIKHAO t.naam KAHO teacher, m.naam KAHO mentor
+    SE teachers t BAAYAN MILAO teachers m PAR t.mentor_id = m.id;
+
+-- Non-equijoin (a join condition that isn't `=`)
+DIKHAO s.naam, c.title SE students s MILAO courses c PAR s.cgpa * 10 > c.credits * 20;
+
+-- Outer joins: LEFT (BAAYAN), RIGHT (DAHINA) and FULL OUTER (DONO) are all real
+DIKHAO c.title, GINO(e.id) KAHO enrolled
+    SE courses c BAAYAN MILAO enrollments e PAR e.course_id = c.id  -- LEFT JOIN
+    SAMOOH c.title KRAM enrolled ULTA;
+DIKHAO e.id, c.title
+    SE enrollments e DAHINA MILAO courses c PAR e.course_id = c.id; -- RIGHT JOIN: every course
+DIKHAO t.naam, d.naam
+    SE teachers t DONO MILAO departments d PAR t.dept_id = d.id;   -- FULL OUTER JOIN: both sides
+
+
+-- ============================================================================
+-- Lab 9: Subqueries -- single-row (scalar), multi-row (IN), correlated
+-- `(DIKHAO ...)` is now a real expression: it can appear on the right of a
+-- comparison (scalar: exactly 1 column, 0 or 1 row) or inside MEIN (IN-list:
+-- exactly 1 column, any number of rows), and it may reference the outer
+-- query's row (correlated), re-running once per outer row when it does.
+-- ============================================================================
+
+-- Single-row (scalar) subquery -- SQL: WHERE cgpa > (SELECT AVG(cgpa) FROM students)
+DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);
+
+-- Multi-row (IN) subquery -- SQL: WHERE dept_id IN (SELECT id FROM departments WHERE naam=...)
+DIKHAO naam SE students
+    JAHAN dept_id MEIN (DIKHAO id SE departments JAHAN naam = 'Computer Science');
+
+-- Correlated subquery -- SQL:
+--   SELECT title FROM courses c WHERE (SELECT COUNT(*) FROM enrollments e WHERE e.course_id=c.id) > 1;
+DIKHAO c.title SE courses c
+    JAHAN (DIKHAO GINO(*) SE enrollments e JAHAN e.course_id = c.id) > 1;
+SAMJHAO DIKHAO c.title SE courses c
+    JAHAN (DIKHAO GINO(*) SE enrollments e JAHAN e.course_id = c.id) > 1;   -- shows "SUBQUERY (correlated)"
+
+
+-- ============================================================================
+-- Lab 10: Views
+-- BANAO VIEW stores a query's SOURCE TEXT and re-runs it fresh every time the
+-- view's name is used in SE/MILAO -- so it always reflects the CURRENT data
+-- and schema (see docs/ARCHITECTURE.md's view-materialization section).
+-- ============================================================================
+
+BANAO VIEW cs_department_students KAHO
+    DIKHAO s.naam KAHO naam, s.cgpa KAHO cgpa SE students s MILAO departments d PAR s.dept_id = d.id
+        JAHAN d.naam = 'Computer Science';
+DIKHAO * SE cs_department_students KRAM cgpa ULTA;
+DIKHAO VIEWS;
+BATAO cs_department_students;
+DAALO MEIN cs_department_students MAAN ('X', 1);   -- FAILS ON PURPOSE: a view can't be written to
+HATAO VIEW cs_department_students;
+
+
+-- ============================================================================
+-- Lab 11: Privileges
+-- MeraDB has ONE optional server-wide password (meradb start --password ...),
+-- not a per-user/per-table permission system. There is no GRANT, no REVOKE,
+-- no concept of a user at all inside a database -- every connected client
+-- can do everything. See docs/SERVER.md for the password itself.
+-- ============================================================================
+
+
+-- ============================================================================
+-- Lab 12: Transaction Control Language
+--   Rollback, Commit, Savepoint, Triggers, Stored Procedures
+-- MeraDB has SHURU/PAKKA/WAPAS (BEGIN/COMMIT/ROLLBACK). It has no SAVEPOINT
+-- (only the whole transaction can be rolled back, not part of it), and no
+-- triggers or stored procedures at all (no PL/SQL equivalent language).
+-- ============================================================================
+
+SHURU;                                                    -- BEGIN
+BADLO teachers RAKHO salary = salary * 1.1 JAHAN dept_id = 1;
+DIKHAO naam, salary SE teachers JAHAN dept_id = 1;        -- see the raise, uncommitted
+WAPAS;                                                    -- ROLLBACK: undo it
+DIKHAO naam, salary SE teachers JAHAN dept_id = 1;        -- back to the original salaries
+
+SHURU;
+BADLO teachers RAKHO salary = salary * 1.1 JAHAN dept_id = 1;
+PAKKA;                                                    -- COMMIT: keep it
+DIKHAO naam, salary SE teachers JAHAN dept_id = 1;        -- the raise stayed
+
+
+-- ============================================================================
+-- Theory: Relational Algebra operators, mapped to MeraDB
+--   sigma (select/filter)   -> JAHAN            pi (project/columns) -> the DIKHAO column list
+--   join (natural/theta)    -> MILAO ... PAR    cartesian product    -> MILAO ... PAR SACH
+--   rename                  -> KAHO             union/intersect/difference -> SANYUKT/SAAJHA/CHHODKAR
+-- ============================================================================
+
+DIKHAO naam SE students JAHAN dept_id = 1;                          -- sigma then pi
+DIKHAO naam KAHO student_name SE students SIRF 3;                   -- rho (rename)
+
+-- union / intersect / set-difference (all three dedupe, like bare SQL UNION/
+-- INTERSECT/EXCEPT -- there is no ALL variant that keeps duplicates)
+DIKHAO naam SE students JAHAN dept_id = 1
+SANYUKT
+DIKHAO naam SE students JAHAN cgpa > 9;                              -- union
+DIKHAO naam SE students JAHAN dept_id = 1
+SAAJHA
+DIKHAO naam SE students JAHAN cgpa > 8;                              -- intersect
+DIKHAO naam SE students
+CHHODKAR
+DIKHAO naam SE students JAHAN dept_id = 1;                           -- set-difference
+
+
+-- ============================================================================
+-- Theory: Storage, indexing & query plans
+--   MUKHYA KUNJI / ANOKHA columns get an automatic hash index; SAMJHAO shows
+--   whether a query actually used it (INDEX LOOKUP) or read every row
+--   (FULL SCAN) -- this is the concrete, runnable side of the indexing,
+--   hashing and B-Tree/B+Tree material in the theory syllabus.
+-- ============================================================================
+
+SAMJHAO DIKHAO * SE students JAHAN id = 2;                -- uses the MUKHYA KUNJI hash index
+SAMJHAO DIKHAO * SE students JAHAN cgpa > 8;              -- no index on cgpa -> full scan
+SAMJHAO DIKHAO s.naam, d.naam SE students s MILAO departments d PAR s.dept_id = d.id;  -- HASH JOIN
+
+
+-- ============================================================================
+-- Theory: distributed / parallel databases, NoSQL, RAID
+-- MeraDB is a single-file, single-machine engine: no sharding, replication,
+-- clustering or NoSQL document/key-value model, and RAID is an operating
+-- system/hardware disk-redundancy topic below the database entirely. These
+-- stay purely conceptual for this course -- there is nothing to run here.
+-- ============================================================================
+
+
+-- ============================================================================
+-- Clean up, so this script can be run again from a clean slate.
+-- ============================================================================
+ISTEMAL main;
+HATAO DATABASE college_lab;
+
+
+-- ============================================================================
+-- NOT SUPPORTED BY MERADB -- the complete list, all in one place
+-- (Phase A of this project's gap features -- subqueries, VIEWs, set
+-- operations, NATURAL/RIGHT/FULL OUTER JOIN, COALESCE/CASE WHEN, INSERT ...
+-- SELECT, upsert, and composite UNIQUE/PRIMARY KEY -- have all been added
+-- and are demonstrated as real, working commands above. What remains below
+-- is Phase B's territory: users/privileges/triggers/procedures.)
+--   GRANT / REVOKE / per-user privileges (only one whole-server password)
+--   SAVEPOINT (a transaction can only be committed or rolled back whole)
+--   Stored procedures, functions, cursors, triggers (no PL/SQL equivalent)
+--   MERGE's full "match a source table, insert/update/delete" form (the
+--     simplified TAKRAAV PAR BADLO upsert above only rescues a conflict
+--     against an existing row -- it isn't a full MERGE statement)
+-- Everything else in both hand-outs -- DDL, all constraint types (including
+-- composite), DML (including INSERT ... SELECT and upsert), SELECT/WHERE/
+-- ORDER BY/LIMIT, aggregates, GROUP BY/HAVING, every join kind (cross/inner/
+-- self/natural/left/right/full outer), subqueries, VIEWs, set operations,
+-- COALESCE/CASE WHEN, transactions, and query plans -- is a real, working
+-- MeraDB command, demonstrated above.
+-- ============================================================================

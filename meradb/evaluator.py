@@ -19,16 +19,47 @@ filtered out. This is the #1 thing people get wrong about SQL NULLs.
 import re
 from datetime import date
 from functools import lru_cache
-from typing import Iterator
+from typing import Iterator, Optional
 
 from . import ast_nodes as ast
 from .datatypes import format_value, parse_date
 from .errors import ExecutionError
 
 
-def evaluate(expr: ast.Expr, row: dict):
+def evaluate(expr: ast.Expr, row: dict, subqueries: Optional[dict] = None):
     if isinstance(expr, ast.Literal):
         return expr.value
+
+    if isinstance(expr, (ast.Subquery, ast.InSubquery)):
+        # The engine pre-computes every subquery's result for THIS outer row
+        # before calling evaluate() (see Engine._run_subquery / find_subqueries)
+        # -- evaluate() itself never executes anything, it only looks the
+        # answer up by node identity. This keeps evaluator.py free of
+        # engine-level concerns (no Catalog/Table/planner imports here).
+        if subqueries is None or id(expr) not in subqueries:
+            raise ExecutionError("Subquery ka result pehle se ready nahi tha (internal error)")
+        value = subqueries[id(expr)]
+        if isinstance(expr, ast.Subquery):
+            return value  # already reduced to a scalar by the engine
+        # InSubquery: `value` is the list of membership values
+        left = evaluate(expr.left, row, subqueries)
+        if left is None:
+            return None
+        is_member = any(left == v for v in value if v is not None)
+        return (not is_member) if expr.negated else is_member
+
+    if isinstance(expr, ast.Coalesce):
+        for arg in expr.args:
+            v = evaluate(arg, row, subqueries)
+            if v is not None:
+                return v
+        return None
+
+    if isinstance(expr, ast.CaseWhen):
+        for cond, value in expr.branches:
+            if is_true(evaluate(cond, row, subqueries)):
+                return evaluate(value, row, subqueries)
+        return evaluate(expr.else_, row, subqueries) if expr.else_ is not None else None
 
     if isinstance(expr, ast.ColumnRef):
         if expr.name not in row:
@@ -36,11 +67,11 @@ def evaluate(expr: ast.Expr, row: dict):
         return row[expr.name]
 
     if isinstance(expr, ast.IsNull):
-        is_null = evaluate(expr.expr, row) is None
+        is_null = evaluate(expr.expr, row, subqueries) is None
         return not is_null if expr.negated else is_null
 
     if isinstance(expr, ast.UnaryOp):
-        value = evaluate(expr.operand, row)
+        value = evaluate(expr.operand, row, subqueries)
         if value is None:
             return None
         if expr.op == "-":
@@ -52,12 +83,12 @@ def evaluate(expr: ast.Expr, row: dict):
 
     if isinstance(expr, ast.BinaryOp):
         if expr.op == "AUR":
-            return _and(expr, row)
+            return _and(expr, row, subqueries)
         if expr.op == "YA":
-            return _or(expr, row)
+            return _or(expr, row, subqueries)
 
-        left = evaluate(expr.left, row)
-        right = evaluate(expr.right, row)
+        left = evaluate(expr.left, row, subqueries)
+        right = evaluate(expr.right, row, subqueries)
         if left is None or right is None:
             return None  # anything combined with KHALI is KHALI
         if expr.op in ("=", "!=", "<", "<=", ">", ">="):
@@ -92,12 +123,12 @@ def is_true(value) -> bool:
 # ----------------------------------------------------------------------------
 
 
-def _and(expr: ast.BinaryOp, row: dict):
-    left = evaluate(expr.left, row)
+def _and(expr: ast.BinaryOp, row: dict, subqueries=None):
+    left = evaluate(expr.left, row, subqueries)
     _require_bool_or_null(left, "AUR")
     if left is False:
         return False  # short-circuit: no need to look at the right side
-    right = evaluate(expr.right, row)
+    right = evaluate(expr.right, row, subqueries)
     _require_bool_or_null(right, "AUR")
     if right is False:
         return False
@@ -106,12 +137,12 @@ def _and(expr: ast.BinaryOp, row: dict):
     return True
 
 
-def _or(expr: ast.BinaryOp, row: dict):
-    left = evaluate(expr.left, row)
+def _or(expr: ast.BinaryOp, row: dict, subqueries=None):
+    left = evaluate(expr.left, row, subqueries)
     _require_bool_or_null(left, "YA")
     if left is True:
         return True
-    right = evaluate(expr.right, row)
+    right = evaluate(expr.right, row, subqueries)
     _require_bool_or_null(right, "YA")
     if right is True:
         return True
@@ -238,6 +269,17 @@ def column_refs(expr, skip_aggregates: bool = False) -> Iterator[str]:
         yield from column_refs(expr.expr, skip_aggregates)
     elif isinstance(expr, ast.FuncCall) and not skip_aggregates:
         yield from column_refs(expr.arg, skip_aggregates)
+    elif isinstance(expr, ast.Coalesce):
+        for arg in expr.args:
+            yield from column_refs(arg, skip_aggregates)
+    elif isinstance(expr, ast.CaseWhen):
+        for cond, value in expr.branches:
+            yield from column_refs(cond, skip_aggregates)
+            yield from column_refs(value, skip_aggregates)
+        yield from column_refs(expr.else_, skip_aggregates)
+    # NOTE: no case for Subquery/InSubquery on purpose -- a subquery's own
+    # internal columns are not "this query's" columns for grouping validation
+    # (they get bound and validated separately when the subquery itself is planned).
 
 
 def column_ref_nodes(expr) -> Iterator[ast.ColumnRef]:
@@ -272,6 +314,43 @@ def find_aggregates(expr) -> Iterator[ast.FuncCall]:
         yield from find_aggregates(expr.operand)
     elif isinstance(expr, ast.IsNull):
         yield from find_aggregates(expr.expr)
+    elif isinstance(expr, ast.Coalesce):
+        for arg in expr.args:
+            yield from find_aggregates(arg)
+    elif isinstance(expr, ast.CaseWhen):
+        for cond, value in expr.branches:
+            yield from find_aggregates(cond)
+            yield from find_aggregates(value)
+        yield from find_aggregates(expr.else_)
+
+
+def find_subqueries(expr) -> "Iterator[ast.Subquery | ast.InSubquery]":
+    """Every Subquery/InSubquery node inside an expression (same shape as
+    find_aggregates). Used by the engine to pre-compute each subquery's result
+    for the current outer row before evaluate() runs. Does NOT look inside a
+    subquery's own SELECT -- that gets planned/run separately."""
+    if isinstance(expr, ast.Subquery):
+        yield expr
+    elif isinstance(expr, ast.InSubquery):
+        yield expr
+        yield from find_subqueries(expr.left)
+    elif isinstance(expr, ast.BinaryOp):
+        yield from find_subqueries(expr.left)
+        yield from find_subqueries(expr.right)
+    elif isinstance(expr, ast.UnaryOp):
+        yield from find_subqueries(expr.operand)
+    elif isinstance(expr, ast.IsNull):
+        yield from find_subqueries(expr.expr)
+    elif isinstance(expr, ast.FuncCall):
+        yield from find_subqueries(expr.arg)
+    elif isinstance(expr, ast.Coalesce):
+        for arg in expr.args:
+            yield from find_subqueries(arg)
+    elif isinstance(expr, ast.CaseWhen):
+        for cond, value in expr.branches:
+            yield from find_subqueries(cond)
+            yield from find_subqueries(value)
+        yield from find_subqueries(expr.else_)
 
 
 def agg_key(func: ast.FuncCall) -> tuple:
@@ -298,4 +377,12 @@ def expr_label(expr: ast.Expr) -> str:
         return f"{expr.name}({expr_label(expr.arg)})"
     if isinstance(expr, ast.Star):
         return f"{expr.table}.*" if expr.table else "*"
+    if isinstance(expr, ast.Coalesce):
+        return f"PEHLA({', '.join(expr_label(a) for a in expr.args)})"
+    if isinstance(expr, ast.CaseWhen):
+        return "AGAR ... KHATAM"
+    if isinstance(expr, ast.Subquery):
+        return "(DIKHAO ...)"
+    if isinstance(expr, ast.InSubquery):
+        return f"{expr_label(expr.left)} {'NAHI ' if expr.negated else ''}MEIN (DIKHAO ...)"
     return "?"

@@ -251,7 +251,8 @@ database indexes its primary keys. *(Re-measure on your own machine and replace 
 | Passwords sent in plain text | TLS encryption, users and roles |
 | `SANDARBH` (FOREIGN KEY) has no `ON DELETE CASCADE` -- only RESTRICT | CASCADE/SET NULL delete rules |
 | `SHART` (CHECK) is stored as source text, not a persisted AST | A serialisable expression-tree format |
-| No subqueries or views | Future work |
+| Views are re-materialized on every read, never cached | Materialized/indexed views |
+| No users/privileges/triggers/stored procedures | Future work |
 
 ## 9. Conclusion
 

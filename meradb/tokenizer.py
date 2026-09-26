@@ -92,6 +92,22 @@ KEYWORDS = {
     "KHALI",  # NULL
     "SACH",  # TRUE
     "JHOOTH",  # FALSE
+    # --- Phase A gap features (subqueries, views, set ops, joins, CASE, upsert) ---
+    "VIEW",  # BANAO VIEW / HATAO VIEW / DIKHAO VIEWS
+    "VIEWS",
+    "SANYUKT",  # UNION
+    "SAAJHA",  # INTERSECT
+    "CHHODKAR",  # EXCEPT / MINUS
+    "SAMAAN",  # NATURAL      (SAMAAN MILAO = NATURAL JOIN)
+    "DAHINA",  # RIGHT        (DAHINA MILAO = RIGHT JOIN)
+    "DONO",  # FULL          (DONO MILAO = FULL OUTER JOIN)
+    # NOTE: PEHLA/COALESCE are NOT reserved keywords -- they're ordinary
+    # identifiers special-cased in parser._parse_primary (like a function
+    # name), so `PEHLA(a, b)` parses via the normal IDENT "(" path.
+    "AGAR",  # CASE ... WHEN   (IF)
+    "TAB",  # ... THEN
+    "KHATAM",  # ... END (also used by Phase B for trigger/procedure blocks)
+    "TAKRAAV",  # CONFLICT     (TAKRAAV PAR BADLO = ON CONFLICT DO UPDATE)
 }
 
 # Two-character symbols must be checked BEFORE one-character ones,

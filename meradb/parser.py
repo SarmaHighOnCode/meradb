@@ -119,7 +119,7 @@ class Parser:
             "ISTEMAL": self._parse_istemal,
             "BATAO": self._parse_batao,
             "DAALO": self._parse_insert,
-            "DIKHAO": self._parse_dikhao,
+            "DIKHAO": self._parse_dikhao_stmt,
             "BADLO": self._parse_update,
             "MITAO": self._parse_delete,
             "SHURU": ast.Begin,
@@ -142,15 +142,68 @@ class Parser:
         if self._match_kw("DATABASE"):
             return ast.CreateDatabase(self._expect_ident("database ka naam"))
 
-        # BANAO TABLE name ( coldef, coldef, ... )
+        # BANAO VIEW naam KAHO DIKHAO ...
+        if self._match_kw("VIEW"):
+            return self._parse_create_view()
+
+        # BANAO TABLE name ( coldef | table-constraint, ... )
         self._expect_kw("TABLE")
         name = self._expect_ident("table ka naam")
         self._expect_sym("(")
-        columns = [self._parse_column_def()]
+        stmt = ast.CreateTable(name, [])
+        self._parse_table_item(stmt)
         while self._match_sym(","):
-            columns.append(self._parse_column_def())
+            self._parse_table_item(stmt)
         self._expect_sym(")")
-        return ast.CreateTable(name, columns)
+        return stmt
+
+    def _parse_table_item(self, stmt: ast.CreateTable) -> None:
+        """One comma-separated item inside `BANAO TABLE (...)`: either a normal
+        column definition, or a table-level composite constraint -- ANOKHA
+        (a, b) or MUKHYA KUNJI (a, b). Distinguished by lookahead: a bare
+        ANOKHA/MUKHYA keyword here (not following an IDENT column name) can
+        only be the table-level form, since a column def always starts with
+        an IDENT (the column's own name)."""
+        if self._check_kw("ANOKHA"):
+            self._advance()
+            stmt.composite_unique.append(self._parse_composite_columns())
+            return
+        if self._check_kw("MUKHYA") and self._peek(1).type == TokenType.KEYWORD and self._peek(1).value == "KUNJI":
+            self._advance()
+            self._advance()
+            if stmt.composite_pk is not None:
+                raise self._error("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai (composite bhi sirf ek)")
+            stmt.composite_pk = self._parse_composite_columns()
+            return
+        stmt.columns.append(self._parse_column_def())
+
+    def _parse_composite_columns(self) -> list[str]:
+        self._expect_sym("(")
+        cols = [self._expect_ident("column ka naam")]
+        while self._match_sym(","):
+            cols.append(self._expect_ident("column ka naam"))
+        self._expect_sym(")")
+        if len(cols) < 2:
+            raise self._error("Composite constraint mein kam se kam 2 columns chahiye (1 column ke liye normal ANOKHA/MUKHYA KUNJI use karo)")
+        return cols
+
+    def _parse_create_view(self) -> ast.CreateView:
+        name = self._expect_ident("view ka naam")
+        self._expect_kw("KAHO")
+        start = self._peek().start
+        if not self._check_kw("DIKHAO"):
+            raise self._error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai")
+        # capture the raw source text of the SELECT, the same way SHART does,
+        # so the view always re-binds against the CURRENT schema when it is used
+        self._advance()  # consume DIKHAO
+        select_stmt = self._parse_select_body()
+        if self._peek().type == TokenType.KEYWORD and self._peek().value in self.SET_OPS:
+            raise self._error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai")
+        end = self.tokens[self.pos - 1].end
+        query_text = self.text[start:end]
+        if not isinstance(select_stmt, ast.Select):
+            raise self._error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai")
+        return ast.CreateView(name, query_text)
 
     def _parse_column_def(self) -> ast.ColumnDef:
         # coldef := name TYPE [ "(" INTEGER [ "," INTEGER ] ")" ]
@@ -223,6 +276,8 @@ class Parser:
     def _parse_hatao(self) -> ast.Statement:
         if self._match_kw("DATABASE"):
             return ast.DropDatabase(self._expect_ident("database ka naam"))
+        if self._match_kw("VIEW"):
+            return ast.DropView(self._expect_ident("view ka naam"))
         self._expect_kw("TABLE")
         return ast.DropTable(self._expect_ident("table ka naam"))
 
@@ -234,6 +289,12 @@ class Parser:
         self._expect_kw("TABLE")
         table = self._expect_ident("table ka naam")
         if self._match_kw("JODO"):
+            if self._match_kw("ANOKHA"):
+                return ast.AlterAddComposite(table, "ANOKHA", self._parse_composite_columns())
+            if self._check_kw("MUKHYA") and self._peek(1).type == TokenType.KEYWORD and self._peek(1).value == "KUNJI":
+                self._advance()
+                self._advance()
+                return ast.AlterAddComposite(table, "MUKHYA", self._parse_composite_columns())
             self._match_kw("COLUMN")
             return ast.AlterAddColumn(table, self._parse_column_def())
         if self._match_kw("HATAO"):
@@ -268,6 +329,8 @@ class Parser:
     # ------------------------------------------------------------------
     def _parse_insert(self) -> ast.Statement:
         # DAALO MEIN table [(col, col)] MAAN (expr, expr), (expr, expr) ...
+        #                                | DIKHAO ...                     -- INSERT ... SELECT
+        #      [TAKRAAV PAR BADLO col = expr, ...]                        -- simplified upsert
         self._expect_kw("MEIN")
         table = self._expect_ident("table ka naam")
 
@@ -278,11 +341,23 @@ class Parser:
                 columns.append(self._expect_ident("column ka naam"))
             self._expect_sym(")")
 
-        self._expect_kw("MAAN")
-        rows = [self._parse_value_tuple()]
-        while self._match_sym(","):
-            rows.append(self._parse_value_tuple())
-        return ast.Insert(table, columns, rows)
+        rows, select = None, None
+        if self._match_kw("MAAN"):
+            rows = [self._parse_value_tuple()]
+            while self._match_sym(","):
+                rows.append(self._parse_value_tuple())
+        elif self._match_kw("DIKHAO"):
+            select = self._parse_select_body()
+        else:
+            raise self._error("DAALO ke baad MAAN ya DIKHAO expected tha")
+
+        on_conflict_update = None
+        if self._match_kw("TAKRAAV"):
+            self._expect_kw("PAR")
+            self._expect_kw("BADLO")
+            on_conflict_update = self._parse_assignment_list()
+
+        return ast.Insert(table, columns, rows=rows, select=select, on_conflict_update=on_conflict_update)
 
     def _parse_value_tuple(self) -> list[ast.Expr]:
         self._expect_sym("(")
@@ -292,14 +367,28 @@ class Parser:
         self._expect_sym(")")
         return values
 
-    def _parse_dikhao(self) -> ast.Statement:
-        # DIKHAO TABLES
+    SET_OPS = ("SANYUKT", "SAAJHA", "CHHODKAR")  # UNION, INTERSECT, EXCEPT
+
+    def _parse_dikhao_stmt(self) -> ast.Statement:
+        """DIKHAO already consumed. Handles DIKHAO TABLES / VIEWS, or a full
+        select (optionally chained with SANYUKT/SAAJHA/CHHODKAR into a SetOp,
+        left-associatively: `a SANYUKT b SANYUKT c` -> SetOp(SetOp(a, b), c))."""
         if self._match_kw("TABLES"):
             return ast.ShowTables()
+        if self._match_kw("VIEWS"):
+            return ast.ShowViews()
 
-        # DIKHAO [ALAG] cols SE table [alias] { [BAAYAN] MILAO table [alias] PAR expr }
-        #        [JAHAN expr] [SAMOOH expr, ...] [JINKA expr]
-        #        [KRAM expr [ULTA|SEEDHA], ...] [SIRF n]
+        result: ast.Statement = self._parse_select_body()
+        while self._peek().type == TokenType.KEYWORD and self._peek().value in self.SET_OPS:
+            op = self._advance().value
+            self._expect_kw("DIKHAO")
+            result = ast.SetOp(op, result, self._parse_select_body())
+        return result
+
+    def _parse_select_body(self) -> ast.Select:
+        # select body := [ALAG] cols SE table [alias] { join } [JAHAN expr]
+        #                [SAMOOH expr, ...] [JINKA expr] [KRAM expr [ULTA|SEEDHA], ...] [SIRF n]
+        # (assumes the leading DIKHAO keyword was already consumed by the caller)
         distinct = self._match_kw("ALAG")
         columns, aliases = [], []
         expr, alias = self._parse_select_item()
@@ -315,17 +404,33 @@ class Parser:
         select = ast.Select(columns, table, alias=self._parse_alias(), distinct=distinct, aliases=aliases)
 
         while True:
+            # exactly one of BAAYAN/DAHINA/DONO/SAMAAN, or a plain MILAO (INNER)
             if self._match_kw("BAAYAN"):
                 self._expect_kw("MILAO")
-                left = True
+                kind = "LEFT"
+            elif self._match_kw("DAHINA"):
+                self._expect_kw("MILAO")
+                kind = "RIGHT"
+            elif self._match_kw("DONO"):
+                self._expect_kw("MILAO")
+                kind = "FULL"
+            elif self._match_kw("SAMAAN"):
+                self._expect_kw("MILAO")
+                kind = "NATURAL"
             elif self._match_kw("MILAO"):
-                left = False
+                kind = "INNER"
             else:
                 break
             join_table = self._expect_ident("table ka naam")
             join_alias = self._parse_alias() or join_table
-            self._expect_kw("PAR")
-            select.joins.append(ast.Join(join_table, join_alias, self._parse_expr(), left))
+            if kind == "NATURAL":
+                # no PAR at all -- the ON condition is synthesised at bind time
+                # from the shared column names (see planner._plan_select)
+                on = None
+            else:
+                self._expect_kw("PAR")
+                on = self._parse_expr()
+            select.joins.append(ast.Join(join_table, join_alias, on, kind))
 
         if self._match_kw("JAHAN"):
             select.where = self._parse_expr()
@@ -383,11 +488,17 @@ class Parser:
         # BADLO table RAKHO col = expr, col = expr [JAHAN expr]
         table = self._expect_ident("table ka naam")
         self._expect_kw("RAKHO")
+        assignments = self._parse_assignment_list()
+        where = self._parse_expr() if self._match_kw("JAHAN") else None
+        return ast.Update(table, assignments, where)
+
+    def _parse_assignment_list(self) -> list[tuple[str, ast.Expr]]:
+        """`col = expr, col = expr, ...` -- shared by BADLO ... RAKHO and
+        DAALO ... TAKRAAV PAR BADLO."""
         assignments = [self._parse_assignment()]
         while self._match_sym(","):
             assignments.append(self._parse_assignment())
-        where = self._parse_expr() if self._match_kw("JAHAN") else None
-        return ast.Update(table, assignments, where)
+        return assignments
 
     def _parse_assignment(self) -> tuple[str, ast.Expr]:
         col = self._expect_ident("column ka naam")
@@ -470,6 +581,10 @@ class Parser:
 
         if self._match_kw("MEIN"):
             self._expect_sym("(")
+            if self._check_kw("DIKHAO"):
+                subquery = self._parse_subquery()
+                self._expect_sym(")")
+                return ast.InSubquery(left, subquery, negated=False)
             node = ast.BinaryOp("=", left, self._parse_expr())
             while self._match_sym(","):
                 node = ast.BinaryOp("YA", node, ast.BinaryOp("=", left, self._parse_expr()))
@@ -477,6 +592,14 @@ class Parser:
             return node
 
         return None
+
+    def _parse_subquery(self) -> ast.Subquery:
+        """Assumes the opening '(' was already consumed and the next token is
+        DIKHAO. Does NOT consume the closing ')' -- the caller does, since the
+        two call sites (bare parens, MEIN list) close it slightly differently."""
+        self._expect_kw("DIKHAO")
+        select_stmt = self._parse_select_body()
+        return ast.Subquery(select_stmt)
 
     def _parse_additive(self) -> ast.Expr:
         left = self._parse_term()
@@ -517,10 +640,19 @@ class Parser:
             return ast.Literal(False)
         if self._match_kw("KHALI"):
             return ast.Literal(None)
+        if self._match_kw("AGAR"):
+            return self._parse_case()
         if tok.type == TokenType.IDENT:
             self._advance()
-            # name followed by "(" is a function call: GINO(*), AUSAT(cgpa)
+            # name followed by "(" is a function call: GINO(*), AUSAT(cgpa) --
+            # except PEHLA/COALESCE, a scalar construct with any number of args
             if self._match_sym("("):
+                if tok.value.upper() in ("PEHLA", "COALESCE"):
+                    args = [self._parse_expr()]
+                    while self._match_sym(","):
+                        args.append(self._parse_expr())
+                    self._expect_sym(")")
+                    return ast.Coalesce(args)
                 arg = ast.Star() if self._match_sym("*") else self._parse_expr()
                 self._expect_sym(")")
                 return ast.FuncCall(tok.value.upper(), arg)
@@ -531,10 +663,29 @@ class Parser:
                 return ast.ColumnRef(self._expect_ident("column ka naam"), table=tok.value)
             return ast.ColumnRef(tok.value)
         if self._match_sym("("):
+            if self._check_kw("DIKHAO"):
+                subquery = self._parse_subquery()
+                self._expect_sym(")")
+                return subquery
             expr = self._parse_expr()
             self._expect_sym(")")
             return expr
         raise self._error("Value ya column ka naam expected tha")
+
+    def _parse_case(self) -> ast.CaseWhen:
+        """Assumes AGAR was already consumed.
+        case := "AGAR" expr "TAB" expr { "AGAR" expr "TAB" expr } ["WARNA" expr] "KHATAM" """
+        branches = []
+        while True:
+            cond = self._parse_expr()
+            self._expect_kw("TAB")
+            value = self._parse_expr()
+            branches.append((cond, value))
+            if not self._match_kw("AGAR"):
+                break
+        else_ = self._parse_expr() if self._match_kw("WARNA") else None
+        self._expect_kw("KHATAM")
+        return ast.CaseWhen(branches, else_)
 
 
 def parse(text: str) -> list[ast.Statement]:
