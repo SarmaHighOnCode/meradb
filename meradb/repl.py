@@ -13,6 +13,7 @@ Lines starting with `.` are shell commands (not part of the language): .help, .e
 
 import os
 import sys
+import time
 
 from . import __version__
 from .datatypes import format_value
@@ -144,31 +145,63 @@ def _render_logo() -> tuple[list[str], int]:
 
 
 # ============================================================================
-# Banner
+# Banner: the block logo, plus the ORIGINAL slim wordmark underneath it as a
+# quieter, recoloured echo -- pure ASCII, so it needs no encoding fallback.
 # ============================================================================
 
+_CLASSIC_WORDMARK = [
+    "  __  __                 ____  ____",
+    " |  \\/  | ___ _ __ __ _|  _ \\| __ )",
+    " | |\\/| |/ _ \\ '__/ _` | | | |  _ \\",
+    " | |  | |  __/ | | (_| | |_| | |_) |",
+    " |_|  |_|\\___|_|  \\__,_|____/|____/",
+]
 
-def render_banner(version: str, where: str) -> str:
+
+def _center_block(lines: list[str], width: int, *style: int) -> list[str]:
+    """
+    Indent every line in `lines` by the SAME amount, so the block as a whole
+    is centred under `width` without disturbing its own internal alignment --
+    centring each line separately would ruin a slanted font like the one
+    above, whose lines are deliberately different lengths.
+    """
+    inner_width = max(len(line) for line in lines)
+    pad = " " * max(0, (width - inner_width) // 2)
+    return [pad + _c(line, *style) for line in lines]
+
+
+def _reveal(lines: list[str]) -> None:
+    """
+    Print `lines` one at a time, with a brief pause between them when this is
+    confidently a real interactive terminal (_COLOR) -- so the logo visibly
+    draws itself in, well under a second, every time the shell starts. A
+    script, a pipe, or a test always gets _COLOR False, so there both the
+    pause AND this whole function are silent no-ops: the lines print exactly
+    as fast as a plain loop of print() calls would.
+    """
+    for line in lines:
+        print(line)
+        if _COLOR:
+            sys.stdout.flush()
+            time.sleep(0.04)
+
+
+def print_banner(version: str, where: str) -> None:
     logo, width = _render_logo()
+    wordmark = _center_block(_CLASSIC_WORDMARK, width, 2)  # dim: a quiet echo below the bold logo
+    tagline = _center_block([f"meraDB {version} -- apna database, apni bhasha."], width, 1)[0]
 
-    def centered(plain_text: str, *style: int) -> str:
-        pad = max(0, (width - len(plain_text)) // 2)
-        return " " * pad + _c(plain_text, *style)
-
-    lines = (
-        [""]
-        + logo
-        + [
-            "",
-            centered(f"meraDB {version}", 1),
-            centered("apna database, apni bhasha", 2),
-            "",
-            f"  connected: {where}",
-            f"  {_c('.help', 1, 33)} commands  {_c(_DOT, 2)}  {_c('.exit', 1, 33)} bahar niklo  {_c(_DOT, 2)}  "
-            f"statements {_c(';', 1, 33)} se khatam hote hain",
-        ]
+    print()
+    _reveal(logo)
+    print()
+    _reveal(wordmark)
+    print()
+    print(tagline)
+    print(f"  connected: {where}")
+    print(
+        f"  {_c('.help', 1, 33)} commands  {_c(_DOT, 2)}  {_c('.exit', 1, 33)} bahar niklo  {_c(_DOT, 2)}  "
+        f"statements {_c(';', 1, 33)} se khatam hote hain"
     )
-    return "\n".join(lines)
 
 
 # ============================================================================
@@ -431,8 +464,7 @@ def prompt_for(backend) -> str:
 
 
 def repl(backend) -> None:
-    print()
-    print(render_banner(__version__, backend.description))
+    print_banner(__version__, backend.description)
     print()
     buffer = ""
     while True:
