@@ -1,14 +1,16 @@
 -- ============================================================================
--- RDBMS Lab & Theory coverage script  (CSC2103 / CSC2131, MUJ)
+-- RDBMS coverage script -- a standard intro-DBMS lab/theory syllabus,
+-- run as REAL MeraDB commands.
 --
--- Every topic in the two course hand-outs, run as a REAL MeraDB command.
--- Run it with:
+-- Every topic you'd expect from a first RDBMS course, run as a REAL MeraDB
+-- command. Run it with:
 --     meradb run examples/rdbms_lab_coverage.mdb
 -- or paste sections into `meradb shell` / `meradb workbench` one at a time.
 --
--- Each section is headed "-- Lab N:" or "-- Theory:" matching the hand-out's
--- own numbering, so you can trace every query back to the syllabus line it
--- demonstrates. Where MeraDB has NO equivalent command at all (GRANT/REVOKE,
+-- Each section is headed "-- Lab N:" or "-- Theory:", numbered the way a
+-- typical RDBMS lab manual is, so you can trace every query back to the
+-- syllabus topic it demonstrates. Where MeraDB has NO equivalent command at
+-- all (GRANT/REVOKE,
 -- SAVEPOINT, PL/SQL procedures/cursors/triggers -- users/privileges/triggers/
 -- procedures are a separate, later phase of work), that is stated plainly in
 -- a comment right there -- nothing here pretends to support something it
@@ -425,7 +427,7 @@ HATAO DATABASE college_lab;
 --     against an existing row -- it isn't a full MERGE statement)
 --   Multi-column (composite) FOREIGN KEY (SANDARBH is single-column only;
 --     composite UNIQUE/PRIMARY KEY above are unrelated to this)
--- Everything else in both hand-outs -- DDL, all constraint types (including
+-- Everything else in a standard RDBMS syllabus -- DDL, all constraint types (including
 -- composite), DML (including INSERT ... SELECT and upsert), SELECT/WHERE/
 -- ORDER BY/LIMIT, aggregates, GROUP BY/HAVING, every join kind (cross/inner/
 -- self/natural/left/right/full outer), subqueries, VIEWs, set operations,
