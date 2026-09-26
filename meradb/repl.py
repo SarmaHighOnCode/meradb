@@ -88,11 +88,59 @@ def _can_encode(text: str) -> bool:
         return False
 
 
-# Box-drawing glyphs where the terminal supports them, plain ASCII otherwise.
-if _can_encode("┌─┐└┘│·"):
-    _TL, _TR, _BL, _BR, _H, _V, _DOT = "┌", "┐", "└", "┘", "─", "│", "·"
-else:
-    _TL, _TR, _BL, _BR, _H, _V, _DOT = "+", "+", "+", "+", "-", "|", "*"
+# A middle dot where the terminal supports it, a plain asterisk otherwise.
+_DOT = "·" if _can_encode("·") else "*"
+
+# Solid block glyph for the logo, where encodable; a hash for legacy codepages
+# and piped/redirected output. Same rule format_table already follows.
+_BLOCK = "█" if _can_encode("█") else "#"
+
+# ============================================================================
+# Logo: a hand-authored 5x7 dot-matrix font, just for the letters M E R A D B
+# (not a general-purpose font -- it only needs to spell one word).
+#   1 = filled pixel, . = empty. Each glyph is 7 rows of 5 columns.
+# ============================================================================
+_FONT = {
+    "M": ["1...1", "11.11", "1.1.1", "1.1.1", "1...1", "1...1", "1...1"],
+    "E": ["11111", "1....", "1....", "1111.", "1....", "1....", "11111"],
+    "R": ["1111.", "1...1", "1...1", "1111.", "1.1..", "1..1.", "1...1"],
+    "A": [".111.", "1...1", "1...1", "11111", "1...1", "1...1", "1...1"],
+    "D": ["1111.", "1...1", "1...1", "1...1", "1...1", "1...1", "1111."],
+    "B": ["1111.", "1...1", "1...1", "1111.", "1...1", "1...1", "1111."],
+}
+
+
+def _render_logo() -> tuple[list[str], int]:
+    """
+    "MERADB" as 7 lines of block-letter art, split and coloured as MERA + DB
+    -- mera = "my" in Hindi/Urdu, so the wordmark itself reads "my DB".
+    Each pixel is drawn 2 characters wide, because a terminal cell is taller
+    than it is wide, and a single-character-wide pixel would look squeezed.
+
+    Returns (coloured_lines, plain_width). The width is measured separately
+    from the coloured lines, because ANSI escape codes are invisible on
+    screen but not to len() -- centering text under the logo needs the
+    on-screen width, not the string length.
+    """
+    halves = [("MERA", (1, 36)), ("DB", (1, 35))]  # (letters, colour codes)
+    rows = [""] * 7
+    width = 0
+    for half_i, (letters, style) in enumerate(halves):
+        for letter_i, letter in enumerate(letters):
+            glyph = _FONT[letter]
+            for r in range(7):
+                pixels = "".join(_BLOCK * 2 if px == "1" else "  " for px in glyph[r])
+                rows[r] += _c(pixels, *style)
+            width += 10  # each glyph is 5 pixels, drawn 2 characters wide
+            if letter_i != len(letters) - 1:
+                for r in range(7):
+                    rows[r] += " "  # gap between letters in the same half
+                width += 1
+        if half_i != len(halves) - 1:
+            for r in range(7):
+                rows[r] += "   "  # wider gap between MERA and DB
+            width += 3
+    return rows, width
 
 
 # ============================================================================
@@ -101,38 +149,26 @@ else:
 
 
 def render_banner(version: str, where: str) -> str:
-    """
-    A small boxed banner -- deliberately not a giant block-letter logo, so it
-    reads as a compact developer tool rather than a wall of ASCII art.
-    """
-    title_plain = f"  meraDB  {version}"
-    tagline_plain = "  apna database, apni bhasha"
-    inner = max(len(title_plain), len(tagline_plain)) + 2
-    bar = _c(_V, 2)
-    top = _c(_TL + _H * inner + _TR, 2)
-    bottom = _c(_BL + _H * inner + _BR, 2)
+    logo, width = _render_logo()
 
-    def row(colored: str, plain_len: int) -> str:
-        # padding is computed from the PLAIN length -- colour codes are
-        # invisible to the terminal but not to len(), so padding after
-        # colouring would misalign the right-hand border
-        return bar + colored + " " * (inner - plain_len) + bar
+    def centered(plain_text: str, *style: int) -> str:
+        pad = max(0, (width - len(plain_text)) // 2)
+        return " " * pad + _c(plain_text, *style)
 
-    title = row(_c("  meraDB", 1, 36) + _c(f"  {version}", 2), len(title_plain))
-    tagline = row(_c(tagline_plain, 2), len(tagline_plain))
-    dot = _c(_DOT, 2)
-
-    return "\n".join(
-        [
-            top,
-            title,
-            tagline,
-            bottom,
+    lines = (
+        [""]
+        + logo
+        + [
+            "",
+            centered(f"meraDB {version}", 1),
+            centered("apna database, apni bhasha", 2),
+            "",
             f"  connected: {where}",
-            f"  {_c('.help', 1, 33)} commands  {dot}  {_c('.exit', 1, 33)} bahar niklo  {dot}  "
+            f"  {_c('.help', 1, 33)} commands  {_c(_DOT, 2)}  {_c('.exit', 1, 33)} bahar niklo  {_c(_DOT, 2)}  "
             f"statements {_c(';', 1, 33)} se khatam hote hain",
         ]
     )
+    return "\n".join(lines)
 
 
 # ============================================================================
