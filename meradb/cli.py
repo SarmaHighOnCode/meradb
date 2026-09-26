@@ -268,9 +268,13 @@ def cmd_start(args) -> int:
             note(f"Server start nahi hua. Log ({log_path}):")
             note(_tail(log_path))
             return 1
+        # We checked above that no server was serving this folder, so any server
+        # that appears now is ours. Don't compare proc.pid with the pid file:
+        # inside a Windows virtual environment, .venv\Scripts\python.exe is a small
+        # launcher that starts the real Python as a CHILD process, so the pids differ.
         info = running_server(data)
-        if info and info.get("pid") == proc.pid:
-            print(f"MeraDB server chal gaya: {args.host}:{info['port']}  (pid {proc.pid})")
+        if info:
+            print(f"MeraDB server chal gaya: {args.host}:{info['port']}  (pid {info['pid']})")
             print(f"  data: {data}")
             print(f"  log:  {log_path}")
             print("  connect: meradb shell   |   band: meradb stop")
