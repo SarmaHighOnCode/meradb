@@ -28,7 +28,7 @@ list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
 add_library(meradb_core STATIC
-  src/core.cpp
+  src/datatypes.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
