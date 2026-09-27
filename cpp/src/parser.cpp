@@ -275,17 +275,304 @@ std::unique_ptr<CaseWhen> Parser::parseCase() {
 std::unique_ptr<Expr> Parser::parseExpressionEntry() { return parseOr(); }
 
 // ---------------------------------------------------------------------
-// Statement-level parsing (Task 7/8). Stubbed here so Task 6 links; Task
-// 7/8 replace these bodies.
+// Statement-level parsing (Task 7: DDL/database statements; Task 8: DML,
+// SELECT, set ops, transactions). Mirrors meradb/parser.py's
+// _parse_statement and its per-keyword handlers.
 // ---------------------------------------------------------------------
 std::unique_ptr<Select> Parser::parseSelectBody() {
     throw ParseError("SELECT parsing not implemented yet");
 }
-std::unique_ptr<Statement> Parser::parseStatement() {
-    throw ParseError("Statement parsing not implemented yet");
-}
+
 std::vector<std::unique_ptr<Statement>> Parser::parseScript() {
-    throw ParseError("Script parsing not implemented yet");
+    std::vector<std::unique_ptr<Statement>> result;
+    while (peek().type != TokenType::Eof) {
+        if (matchSymbol(";")) continue;  // allow empty statements like ';;'
+        result.push_back(parseStatement());
+        if (peek().type != TokenType::Eof) expectSymbol(";");
+    }
+    return result;
+}
+
+std::unique_ptr<Statement> Parser::parseStatement() {
+    const Token& tok = peek();
+    if (tok.type != TokenType::Keyword) {
+        error("Query kisi command se shuru honi chahiye (jaise DIKHAO, DAALO, BANAO)");
+    }
+    std::string kw = tok.textValue;
+    if (kw == "BANAO") { advance(); return parseBanao(); }
+    if (kw == "HATAO") { advance(); return parseHatao(); }
+    if (kw == "SUDHARO") { advance(); return parseSudharo(); }
+    if (kw == "SAAF") { advance(); return parseSaaf(); }
+    if (kw == "SIKODO") { advance(); return parseSikodo(); }
+    if (kw == "ISTEMAL") { advance(); return parseIstemal(); }
+    if (kw == "BATAO") { advance(); return parseBatao(); }
+    if (kw == "DAALO") { advance(); return parseInsert(); }
+    if (kw == "DIKHAO") { advance(); return parseDikhaoStmt(); }
+    if (kw == "BADLO") { advance(); return parseUpdate(); }
+    if (kw == "MITAO") { advance(); return parseDelete(); }
+    if (kw == "SHURU") { advance(); return std::make_unique<Begin>(); }
+    if (kw == "PAKKA") { advance(); return std::make_unique<Commit>(); }
+    if (kw == "WAPAS") { advance(); return std::make_unique<Rollback>(); }
+    if (kw == "SAMJHAO") {
+        advance();
+        auto ex = std::make_unique<Explain>();
+        ex->statement = parseStatement();
+        return ex;
+    }
+    error("Ye command nahi pata");
+}
+
+// ---- DDL ----
+
+std::unique_ptr<Statement> Parser::parseBanao() {
+    // BANAO DATABASE name
+    if (matchKeyword("DATABASE")) {
+        auto d = std::make_unique<CreateDatabase>();
+        d->name = expectIdent("database ka naam");
+        return d;
+    }
+    // BANAO VIEW naam KAHO DIKHAO ...
+    if (matchKeyword("VIEW")) return parseCreateView();
+
+    // BANAO TABLE name ( coldef | table-constraint, ... )
+    expectKeyword("TABLE");
+    auto stmt = std::make_unique<CreateTable>();
+    stmt->name = expectIdent("table ka naam");
+    expectSymbol("(");
+    parseTableItem(*stmt);
+    while (matchSymbol(",")) parseTableItem(*stmt);
+    expectSymbol(")");
+    return stmt;
+}
+
+void Parser::parseTableItem(CreateTable& stmt) {
+    // A bare ANOKHA/MUKHYA keyword here (not following an IDENT column
+    // name) can only be the table-level composite-constraint form, since a
+    // column def always starts with an IDENT (the column's own name).
+    if (checkKeyword("ANOKHA")) {
+        advance();
+        stmt.compositeUnique.push_back(parseCompositeColumns());
+        return;
+    }
+    if (checkKeyword("MUKHYA") && peek(1).type == TokenType::Keyword && peek(1).textValue == "KUNJI") {
+        advance();
+        advance();
+        if (stmt.compositePk.has_value()) {
+            error("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai (composite bhi sirf ek)");
+        }
+        stmt.compositePk = parseCompositeColumns();
+        return;
+    }
+    stmt.columns.push_back(parseColumnDef());
+}
+
+std::vector<std::string> Parser::parseCompositeColumns() {
+    expectSymbol("(");
+    std::vector<std::string> cols;
+    cols.push_back(expectIdent("column ka naam"));
+    while (matchSymbol(",")) cols.push_back(expectIdent("column ka naam"));
+    expectSymbol(")");
+    if (cols.size() < 2) {
+        error("Composite constraint mein kam se kam 2 columns chahiye (1 column ke liye normal ANOKHA/MUKHYA KUNJI use karo)");
+    }
+    return cols;
+}
+
+ColumnDef Parser::parseColumnDef() {
+    // coldef := name TYPE [ "(" INTEGER [ "," INTEGER ] ")" ]
+    //           [MUKHYA KUNJI | ZAROORI | ANOKHA | WARNA literal | SANDARBH ref | SHART "(" expr ")"]*
+    ColumnDef col;
+    col.name = expectIdent("column ka naam");
+    const Token& typeTok = peek();
+    std::optional<std::string> typeName =
+        typeTok.type == TokenType::Ident ? normalizeType(typeTok.textValue) : std::nullopt;
+    if (!typeName.has_value()) {
+        error("Column '" + col.name + "' ka type expected tha (INT/ANK, FLOAT, TEXT/SHABD, BOOL, DATE/TAREEKH, ...)");
+    }
+    advance();
+    col.typeName = *typeName;
+    col.maxLength = parseTypeLength(col.typeName, col.name);
+
+    while (true) {
+        if (matchKeyword("MUKHYA")) {
+            expectKeyword("KUNJI");
+            col.primaryKey = true;
+        } else if (matchKeyword("ZAROORI")) {
+            col.notNull = true;
+        } else if (matchKeyword("ANOKHA")) {
+            col.unique = true;
+        } else if (matchKeyword("WARNA")) {
+            auto value = parseUnary();  // handles -5 as well as 5
+            auto* lit = dynamic_cast<Literal*>(value.get());
+            if (!lit) error("WARNA ke baad ek fixed value (jaise 18 ya 'Delhi') expected thi");
+            col.defaultValue = lit->value;
+        } else if (matchKeyword("SANDARBH")) {
+            col.refTable = expectIdent("parent table ka naam");
+            expectSymbol("(");
+            col.refColumn = expectIdent("parent column ka naam");
+            expectSymbol(")");
+        } else if (matchKeyword("SHART")) {
+            expectSymbol("(");
+            size_t start = static_cast<size_t>(peek().start);
+            parseOr();  // parse-only, to validate syntax and find the end
+            size_t end = static_cast<size_t>(peek().start);  // position of the ")" about to be consumed
+            expectSymbol(")");
+            std::string raw = sourceText_.substr(start, end - start);
+            while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
+            col.check = raw;
+        } else {
+            break;
+        }
+    }
+    return col;
+}
+
+std::optional<int> Parser::parseTypeLength(const std::string& typeName, const std::string& column) {
+    if (!matchSymbol("(")) return std::nullopt;
+    auto expectLengthNumber = [&]() -> int64_t {
+        const Token& t = peek();
+        if (t.type != TokenType::Number || t.isFloat) {
+            error("Column '" + column + "': type ke baad ek whole number (length) expected tha");
+        }
+        advance();
+        return t.intValue;
+    };
+    int64_t first = expectLengthNumber();
+    if (matchSymbol(",")) expectLengthNumber();
+    expectSymbol(")");
+    return typeName == "TEXT" ? std::optional<int>(static_cast<int>(first)) : std::nullopt;
+}
+
+std::unique_ptr<CreateView> Parser::parseCreateView() {
+    auto cv = std::make_unique<CreateView>();
+    cv->name = expectIdent("view ka naam");
+    expectKeyword("KAHO");
+    size_t start = static_cast<size_t>(peek().start);
+    if (!checkKeyword("DIKHAO")) {
+        error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai");
+    }
+    advance();  // consume DIKHAO
+    auto selectStmt = parseSelectBody();
+    if (peek().type == TokenType::Keyword &&
+        (peek().textValue == "SANYUKT" || peek().textValue == "SAAJHA" || peek().textValue == "CHHODKAR")) {
+        error("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai");
+    }
+    size_t end = static_cast<size_t>(peek(-1).end);
+    cv->queryText = sourceText_.substr(start, end - start);
+    return cv;
+}
+
+std::unique_ptr<Statement> Parser::parseHatao() {
+    if (matchKeyword("DATABASE")) {
+        auto d = std::make_unique<DropDatabase>();
+        d->name = expectIdent("database ka naam");
+        return d;
+    }
+    if (matchKeyword("VIEW")) {
+        auto d = std::make_unique<DropView>();
+        d->name = expectIdent("view ka naam");
+        return d;
+    }
+    expectKeyword("TABLE");
+    auto d = std::make_unique<DropTable>();
+    d->name = expectIdent("table ka naam");
+    return d;
+}
+
+std::unique_ptr<Statement> Parser::parseSudharo() {
+    // SUDHARO TABLE name JODO [COLUMN] coldef
+    // SUDHARO TABLE name HATAO [COLUMN] colname
+    // SUDHARO TABLE name NAYA_NAAM new_name
+    // SUDHARO TABLE name COLUMN old_name NAYA_NAAM new_name
+    expectKeyword("TABLE");
+    std::string table = expectIdent("table ka naam");
+    if (matchKeyword("JODO")) {
+        if (matchKeyword("ANOKHA")) {
+            auto a = std::make_unique<AlterAddComposite>();
+            a->table = table;
+            a->kind = "ANOKHA";
+            a->columns = parseCompositeColumns();
+            return a;
+        }
+        if (checkKeyword("MUKHYA") && peek(1).type == TokenType::Keyword && peek(1).textValue == "KUNJI") {
+            advance();
+            advance();
+            auto a = std::make_unique<AlterAddComposite>();
+            a->table = table;
+            a->kind = "MUKHYA";
+            a->columns = parseCompositeColumns();
+            return a;
+        }
+        matchKeyword("COLUMN");
+        auto a = std::make_unique<AlterAddColumn>();
+        a->table = table;
+        a->column = parseColumnDef();
+        return a;
+    }
+    if (matchKeyword("HATAO")) {
+        matchKeyword("COLUMN");
+        auto a = std::make_unique<AlterDropColumn>();
+        a->table = table;
+        a->column = expectIdent("column ka naam");
+        return a;
+    }
+    if (matchKeyword("NAYA_NAAM")) {
+        auto r = std::make_unique<RenameTable>();
+        r->table = table;
+        r->newName = expectIdent("naya table naam");
+        return r;
+    }
+    if (matchKeyword("COLUMN")) {
+        auto r = std::make_unique<RenameColumn>();
+        r->table = table;
+        r->column = expectIdent("column ka naam");
+        expectKeyword("NAYA_NAAM");
+        r->newName = expectIdent("naya column naam");
+        return r;
+    }
+    error("SUDHARO TABLE ke baad JODO, HATAO, NAYA_NAAM ya COLUMN expected tha");
+}
+
+std::unique_ptr<Statement> Parser::parseSaaf() {
+    expectKeyword("TABLE");
+    auto t = std::make_unique<TruncateTable>();
+    t->name = expectIdent("table ka naam");
+    return t;
+}
+
+std::unique_ptr<Statement> Parser::parseSikodo() {
+    expectKeyword("TABLE");
+    auto t = std::make_unique<CompactTable>();
+    t->name = expectIdent("table ka naam");
+    return t;
+}
+
+std::unique_ptr<Statement> Parser::parseIstemal() {
+    matchKeyword("DATABASE");  // optional: ISTEMAL DATABASE college
+    auto u = std::make_unique<UseDatabase>();
+    u->name = expectIdent("database ka naam");
+    return u;
+}
+
+std::unique_ptr<Statement> Parser::parseBatao() {
+    matchKeyword("TABLE");  // optional: BATAO TABLE students
+    auto d = std::make_unique<Describe>();
+    d->table = expectIdent("table ka naam");
+    return d;
+}
+
+// ---- DML/SELECT/transactions stubbed here; filled in by Task 8 ----
+std::unique_ptr<Statement> Parser::parseInsert() {
+    throw ParseError("INSERT parsing not implemented yet");
+}
+std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
+    throw ParseError("SELECT statement parsing not implemented yet");
+}
+std::unique_ptr<Statement> Parser::parseUpdate() {
+    throw ParseError("UPDATE parsing not implemented yet");
+}
+std::unique_ptr<Statement> Parser::parseDelete() {
+    throw ParseError("DELETE parsing not implemented yet");
 }
 
 std::vector<std::unique_ptr<Statement>> parseScript(const std::string& text) {
