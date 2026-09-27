@@ -30,6 +30,8 @@ include(Catch)
 add_library(meradb_core STATIC
   src/datatypes.cpp
   src/tokenizer.cpp
+  src/ast_util.cpp
+  src/parser.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
