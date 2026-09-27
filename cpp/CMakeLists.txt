@@ -14,15 +14,13 @@ include(FetchContent)
 
 FetchContent_Declare(
   json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.3
+  URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
 )
 FetchContent_MakeAvailable(json)
 
 FetchContent_Declare(
   catch2
-  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG v3.5.4
+  URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.4.tar.gz
 )
 FetchContent_MakeAvailable(catch2)
 
@@ -30,6 +28,7 @@ list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
 add_library(meradb_core STATIC
+  src/core.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
