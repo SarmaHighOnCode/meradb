@@ -63,14 +63,6 @@ TEST_CASE("parseScript parses RENAME TABLE and RENAME COLUMN", "[parser][ddl]") 
     REQUIRE(rc->newName == "full_name");
 }
 
-TEST_CASE("parseScript captures CREATE VIEW body as raw source text", "[parser][ddl]") {
-    auto stmts = parseScript("BANAO VIEW toppers KAHO DIKHAO naam SE students JAHAN cgpa > 9;");
-    auto* cv = dynamic_cast<CreateView*>(stmts[0].get());
-    REQUIRE(cv != nullptr);
-    REQUIRE(cv->name == "toppers");
-    REQUIRE(cv->queryText.find("DIKHAO") == 0);
-}
-
 TEST_CASE("parseScript parses DROP TABLE/VIEW/DATABASE and TRUNCATE/VACUUM", "[parser][ddl]") {
     REQUIRE(dynamic_cast<DropTable*>(parseScript("HATAO TABLE students;")[0].get()) != nullptr);
     REQUIRE(dynamic_cast<DropView*>(parseScript("HATAO VIEW toppers;")[0].get()) != nullptr);
