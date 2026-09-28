@@ -12,7 +12,12 @@ FuncCall makeCall(const std::string& name, std::unique_ptr<Expr> arg) {
     FuncCall f; f.name = name; f.arg = std::move(arg); return f;
 }
 
-FuncCall onX(const std::string& name) { return makeCall(name, std::make_unique<ColumnRef>("x", "s")); }
+// s.x as the planner's bind() leaves it
+FuncCall onX(const std::string& name) {
+    auto ref = std::make_unique<ColumnRef>("x", "s");
+    ref->bound = true;
+    return makeCall(name, std::move(ref));
+}
 
 std::vector<Row> rowsOf(std::vector<Value> xs) {
     std::vector<Row> rows;
@@ -77,6 +82,27 @@ TEST_CASE("KUL sums floats with compensation like Python's sum()", "[aggregates]
     std::vector<Value> tenths(10, F(0.1));
     REQUIRE(std::get<double>(computeAggregate(onX("KUL"), rowsOf(tenths)).data) == 1.0);
     REQUIRE(std::get<double>(computeAggregate(onX("SUM"), rowsOf({F(1e100), F(1.0), F(-1e100)})).data) == 1.0);
+}
+
+TEST_CASE("KUL follows the Windows CPython sum() paths", "[aggregates]") {
+    // expected values printed by the reference Python (MSC build, 32-bit C long)
+    auto sum = [](std::vector<Value> xs) { return std::get<double>(computeAggregate(onX("KUL"), rowsOf(xs)).data); };
+    REQUIRE(sum({I(int64_t{1} << 40), F(1e100), F(1.0), F(-1e100)}) == 0.0);  // big int: generic path, no compensation
+    REQUIRE(sum({I(int64_t{1} << 20), F(1e100), F(1.0), F(-1e100)}) == 1.0);
+    REQUIRE(sum({F(1e100), F(1.0), I(int64_t{1} << 40), F(-1e100), F(3.0)}) == 3.0);
+    REQUIRE(sum({F(1e100), F(1.0), I(int64_t{1} << 20), F(-1e100), F(3.0)}) == 4.0);
+    REQUIRE(sum({I(3000000000), F(0.1), F(0.2)}) == 3000000000.2999997);
+    REQUIRE(sum({F(0.1), I(3000000000), F(0.2), F(0.3)}) == 3000000000.6);
+    REQUIRE(sum({F(0.1), I(5), F(0.2), F(0.3)}) == 5.6);
+    // plain ints beyond 32 bits stay exact
+    REQUIRE(std::get<int64_t>(computeAggregate(onX("KUL"), rowsOf({I(3000000000), I(3000000000)})).data) == 6000000000);
+    REQUIRE_THROWS_AS(computeAggregate(onX("KUL"), rowsOf({I(INT64_MAX), I(1)})), ExecutionError);
+}
+
+TEST_CASE("AUSAT of an int total uses correctly-rounded division", "[aggregates]") {
+    // Python: sum([9007199254740993, 0, 0]) / 3 -> 3002399751580331.0
+    auto avg = computeAggregate(onX("AUSAT"), rowsOf({I(9007199254740993), I(0), I(0)}));
+    REQUIRE(std::get<double>(avg.data) == 3002399751580331.0);
 }
 
 TEST_CASE("NYUNTAM/ADHIKTAM compute min/max ignoring KHALI", "[aggregates]") {

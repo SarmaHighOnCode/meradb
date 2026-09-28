@@ -1,6 +1,7 @@
 // cpp/src/aggregates.cpp -- mirrors meradb/aggregates.py
 #include "meradb/aggregates.h"
 #include "meradb/errors.h"
+#include "meradb/pyvalue.h"
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -11,80 +12,96 @@ using namespace ast;
 
 namespace {
 
-constexpr double TWO_POW_63 = 9223372036854775808.0;
+bool isInt(const Value& v) { return isIntValue(v); }
+bool isDouble(const Value& v) { return isDoubleValue(v); }
 
-bool isInt(const Value& v) { return std::holds_alternative<int64_t>(v.data); }
-bool isDouble(const Value& v) { return std::holds_alternative<double>(v.data); }
-bool isBool(const Value& v) { return std::holds_alternative<bool>(v.data); }
+// Does an int fit a C `long`? The reference CPython is the Windows (MSC)
+// build, where long is 32-bit, and sum()'s fast paths depend on it.
+constexpr int64_t C_LONG_MAX = 2147483647;
+constexpr int64_t C_LONG_MIN = -2147483647 - 1;
+bool fitsCLong(int64_t v) { return v >= C_LONG_MIN && v <= C_LONG_MAX; }
 
-// Exact sign of (i - d) for a non-NaN double, like Python's int/float compare.
-int cmpIntDouble(int64_t i, double d) {
-    if (d >= TWO_POW_63) return -1;
-    if (d < -TWO_POW_63) return 1;
-    double t = std::trunc(d);
-    auto ti = static_cast<int64_t>(t);
-    if (i != ti) return i < ti ? -1 : 1;
-    double frac = d - t;
-    return frac > 0 ? -1 : (frac < 0 ? 1 : 0);
+int64_t checkedAdd(int64_t x, int64_t y, const std::string& label) {
+    if ((y > 0 && x > std::numeric_limits<int64_t>::max() - y) ||
+        (y < 0 && x < std::numeric_limits<int64_t>::min() - y))
+        throw ExecutionError(label + ": KUL ka result INT ke liye bahut bada hai (8-byte limit)");
+    return x + y;
 }
 
-// Python's `a < b` as min()/max() use it. bool counts as an int there (a
-// SACH/JHOOTH column compares JHOOTH < SACH); numbers compare exactly
-// across int/float; NaN compares false. Python raises TypeError for
-// unorderable pairs (text vs number...); here that is an ExecutionError.
-bool pyLess(const Value& a, const Value& b) {
-    auto numeric = [](const Value& v) { return isInt(v) || isDouble(v) || isBool(v); };
-    if (numeric(a) && numeric(b)) {
-        auto asInt = [](const Value& v) {
-            return isBool(v) ? int64_t{std::get<bool>(v.data) ? 1 : 0} : std::get<int64_t>(v.data);
-        };
-        if (!isDouble(a) && !isDouble(b)) return asInt(a) < asInt(b);
-        if (isDouble(a) && isDouble(b)) return std::get<double>(a.data) < std::get<double>(b.data);
-        double d = isDouble(a) ? std::get<double>(a.data) : std::get<double>(b.data);
-        if (std::isnan(d)) return false;
-        return isDouble(b) ? cmpIntDouble(asInt(a), d) < 0 : cmpIntDouble(asInt(b), d) > 0;
-    }
-    if (std::holds_alternative<std::string>(a.data) && std::holds_alternative<std::string>(b.data))
-        return std::get<std::string>(a.data) < std::get<std::string>(b.data);
-    if (std::holds_alternative<Date>(a.data) && std::holds_alternative<Date>(b.data))
-        return std::get<Date>(a.data).ordinal < std::get<Date>(b.data).ordinal;
-    throw ExecutionError(pyRepr(formatValue(a)) + " aur " + pyRepr(formatValue(b)) +
-                         " ko compare nahi kar sakte (alag types)");
-}
-
-// Python's built-in sum() over ints/floats (CPython 3.12+): an exact integer
-// phase, then -- from the first float on -- a float phase with Neumaier
-// compensated summation for float items (ints are added plainly).
+// Python's built-in sum() over ints/floats, step for step as CPython 3.12
+// (Windows build) runs it, starting from the int 0:
+//   1. int fast path: while every item and the running total fit a C long;
+//   2. float fast path (entered when a float arrives during step 1):
+//      Neumaier-compensated for float items, plain `+=` for C-long ints;
+//      the compensation is added once at the end if it is finite;
+//   3. generic path (an int that does not fit a C long): plain Python `+`
+//      for every remaining item, never returning to a fast path.
+// Python ints are unbounded; an int64 overflow here is an ExecutionError.
 Value pySum(const std::vector<Value>& values, const std::string& label) {
-    size_t i = 0;
-    int64_t intTotal = 0;
-    for (; i < values.size() && isInt(values[i]); ++i) {
-        int64_t y = std::get<int64_t>(values[i].data);
-        if ((y > 0 && intTotal > std::numeric_limits<int64_t>::max() - y) ||
-            (y < 0 && intTotal < std::numeric_limits<int64_t>::min() - y))
-            throw ExecutionError(label + ": KUL ka result INT ke liye bahut bada hai (8-byte limit)");
-        intTotal += y;
-    }
-    if (i == values.size()) return Value(intTotal);
+    enum class Phase { IntFast, FloatFast, Generic } phase = Phase::IntFast;
+    int64_t intTotal = 0;       // IntFast, and Generic while the total is an int
+    double floatTotal = 0.0;    // FloatFast, and Generic once the total is a float
+    double compensation = 0.0;  // FloatFast
+    bool genericIsFloat = false;
 
-    // first float: int + float -> float, then compensated float summation
-    double total = static_cast<double>(intTotal) + std::get<double>(values[i].data);
-    double c = 0.0;
-    for (++i; i < values.size(); ++i) {
-        if (isDouble(values[i])) {
-            double x = std::get<double>(values[i].data);
-            double t = total + x;
-            if (std::fabs(total) >= std::fabs(x))
-                c += (total - t) + x;
-            else
-                c += (x - t) + total;
-            total = t;
+    auto genericAdd = [&](const Value& item) {
+        if (!genericIsFloat && isInt(item)) {
+            intTotal = checkedAdd(intTotal, std::get<int64_t>(item.data), label);
+        } else if (!genericIsFloat) {
+            floatTotal = static_cast<double>(intTotal) + std::get<double>(item.data);
+            genericIsFloat = true;
         } else {
-            total += static_cast<double>(std::get<int64_t>(values[i].data));
+            floatTotal += isInt(item) ? static_cast<double>(std::get<int64_t>(item.data)) : std::get<double>(item.data);
+        }
+    };
+
+    for (const auto& item : values) {
+        switch (phase) {
+            case Phase::IntFast:
+                if (isInt(item)) {
+                    int64_t b = std::get<int64_t>(item.data);
+                    // both within 32 bits, so the int64 sum cannot overflow
+                    if (fitsCLong(b) && fitsCLong(intTotal + b)) {
+                        intTotal += b;
+                        break;
+                    }
+                    phase = Phase::Generic;  // int + int stays an int
+                    genericAdd(item);
+                } else {
+                    floatTotal = static_cast<double>(intTotal) + std::get<double>(item.data);
+                    compensation = 0.0;
+                    phase = Phase::FloatFast;
+                }
+                break;
+            case Phase::FloatFast:
+                if (isDouble(item)) {
+                    double x = std::get<double>(item.data);
+                    double t = floatTotal + x;
+                    if (std::fabs(floatTotal) >= std::fabs(x))
+                        compensation += (floatTotal - t) + x;
+                    else
+                        compensation += (x - t) + floatTotal;
+                    floatTotal = t;
+                } else if (fitsCLong(std::get<int64_t>(item.data))) {
+                    floatTotal += static_cast<double>(std::get<int64_t>(item.data));
+                } else {
+                    if (compensation != 0.0 && std::isfinite(compensation)) floatTotal += compensation;
+                    genericIsFloat = true;
+                    phase = Phase::Generic;
+                    genericAdd(item);
+                }
+                break;
+            case Phase::Generic:
+                genericAdd(item);
+                break;
         }
     }
-    if (c != 0.0 && std::isfinite(c)) total += c;
-    return Value(total);
+    if (phase == Phase::IntFast) return Value(intTotal);
+    if (phase == Phase::FloatFast) {
+        if (compensation != 0.0 && std::isfinite(compensation)) floatTotal += compensation;
+        return Value(floatTotal);
+    }
+    return genericIsFloat ? Value(floatTotal) : Value(intTotal);
 }
 
 }  // namespace
@@ -123,8 +140,10 @@ Value computeAggregate(const FuncCall& func, const std::vector<Row>& groupRows) 
                 throw ExecutionError(exprLabel(func) + ": " + name + " sirf numbers ke saath chalta hai");
         Value total = pySum(values, exprLabel(func));
         if (name == "KUL") return total;
-        double sum = isInt(total) ? static_cast<double>(std::get<int64_t>(total.data)) : std::get<double>(total.data);
-        return Value(sum / static_cast<double>(values.size()));
+        auto n = static_cast<int64_t>(values.size());
+        // Python: total / len(values) -- int / int is correctly-rounded true division
+        if (isInt(total)) return Value(pyTrueDivide(std::get<int64_t>(total.data), n));
+        return Value(std::get<double>(total.data) / static_cast<double>(n));
     }
 
     // NYUNTAM / ADHIKTAM: Python min()/max() keep the FIRST extreme value

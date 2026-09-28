@@ -3,14 +3,40 @@
 #include "meradb/errors.h"
 #include "meradb/evaluator.h"
 #include "meradb/parser.h"
+#include "meradb/pyvalue.h"
 #include <cmath>
 #include <functional>
+#include <unordered_set>
 
 using namespace meradb;
 
 namespace {
+// Marks every qualified ColumnRef as bound, the shape the planner's bind()
+// produces, so these tests can write rows keyed "alias.col" directly.
+void markBound(ast::Expr* e) {
+    using namespace ast;
+    if (e == nullptr) return;
+    if (auto* r = dynamic_cast<ColumnRef*>(e)) { r->bound = r->table.has_value(); return; }
+    if (auto* b = dynamic_cast<BinaryOp*>(e)) { markBound(b->left.get()); markBound(b->right.get()); return; }
+    if (auto* u = dynamic_cast<UnaryOp*>(e)) { markBound(u->operand.get()); return; }
+    if (auto* i = dynamic_cast<IsNull*>(e)) { markBound(i->expr.get()); return; }
+    if (auto* f = dynamic_cast<FuncCall*>(e)) { markBound(f->arg.get()); return; }
+    if (auto* in = dynamic_cast<InSubquery*>(e)) { markBound(in->left.get()); return; }
+    if (auto* c = dynamic_cast<Coalesce*>(e)) { for (auto& a : c->args) markBound(a.get()); return; }
+    if (auto* w = dynamic_cast<CaseWhen*>(e)) {
+        for (auto& [c, v] : w->branches) { markBound(c.get()); markBound(v.get()); }
+        markBound(w->elseExpr.get());
+    }
+}
+
+std::unique_ptr<ast::Expr> parseBound(const std::string& text) {
+    auto expr = parseExpression(text);
+    markBound(expr.get());
+    return expr;
+}
+
 Value ev(const std::string& exprText, Row row = {}) {
-    auto expr = parseExpression(exprText);
+    auto expr = parseBound(exprText);
     return evaluate(*expr, row);
 }
 
@@ -48,6 +74,41 @@ TEST_CASE("integer division truncates and modulo follows Python", "[evaluator]")
     REQUIRE(D(ev("-7.5 % 2")) == 0.5);
 }
 
+TEST_CASE("integer division is correctly rounded before truncating, like Python", "[evaluator]") {
+    // expected values printed by the reference Python: int(a / b)
+    struct Case { int64_t a, b, q; };
+    const Case cases[] = {
+        {9007199254740993, 3, 3002399751580331},
+        {-9007199254740993, 3, -3002399751580331},
+        {INT64_MAX, 3, 3074457345618258432},
+        {INT64_MIN, 7, -1317624576693539328},
+        {4611686018427400249, -9876543210987, -466933},
+        {123456789012345678, 1000000007, 123456788},
+        {36028797018963969, 18014398509481987, 1},
+        {1, 1152921504606846977, 0},
+        {-9007199254740993, -9007199254740994, 0},
+        {INT64_MAX, INT64_MAX - 1, 1},
+    };
+    for (const auto& c : cases) {
+        Row row = {{"s.a", Value(c.a)}, {"s.b", Value(c.b)}};
+        REQUIRE(I(ev("s.a / s.b", row)) == c.q);
+    }
+}
+
+TEST_CASE("pyTrueDivide returns Python's exact double", "[evaluator]") {
+    // repr(a / b) from the reference Python
+    REQUIRE(pyTrueDivide(9007199254740993, 3) == 3002399751580331.0);
+    REQUIRE(pyTrueDivide(INT64_MAX, 3) == 3.0744573456182584e+18);
+    REQUIRE(pyTrueDivide(4611686018427400249, -9876543210987) == -466933.20931327523);
+    REQUIRE(pyTrueDivide(123456789012345678, 1000000007) == 123456788.14814816);
+    REQUIRE(pyTrueDivide(36028797018963969, 18014398509481987) == 1.9999999999999998);
+    REQUIRE(pyTrueDivide(1, 1152921504606846977) == 8.673617379884035e-19);
+    REQUIRE(pyTrueDivide(-9007199254740993, -9007199254740994) == 0.9999999999999999);
+    REQUIRE(pyTrueDivide(INT64_MAX, INT64_MAX - 1) == 1.0);
+    REQUIRE(pyTrueDivide(7, 2) == 3.5);
+    REQUIRE(std::signbit(pyTrueDivide(0, -5)));  // Python: 0 / -5 -> -0.0
+}
+
 TEST_CASE("division by zero and non-numbers are errors", "[evaluator]") {
     REQUIRE(evError("1 / 0") == "Zero se divide nahi kar sakte");
     REQUIRE(evError("1 % 0.0") == "Zero se divide nahi kar sakte");
@@ -71,6 +132,33 @@ TEST_CASE("evaluate resolves ColumnRef from the row map", "[evaluator]") {
     REQUIRE(I(ev("s.umar", {{"s.umar", Value(int64_t{20})}})) == 20);
     REQUIRE(I(ev("umar", {{"umar", Value(int64_t{21})}})) == 21);
     REQUIRE(evError("s.nope") == "Column 's.nope' nahi mila");
+}
+
+TEST_CASE("an UNBOUND qualified column is looked up by its bare name, like Python", "[evaluator]") {
+    // Python evaluates MAAN tuples and TAKRAAV PAR BADLO assignments without
+    // binding them; `t.naam` then reads the row's plain `naam` key.
+    auto expr = parseExpression("t.naam");
+    REQUIRE(S(evaluate(*expr, {{"id", Value(int64_t{1})}, {"naam", txt("b")}})) == "b");
+    REQUIRE(messageOf([&] { evaluate(*expr, {{"t.naam", txt("x")}}); }) == "Column 'naam' nahi mila");
+    REQUIRE(refKey(dynamic_cast<const ast::ColumnRef&>(*expr)) == "naam");
+    REQUIRE(exprLabel(*expr) == "t.naam");  // the header still shows the qualifier
+}
+
+TEST_CASE("TAKRAAV PAR BADLO naam = t.naam reads the attempted row", "[evaluator]") {
+    auto stmts = parseScript("DAALO MEIN t MAAN (1,'b') TAKRAAV PAR BADLO naam = t.naam;");
+    auto& ins = dynamic_cast<ast::Insert&>(*stmts.at(0));
+    REQUIRE(ins.onConflictUpdate.has_value());
+    auto& [column, value] = ins.onConflictUpdate->at(0);
+    REQUIRE(column == "naam");
+    Row env = {{"id", Value(int64_t{1})}, {"naam", txt("b")}};  // Python: dict(zip(column_names, attempted))
+    REQUIRE(S(evaluate(*value, env)) == "b");
+}
+
+TEST_CASE("MAAN (2, x.y) reports the bare column name, like Python", "[evaluator]") {
+    auto stmts = parseScript("DAALO MEIN t MAAN (2, x.y);");
+    auto& ins = dynamic_cast<ast::Insert&>(*stmts.at(0));
+    REQUIRE(I(evaluate(*ins.rows.at(0).at(0), {})) == 2);
+    REQUIRE(messageOf([&] { evaluate(*ins.rows.at(0).at(1), {}); }) == "Column 'y' nahi mila");
 }
 
 TEST_CASE("evaluate propagates KHALI through arithmetic and comparison", "[evaluator]") {
@@ -186,6 +274,37 @@ TEST_CASE("JAISA treats regex characters literally and _ as one character", "[ev
     REQUIRE(B(ev("'a\nb' JAISA 'a%b'")));
 }
 
+TEST_CASE("JAISA folds case like Python's re.IGNORECASE beyond Latin-1", "[evaluator]") {
+    // Łódź vs łódź (Latin Extended-A)
+    REQUIRE(B(ev("'\xC5\x81\xC3\xB3" "d\xC5\xBA' JAISA '\xC5\x82\xC3\xB3" "d\xC5\xBA'")));
+    // Kelvin sign K matches k; long s matches S; final sigma matches sigma
+    REQUIRE(B(ev("'\xE2\x84\xAA' JAISA 'k'")));
+    REQUIRE(B(ev("'\xC5\xBF' JAISA 'S'")));
+    REQUIRE(B(ev("'\xCF\x82' JAISA '\xCE\xA3'")));
+    // micro sign matches Greek mu
+    REQUIRE(B(ev("'\xC2\xB5' JAISA '\xCE\x9C'")));
+    REQUIRE_FALSE(B(ev("'\xC5\x81' JAISA 'L'")));
+}
+
+TEST_CASE("pyEquals and PyValueHash follow Python dict-key semantics", "[evaluator]") {
+    REQUIRE(pyEquals(Value(int64_t{1}), Value(1.0)));
+    REQUIRE(pyEquals(Value(true), Value(int64_t{1})));
+    REQUIRE(pyEquals(Value(), Value()));
+    REQUIRE_FALSE(pyEquals(Value(), Value(int64_t{0})));
+    REQUIRE_FALSE(pyEquals(txt("2005-01-01"), Value(parseDate("2005-01-01"))));
+    REQUIRE_FALSE(pyEquals(Value(std::nan("")), Value(std::nan(""))));
+    REQUIRE_FALSE(pyEquals(Value(int64_t{9007199254740993}), Value(9007199254740992.0)));
+    PyValueHash h;
+    REQUIRE(h(Value(int64_t{1})) == h(Value(1.0)));
+    REQUIRE(h(Value(true)) == h(Value(int64_t{1})));
+    REQUIRE(h(Value(-0.0)) == h(Value(int64_t{0})));
+    std::unordered_set<Value, PyValueHash, PyValueEq> set = {Value(int64_t{1}), Value(1.0), Value(true), txt("1")};
+    REQUIRE(set.size() == 2);
+    std::unordered_set<std::vector<Value>, PyValuesHash, PyValuesEq> rows = {
+        {Value(int64_t{1}), Value()}, {Value(1.0), Value()}, {Value(int64_t{2}), Value()}};
+    REQUIRE(rows.size() == 2);
+}
+
 TEST_CASE("JAISA needs text on both sides", "[evaluator]") {
     REQUIRE(evError("5 JAISA '5'") == "JAISA sirf TEXT ke saath chalta hai");
 }
@@ -225,7 +344,7 @@ TEST_CASE("evaluate throws when Star is evaluated as a value", "[evaluator]") {
 }
 
 TEST_CASE("evaluate looks subquery results up by node identity", "[evaluator]") {
-    auto expr = parseExpression("s.id MEIN (DIKHAO sid SE enroll) AUR s.umar > (DIKHAO 1 SE t)");
+    auto expr = parseBound("s.id MEIN (DIKHAO sid SE enroll) AUR s.umar > (DIKHAO 1 SE t)");
     std::vector<const ast::Expr*> subs;
     findSubqueries(*expr, subs);
     REQUIRE(subs.size() == 2);
@@ -246,7 +365,7 @@ TEST_CASE("evaluate looks subquery results up by node identity", "[evaluator]") 
 }
 
 TEST_CASE("NAHI MEIN negates membership", "[evaluator]") {
-    auto expr = parseExpression("s.id NAHI MEIN (DIKHAO sid SE enroll)");
+    auto expr = parseBound("s.id NAHI MEIN (DIKHAO sid SE enroll)");
     std::vector<const ast::Expr*> subs;
     findSubqueries(*expr, subs);
     REQUIRE(subs.size() == 1);

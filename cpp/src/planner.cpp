@@ -12,7 +12,9 @@ namespace {
 // "alias.col" -> ColumnRef(col, alias)
 std::unique_ptr<ColumnRef> boundRef(const std::string& key) {
     auto dot = key.find('.');
-    return std::make_unique<ColumnRef>(key.substr(dot + 1), key.substr(0, dot));
+    auto ref = std::make_unique<ColumnRef>(key.substr(dot + 1), key.substr(0, dot));
+    ref->bound = true;
+    return ref;
 }
 
 }  // namespace
@@ -230,7 +232,7 @@ std::optional<IndexLookup> chooseAccess(const Table& table, const Scope& scope, 
             auto* lit = dynamic_cast<const Literal*>(valSide);
             if (!ref || !lit) continue;
             // only a BOUND reference to the first source qualifies
-            if (!ref->table || *ref->table != alias || lit->value.isNull()) continue;
+            if (!ref->bound || !ref->table || *ref->table != alias || lit->value.isNull()) continue;
             size_t position = schema.indexOf(ref->name);
             const Column& column = schema.columns[position];
             if (!column.isUnique()) continue;

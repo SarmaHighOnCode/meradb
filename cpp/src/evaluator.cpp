@@ -1,9 +1,11 @@
 // cpp/src/evaluator.cpp -- mirrors meradb/evaluator.py
 #include "meradb/evaluator.h"
 #include "meradb/errors.h"
+#include "meradb/pyvalue.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
+#include <iterator>
 #include <limits>
 
 namespace meradb {
@@ -13,7 +15,6 @@ namespace {
 
 constexpr int64_t I64_MAX = std::numeric_limits<int64_t>::max();
 constexpr int64_t I64_MIN = std::numeric_limits<int64_t>::min();
-constexpr double TWO_POW_63 = 9223372036854775808.0;
 
 // ---------------------------------------------------------------- kinds ----
 
@@ -27,9 +28,9 @@ Kind kindOf(const Value& v) {
     return Kind::Text;
 }
 
-bool isInt(const Value& v) { return std::holds_alternative<int64_t>(v.data); }
-bool isDouble(const Value& v) { return std::holds_alternative<double>(v.data); }
-bool isText(const Value& v) { return std::holds_alternative<std::string>(v.data); }
+bool isInt(const Value& v) { return isIntValue(v); }
+bool isDouble(const Value& v) { return isDoubleValue(v); }
+bool isText(const Value& v) { return isTextValue(v); }
 
 double toDouble(const Value& v) {
     return isInt(v) ? static_cast<double>(std::get<int64_t>(v.data)) : std::get<double>(v.data);
@@ -44,18 +45,6 @@ std::string shown(const Value& v) { return pyRepr(formatValue(v)); }
 }
 
 // ----------------------------------------------------------- comparison ----
-
-// Exact ordering of an int against a finite-or-infinite (non-NaN) double,
-// the way Python compares int with float (no rounding of the int).
-int cmpIntDouble(int64_t i, double d) {
-    if (d >= TWO_POW_63) return -1;
-    if (d < -TWO_POW_63) return 1;
-    double t = std::trunc(d);
-    auto ti = static_cast<int64_t>(t);  // exact: |t| < 2^63
-    if (i != ti) return i < ti ? -1 : 1;
-    double frac = d - t;
-    return frac > 0 ? -1 : (frac < 0 ? 1 : 0);
-}
 
 bool applyOrdering(const std::string& op, int c) {
     if (op == "=") return c == 0;
@@ -119,25 +108,6 @@ Value compare(const std::string& op, Value left, Value right) {
     return Value();
 }
 
-// Python `a == b` for the MEIN (subquery) membership test: numbers (and
-// bools, which are ints in Python) compare by value, everything else needs
-// the same type; mismatched types are simply unequal.
-bool pyEquals(const Value& a, const Value& b) {
-    auto numeric = [](const Value& v) {
-        return isInt(v) || isDouble(v) || std::holds_alternative<bool>(v.data);
-    };
-    if (numeric(a) && numeric(b)) {
-        auto norm = [](const Value& v) {
-            return std::holds_alternative<bool>(v.data) ? Value(int64_t{std::get<bool>(v.data) ? 1 : 0}) : v;
-        };
-        return compareNumbers("=", norm(a), norm(b));
-    }
-    if (isText(a) && isText(b)) return std::get<std::string>(a.data) == std::get<std::string>(b.data);
-    if (std::holds_alternative<Date>(a.data) && std::holds_alternative<Date>(b.data))
-        return std::get<Date>(a.data) == std::get<Date>(b.data);
-    return false;
-}
-
 // ---------------------------------------------------------------- JAISA ----
 
 // Decode UTF-8 into code points so `_` matches exactly one CHARACTER, like
@@ -169,16 +139,22 @@ std::u32string decodeUtf8(const std::string& s) {
     return out;
 }
 
-// Simple case folding for re.IGNORECASE: ASCII, Latin-1, Greek and basic
-// Cyrillic (Devanagari has no case).
+// re.IGNORECASE equivalence: every code point that Python's `re` matches
+// case-insensitively against another maps to the same representative (the
+// smallest code point of its class). The table is generated from the
+// reference Python 3.12 `re` module (all of Unicode, pairwise-verified).
+struct FoldEntry {
+    char32_t from, to;
+};
+const FoldEntry FOLD_TABLE[] = {
+#include "casefold_table.inc"
+};
+
 char32_t foldCase(char32_t c) {
-    if (c >= U'A' && c <= U'Z') return c + 32;
-    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 32;
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 32;
-    if (c == 0x3C2) return 0x3C3;  // final sigma matches sigma
-    if (c >= 0x410 && c <= 0x42F) return c + 32;
-    if (c >= 0x400 && c <= 0x40F) return c + 80;
-    return c;
+    if (c < 0x41) return c;  // fast path: nothing below 'A' folds
+    auto it = std::lower_bound(std::begin(FOLD_TABLE), std::end(FOLD_TABLE), c,
+                               [](const FoldEntry& e, char32_t x) { return e.from < x; });
+    return (it != std::end(FOLD_TABLE) && it->from == c) ? it->to : c;
 }
 
 // naam JAISA 'R%' -- % = any characters (even none), _ = exactly one
@@ -279,7 +255,7 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
     if (op == "/") {
         if (bothInt) {
             // Python: int(left / right) -- true division, then truncate, like SQL
-            double q = std::trunc(toDouble(left) / toDouble(right));
+            double q = std::trunc(pyTrueDivide(std::get<int64_t>(left.data), std::get<int64_t>(right.data)));
             if (q >= TWO_POW_63 || q < -TWO_POW_63) intOverflow(op);
             return Value(static_cast<int64_t>(q));
         }
@@ -462,7 +438,7 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
     }
 
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) {
-        std::string key = refKey(*ref);
+        std::string key = refKey(*ref);  // bound: "alias.col"; unbound (even `t.col`): "col"
         auto it = row.find(key);
         if (it == row.end()) throw ExecutionError("Column '" + key + "' nahi mila");
         return it->second;
@@ -524,7 +500,7 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
 // utilities used by the engine
 // ============================================================================
 
-std::string refKey(const ColumnRef& ref) { return ref.table ? *ref.table + "." + ref.name : ref.name; }
+std::string refKey(const ColumnRef& ref) { return ref.bound && ref.table ? *ref.table + "." + ref.name : ref.name; }
 
 void columnRefs(const Expr& expr, std::vector<const ColumnRef*>& out, bool skipAggregates) {
     columnRefsImpl(&expr, out, skipAggregates);
@@ -552,7 +528,7 @@ std::string aggKey(const FuncCall& func) {
 }
 
 std::string exprLabel(const Expr& expr) {
-    if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) return refKey(*ref);
+    if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) return ref->table ? *ref->table + "." + ref->name : ref->name;
     if (auto* lit = dynamic_cast<const Literal*>(&expr))
         return isText(lit->value) ? pyRepr(std::get<std::string>(lit->value.data)) : formatValue(lit->value);
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr))

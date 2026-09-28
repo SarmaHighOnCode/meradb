@@ -46,8 +46,9 @@ bool isTrue(const Value& v);
 
 // ---- utilities used by the planner and the engine ----
 
-// Row-map key of a column reference: "alias.col" when qualified/bound, else
-// the bare name (Python keeps this string in ColumnRef.name).
+// Row-map key of a column reference -- the string Python keeps in
+// ColumnRef.name: "alias.col" for a BOUND ref, else the bare column name
+// (an unbound `t.col` is looked up as `col`, exactly like Python).
 std::string refKey(const ast::ColumnRef& ref);
 
 // Every ColumnRef inside an expression, for validation. With skipAggregates,

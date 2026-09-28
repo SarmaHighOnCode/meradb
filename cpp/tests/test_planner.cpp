@@ -234,6 +234,32 @@ TEST_CASE("chooseAccess coerces the constant to the column type", "[planner]") {
     REQUIRE_FALSE(chooseAccess(t, scope, bad.get()).has_value());
 }
 
+TEST_CASE("chooseAccess coerces constants for DATE and FLOAT unique columns", "[planner]") {
+    TableSchema s; s.name = "people";
+    Column dob; dob.name = "dob"; dob.typeName = "DATE"; dob.unique = true;
+    Column score; score.name = "score"; score.typeName = "FLOAT"; score.unique = true;
+    s.columns = {dob, score};
+    TempDir dir;
+    std::string path = dir.file("people.tbl");
+    HeapFile(path).create();
+    Table t(s, path);
+    Scope scope({{"p", s}});
+
+    auto byDate = bind(*parseExpression("dob = '2005-01-01'"), scope);
+    auto access = chooseAccess(t, scope, byDate.get());
+    REQUIRE(access.has_value());
+    REQUIRE(std::get<Date>(access->value.data) == parseDate("2005-01-01"));
+    REQUIRE(access->describe(t) == "INDEX LOOKUP people PAR dob = 2005-01-01  [hash index, ANOKHA]");
+    auto badDate = bind(*parseExpression("dob = 'kal'"), scope);
+    REQUIRE_FALSE(chooseAccess(t, scope, badDate.get()).has_value());
+
+    auto byScore = bind(*parseExpression("score = 3"), scope);
+    auto s3 = chooseAccess(t, scope, byScore.get());
+    REQUIRE(s3.has_value());
+    REQUIRE(std::get<double>(s3->value.data) == 3.0);
+    REQUIRE(s3->describe(t) == "INDEX LOOKUP people PAR score = 3.0  [hash index, ANOKHA]");
+}
+
 TEST_CASE("chooseAccess returns nullopt when no usable unique-column equality exists", "[planner]") {
     TempDir dir;
     std::string path = dir.file("students.tbl");

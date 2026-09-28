@@ -24,6 +24,11 @@ struct Literal : Expr {
 struct ColumnRef : Expr {
     std::string name;
     std::optional<std::string> table;
+    // Set by the planner's bind(): `table` is then the resolved source alias
+    // and the row-map key is "table.name" (Python stores that whole string in
+    // `name`). An UNBOUND qualified ref `t.col` is looked up by `col` alone,
+    // like Python's evaluator does.
+    bool bound = false;
     explicit ColumnRef(std::string n, std::optional<std::string> t = std::nullopt)
         : name(std::move(n)), table(std::move(t)) {}
 };

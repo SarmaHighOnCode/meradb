@@ -11,7 +11,9 @@ std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         return std::make_unique<Literal>(lit->value);
     }
     if (const auto* col = dynamic_cast<const ColumnRef*>(&e)) {
-        return std::make_unique<ColumnRef>(col->name, col->table);
+        auto out = std::make_unique<ColumnRef>(col->name, col->table);
+        out->bound = col->bound;
+        return out;
     }
     if (const auto* star = dynamic_cast<const Star*>(&e)) {
         auto s = std::make_unique<Star>();
