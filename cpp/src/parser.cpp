@@ -134,6 +134,7 @@ std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& lef
         expectSymbol("(");
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
+            expectKeyword("DIKHAO");
             sub->statement = parseSelectBody();
             expectSymbol(")");
             auto inSub = std::make_unique<InSubquery>();
@@ -245,6 +246,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (matchSymbol("(")) {
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
+            expectKeyword("DIKHAO");
             sub->statement = parseSelectBody();
             expectSymbol(")");
             return sub;
@@ -279,10 +281,6 @@ std::unique_ptr<Expr> Parser::parseExpressionEntry() { return parseOr(); }
 // SELECT, set ops, transactions). Mirrors meradb/parser.py's
 // _parse_statement and its per-keyword handlers.
 // ---------------------------------------------------------------------
-std::unique_ptr<Select> Parser::parseSelectBody() {
-    throw ParseError("SELECT parsing not implemented yet");
-}
-
 std::vector<std::unique_ptr<Statement>> Parser::parseScript() {
     std::vector<std::unique_ptr<Statement>> result;
     while (peek().type != TokenType::Eof) {
@@ -561,18 +559,196 @@ std::unique_ptr<Statement> Parser::parseBatao() {
     return d;
 }
 
-// ---- DML/SELECT/transactions stubbed here; filled in by Task 8 ----
+// ---- DML ----
+
 std::unique_ptr<Statement> Parser::parseInsert() {
-    throw ParseError("INSERT parsing not implemented yet");
+    // DAALO MEIN table [(col, col)] MAAN (expr, expr), (expr, expr) ...
+    //                               | DIKHAO ...                     -- INSERT ... SELECT
+    //      [TAKRAAV PAR BADLO col = expr, ...]                       -- simplified upsert
+    expectKeyword("MEIN");
+    auto ins = std::make_unique<Insert>();
+    ins->table = expectIdent("table ka naam");
+
+    if (matchSymbol("(")) {
+        std::vector<std::string> cols;
+        cols.push_back(expectIdent("column ka naam"));
+        while (matchSymbol(",")) cols.push_back(expectIdent("column ka naam"));
+        expectSymbol(")");
+        ins->columns = std::move(cols);
+    }
+
+    if (matchKeyword("MAAN")) {
+        ins->rows.push_back(parseValueTuple());
+        while (matchSymbol(",")) ins->rows.push_back(parseValueTuple());
+    } else if (matchKeyword("DIKHAO")) {
+        ins->select = parseSelectBody();
+    } else {
+        error("DAALO ke baad MAAN ya DIKHAO expected tha");
+    }
+
+    if (matchKeyword("TAKRAAV")) {
+        expectKeyword("PAR");
+        expectKeyword("BADLO");
+        ins->onConflictUpdate = parseAssignmentList();
+    }
+    return ins;
 }
+
+std::vector<std::unique_ptr<Expr>> Parser::parseValueTuple() {
+    expectSymbol("(");
+    std::vector<std::unique_ptr<Expr>> values;
+    values.push_back(parseOr());
+    while (matchSymbol(",")) values.push_back(parseOr());
+    expectSymbol(")");
+    return values;
+}
+
+static bool isSetOpKeyword(const Token& t) {
+    return t.type == TokenType::Keyword &&
+           (t.textValue == "SANYUKT" || t.textValue == "SAAJHA" || t.textValue == "CHHODKAR");
+}
+
 std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
-    throw ParseError("SELECT statement parsing not implemented yet");
+    // DIKHAO already consumed. DIKHAO TABLES / VIEWS, or a full select
+    // optionally chained left-associatively with SANYUKT/SAAJHA/CHHODKAR:
+    // `a SANYUKT b SANYUKT c` -> SetOp(SetOp(a, b), c).
+    if (matchKeyword("TABLES")) return std::make_unique<ShowTables>();
+    if (matchKeyword("VIEWS")) return std::make_unique<ShowViews>();
+
+    std::unique_ptr<Statement> result = parseSelectBody();
+    while (isSetOpKeyword(peek())) {
+        auto op = std::make_unique<SetOp>();
+        op->op = advance().textValue;
+        expectKeyword("DIKHAO");
+        op->left = std::move(result);
+        op->right = parseSelectBody();
+        result = std::move(op);
+    }
+    return result;
 }
+
+std::unique_ptr<Select> Parser::parseSelectBody() {
+    // select body := [ALAG] cols SE table [alias] { join } [JAHAN expr]
+    //                [SAMOOH expr, ...] [JINKA expr] [KRAM expr [ULTA|SEEDHA], ...] [SIRF n]
+    // (assumes the leading DIKHAO keyword was already consumed by the caller)
+    auto sel = std::make_unique<Select>();
+    sel->distinct = matchKeyword("ALAG");
+    do {
+        auto item = parseSelectItem();
+        sel->columns.push_back(std::move(item.first));
+        sel->aliases.push_back(std::move(item.second));
+    } while (matchSymbol(","));
+
+    expectKeyword("SE");
+    sel->table = expectIdent("table ka naam");
+    sel->alias = parseAliasOpt();
+
+    while (true) {
+        // exactly one of BAAYAN/DAHINA/DONO/SAMAAN, or a plain MILAO (INNER)
+        std::string kind;
+        if (matchKeyword("BAAYAN")) { expectKeyword("MILAO"); kind = "LEFT"; }
+        else if (matchKeyword("DAHINA")) { expectKeyword("MILAO"); kind = "RIGHT"; }
+        else if (matchKeyword("DONO")) { expectKeyword("MILAO"); kind = "FULL"; }
+        else if (matchKeyword("SAMAAN")) { expectKeyword("MILAO"); kind = "NATURAL"; }
+        else if (matchKeyword("MILAO")) { kind = "INNER"; }
+        else break;
+        Join j;
+        j.kind = kind;
+        j.table = expectIdent("table ka naam");
+        auto alias = parseAliasOpt();
+        j.alias = alias ? *alias : j.table;
+        if (kind != "NATURAL") {
+            // NATURAL has no PAR at all -- the planner synthesizes the ON
+            // condition from the shared column names.
+            expectKeyword("PAR");
+            j.on = parseOr();
+        }
+        sel->joins.push_back(std::move(j));
+    }
+
+    if (matchKeyword("JAHAN")) sel->where = parseOr();
+    if (matchKeyword("SAMOOH")) {
+        sel->groupBy.push_back(parseOr());
+        while (matchSymbol(",")) sel->groupBy.push_back(parseOr());
+    }
+    if (matchKeyword("JINKA")) sel->having = parseOr();
+    if (matchKeyword("KRAM")) {
+        sel->orderBy.push_back(parseOrderItem());
+        while (matchSymbol(",")) sel->orderBy.push_back(parseOrderItem());
+    }
+    if (matchKeyword("SIRF")) {
+        const Token& t = peek();
+        if (t.type != TokenType::Number || t.isFloat) error("SIRF ke baad ek whole number expected tha");
+        advance();
+        sel->limit = static_cast<int>(t.intValue);
+    }
+    return sel;
+}
+
+std::pair<std::unique_ptr<Expr>, std::optional<std::string>> Parser::parseSelectItem() {
+    // item = "*" | IDENT "." "*" | expr [ "KAHO" IDENT ]
+    // `*` can't be parsed as an expression (it would look like multiplication)
+    std::unique_ptr<Expr> expr;
+    if (matchSymbol("*")) expr = std::make_unique<Star>();
+    else expr = parseOr();
+    if (dynamic_cast<Star*>(expr.get())) {  // bare `*` or `alias.*`
+        if (checkKeyword("KAHO")) error("'*' ke baad KAHO (alias) nahi laga sakte");
+        return {std::move(expr), std::nullopt};
+    }
+    if (matchKeyword("KAHO")) return {std::move(expr), expectIdent("alias ka naam")};
+    return {std::move(expr), std::nullopt};
+}
+
+std::optional<std::string> Parser::parseAliasOpt() {
+    // `SE students s` -- an IDENT right after the table name is its alias.
+    // Keywords (JAHAN, MILAO, ...) are TokenType::Keyword, never taken here.
+    if (peek().type == TokenType::Ident) return advance().textValue;
+    return std::nullopt;
+}
+
+OrderItem Parser::parseOrderItem() {
+    OrderItem oi;
+    oi.expr = parseOr();
+    if (matchKeyword("ULTA")) {
+        oi.descending = true;
+    } else {
+        matchKeyword("SEEDHA");
+        oi.descending = false;
+    }
+    return oi;
+}
+
 std::unique_ptr<Statement> Parser::parseUpdate() {
-    throw ParseError("UPDATE parsing not implemented yet");
+    // BADLO table RAKHO col = expr, col = expr [JAHAN expr]
+    auto upd = std::make_unique<Update>();
+    upd->table = expectIdent("table ka naam");
+    expectKeyword("RAKHO");
+    upd->assignments = parseAssignmentList();
+    if (matchKeyword("JAHAN")) upd->where = parseOr();
+    return upd;
 }
+
+std::vector<std::pair<std::string, std::unique_ptr<Expr>>> Parser::parseAssignmentList() {
+    // shared by BADLO ... RAKHO and DAALO ... TAKRAAV PAR BADLO
+    std::vector<std::pair<std::string, std::unique_ptr<Expr>>> out;
+    out.push_back(parseAssignment());
+    while (matchSymbol(",")) out.push_back(parseAssignment());
+    return out;
+}
+
+std::pair<std::string, std::unique_ptr<Expr>> Parser::parseAssignment() {
+    std::string col = expectIdent("column ka naam");
+    expectSymbol("=");
+    return {col, parseOr()};
+}
+
 std::unique_ptr<Statement> Parser::parseDelete() {
-    throw ParseError("DELETE parsing not implemented yet");
+    // MITAO SE table [JAHAN expr]
+    expectKeyword("SE");
+    auto del = std::make_unique<Delete>();
+    del->table = expectIdent("table ka naam");
+    if (matchKeyword("JAHAN")) del->where = parseOr();
+    return del;
 }
 
 std::vector<std::unique_ptr<Statement>> parseScript(const std::string& text) {
@@ -583,6 +759,7 @@ std::vector<std::unique_ptr<Statement>> parseScript(const std::string& text) {
 std::unique_ptr<Expr> parseExpression(const std::string& text) {
     Parser p(tokenize(text), text);
     auto e = p.parseExpressionEntry();
+    if (!p.atEnd()) throw ParseError("SHART expression adhoori parse hui: '" + text + "'");
     return e;
 }
 

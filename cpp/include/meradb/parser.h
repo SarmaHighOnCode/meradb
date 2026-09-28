@@ -17,6 +17,7 @@ public:
     // (Task 6) is usable standalone via parseExpressionEntry(), and
     // internally by every statement parser.
     std::unique_ptr<ast::Expr> parseExpressionEntry();
+    bool atEnd() const { return peek().type == TokenType::Eof; }
 
 private:
     std::vector<Token> tokens_;
