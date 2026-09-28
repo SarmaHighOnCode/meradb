@@ -37,6 +37,7 @@ add_library(meradb_core STATIC
   src/table.cpp
   src/planner.cpp
   src/evaluator.cpp
+  src/aggregates.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)

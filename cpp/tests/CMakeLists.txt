@@ -12,6 +12,7 @@ add_executable(meradb_tests
   test_table.cpp
   test_planner.cpp
   test_evaluator.cpp
+  test_aggregates.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
