@@ -37,4 +37,8 @@ Date parseDate(const std::string& text, const std::string& column = "");
 Value coerce(const Value& value, const std::string& typeName, const std::string& column);
 std::string formatValue(const Value& value);
 
+// Python's repr() of a str (quote choice + escapes), used where Python error
+// messages and labels write `{text!r}`.
+std::string pyRepr(const std::string& s);
+
 }  // namespace meradb

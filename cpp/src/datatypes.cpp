@@ -27,6 +27,8 @@ std::string toUpper(std::string s) {
     return s;
 }
 
+}  // namespace
+
 // Python's repr() of a str, for error messages: single quotes unless the
 // text contains a ' and no ", then double quotes; backslash, the chosen
 // quote and common control characters are escaped.
@@ -44,6 +46,8 @@ std::string pyRepr(const std::string& s) {
     out += quote;
     return out;
 }
+
+namespace {
 
 // ---- proleptic Gregorian calendar helpers (same rules as CPython's datetime) ----
 constexpr int32_t MAX_ORDINAL = 3652059;  // 9999-12-31

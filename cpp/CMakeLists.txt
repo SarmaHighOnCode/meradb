@@ -35,6 +35,7 @@ add_library(meradb_core STATIC
   src/catalog.cpp
   src/storage.cpp
   src/table.cpp
+  src/planner.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
