@@ -2,52 +2,17 @@
 #include "meradb/planner.h"
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
+#include "meradb/evaluator.h"
 
 namespace meradb {
 using namespace ast;
 
 namespace {
 
-// Row-map key of a (bound) column reference: "alias.col", or the bare name
-// for an unqualified one -- the same string Python keeps in ColumnRef.name.
-std::string keyOf(const ColumnRef& ref) { return ref.table ? *ref.table + "." + ref.name : ref.name; }
-
 // "alias.col" -> ColumnRef(col, alias)
 std::unique_ptr<ColumnRef> boundRef(const std::string& key) {
     auto dot = key.find('.');
     return std::make_unique<ColumnRef>(key.substr(dot + 1), key.substr(0, dot));
-}
-
-// Every column key mentioned in an expression, same traversal as Python's
-// evaluator.column_refs (no descent into subqueries).
-void collectKeys(const Expr* expr, std::vector<std::string>& out) {
-    if (expr == nullptr) return;
-    if (auto* ref = dynamic_cast<const ColumnRef*>(expr)) {
-        out.push_back(keyOf(*ref));
-    } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
-        collectKeys(b->left.get(), out);
-        collectKeys(b->right.get(), out);
-    } else if (auto* u = dynamic_cast<const UnaryOp*>(expr)) {
-        collectKeys(u->operand.get(), out);
-    } else if (auto* isn = dynamic_cast<const IsNull*>(expr)) {
-        collectKeys(isn->expr.get(), out);
-    } else if (auto* f = dynamic_cast<const FuncCall*>(expr)) {
-        collectKeys(f->arg.get(), out);
-    } else if (auto* co = dynamic_cast<const Coalesce*>(expr)) {
-        for (auto& a : co->args) collectKeys(a.get(), out);
-    } else if (auto* cw = dynamic_cast<const CaseWhen*>(expr)) {
-        for (auto& [cond, value] : cw->branches) {
-            collectKeys(cond.get(), out);
-            collectKeys(value.get(), out);
-        }
-        collectKeys(cw->elseExpr.get(), out);
-    }
-}
-
-// Python's expr_label(ast.Literal(v)): strings keep their quotes (repr).
-std::string literalLabel(const Value& v) {
-    if (std::holds_alternative<std::string>(v.data)) return pyRepr(std::get<std::string>(v.data));
-    return formatValue(v);
 }
 
 }  // namespace
@@ -248,7 +213,7 @@ std::vector<const Expr*> conjuncts(const Expr& expr) {
 std::string IndexLookup::describe(const Table& table) const {
     const auto& col = table.schema().columns.at(column);
     std::string kind = col.primaryKey ? "MUKHYA KUNJI" : "ANOKHA";
-    return "INDEX LOOKUP " + table.schema().name + " PAR " + columnName + " = " + literalLabel(value) +
+    return "INDEX LOOKUP " + table.schema().name + " PAR " + columnName + " = " + exprLabel(Literal(value)) +
            "  [hash index, " + kind + "]";
 }
 
@@ -286,9 +251,7 @@ std::optional<IndexLookup> chooseAccess(const Table& table, const Scope& scope, 
 // ============================================================================
 
 void checkJoinCondition(const Expr* on, const Scope& scope, size_t rightIndex) {
-    std::vector<std::string> keys;
-    collectKeys(on, keys);
-    for (const auto& key : keys)
+    for (const auto& key : columnRefKeys(on))
         if (scope.sourceIndex(key) > rightIndex)
             throw ExecutionError("PAR mein '" + key + "' abhi use nahi ho sakta -- wo table baad mein MILAO hoti hai");
 }
@@ -300,7 +263,7 @@ std::optional<std::pair<std::string, std::string>> chooseJoin(const Expr* on, co
         auto* l = dynamic_cast<const ColumnRef*>(b->left.get());
         auto* r = dynamic_cast<const ColumnRef*>(b->right.get());
         if (!l || !r) continue;
-        std::string lKey = keyOf(*l), rKey = keyOf(*r);
+        std::string lKey = refKey(*l), rKey = refKey(*r);
         size_t a = scope.sourceIndex(lKey), bi = scope.sourceIndex(rKey);
         if (a < rightIndex && bi == rightIndex) return std::make_pair(lKey, rKey);
         if (bi < rightIndex && a == rightIndex) return std::make_pair(rKey, lKey);
