@@ -2,6 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/tokenizer.h"
 #include "meradb/errors.h"
+#include <cmath>
+#include <cstdint>
+#include <string>
 
 using namespace meradb;
 
@@ -64,4 +67,53 @@ TEST_CASE("tokenize records start/end char offsets for source slicing", "[tokeni
 
 TEST_CASE("tokenize throws TokenizerError on unrecognized character", "[tokenizer]") {
     REQUIRE_THROWS_AS(tokenize("naam @ 5"), TokenizerError);
+}
+
+TEST_CASE("tokenize error text matches Python, with line and col", "[tokenizer]") {
+    try {
+        tokenize("naam @ 5");
+        FAIL("expected TokenizerError");
+    } catch (const TokenizerError& e) {
+        REQUIRE(e.message() == "Ye character samajh nahi aaya: '@' (line 1, col 6)");
+    }
+    try {
+        tokenize("'open");
+        FAIL("expected TokenizerError");
+    } catch (const TokenizerError& e) {
+        REQUIRE(e.message() == "String band nahi hui -- closing ' missing hai (line 1, col 6)");
+    }
+}
+
+TEST_CASE("tokenize reports an over-long integer literal as a MeraDB error", "[tokenizer]") {
+    // 30 digits: does not fit int64_t. Must stay inside the MeraDBError
+    // hierarchy instead of leaking std::out_of_range.
+    REQUIRE_THROWS_AS(tokenize("123456789012345678901234567890"), MeraDBError);
+    try {
+        tokenize("DAALO 99999999999999999999");
+        FAIL("expected TokenizerError");
+    } catch (const TokenizerError& e) {
+        REQUIRE(e.message() == "Number 99999999999999999999 INT ke liye bahut bada hai (8-byte limit) (line 1, col 7)");
+    }
+    auto tokens = tokenize("9223372036854775807");
+    REQUIRE(tokens[0].intValue == INT64_MAX);
+}
+
+TEST_CASE("tokenize reads an over-long float literal like Python float()", "[tokenizer]") {
+    std::string huge(400, '9');
+    auto tokens = tokenize(huge + ".5");
+    REQUIRE(tokens[0].isFloat);
+    REQUIRE(tokens[0].doubleValue == HUGE_VAL);
+}
+
+TEST_CASE("tokenize: '3.' is an int followed by a dot symbol", "[tokenizer]") {
+    auto tokens = tokenize("3.");
+    REQUIRE(tokens[0].type == TokenType::Number);
+    REQUIRE_FALSE(tokens[0].isFloat);
+    REQUIRE(tokens[1].textValue == ".");
+}
+
+TEST_CASE("tokenize skips a UTF-8 BOM, counting it as one column", "[tokenizer]") {
+    auto tokens = tokenize("\xEF\xBB\xBF" "DIKHAO");
+    REQUIRE(tokens[0].textValue == "DIKHAO");
+    REQUIRE(tokens[0].col == 2);
 }

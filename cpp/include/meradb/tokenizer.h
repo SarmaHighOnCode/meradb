@@ -9,7 +9,7 @@ namespace meradb {
 enum class TokenType { Keyword, Ident, Number, String, Symbol, Eof };
 
 struct Token {
-    TokenType type;
+    TokenType type = TokenType::Eof;
     std::string textValue;   // upper-cased for Keyword/Symbol, lower-cased for Ident, raw for String
     int64_t intValue = 0;
     double doubleValue = 0.0;

@@ -2,6 +2,8 @@
 #include "meradb/tokenizer.h"
 #include "meradb/errors.h"
 #include <cctype>
+#include <cstdlib>
+#include <stdexcept>
 #include <set>
 #include <unordered_set>
 
@@ -52,7 +54,9 @@ void Tokenizer::skipWhitespaceAndComments() {
         if (c == '\xEF' && peek(1) == '\xBB' && peek(2) == '\xBF') {
             // UTF-8 BOM, 3 bytes — skip as raw bytes (not through advance's
             // line/col tracking, since it's not a real character).
+            // Python sees the BOM as one character and counts it as a column.
             pos_ += 3;
+            ++col_;
             continue;
         }
         if (std::isspace(static_cast<unsigned char>(c))) { advance(); continue; }
@@ -65,7 +69,7 @@ void Tokenizer::skipWhitespaceAndComments() {
 }
 
 [[noreturn]] void Tokenizer::error(const std::string& msg) const {
-    throw TokenizerError(msg + " (line " + std::to_string(line_) + ")");
+    throw TokenizerError(msg + " (line " + std::to_string(line_) + ", col " + std::to_string(col_) + ")");
 }
 
 Token Tokenizer::readWord() {
@@ -104,8 +108,21 @@ Token Tokenizer::readNumber() {
     t.isFloat = isFloat;
     t.line = startLine; t.col = startCol;
     t.start = static_cast<int>(start); t.end = static_cast<int>(pos_);
-    if (isFloat) t.doubleValue = std::stod(text);
-    else t.intValue = std::stoll(text);
+    if (isFloat) {
+        // strtod (not stod): an over-long literal rounds to inf / 0.0 the
+        // way Python's float(text) does, instead of throwing out_of_range.
+        t.doubleValue = std::strtod(text.c_str(), nullptr);
+    } else {
+        // Python ints are unbounded and the 8-byte INT limit is only hit
+        // later in coerce; int64_t cannot hold the literal at all, so the
+        // same limit is reported here as a MeraDB error.
+        try {
+            t.intValue = std::stoll(text);
+        } catch (const std::out_of_range&) {
+            throw TokenizerError("Number " + text + " INT ke liye bahut bada hai (8-byte limit) (line " +
+                                 std::to_string(startLine) + ", col " + std::to_string(startCol) + ")");
+        }
+    }
     return t;
 }
 
@@ -115,7 +132,7 @@ Token Tokenizer::readString() {
     advance();  // opening '
     std::string value;
     while (true) {
-        if (pos_ >= text_.size()) error("Adhoora string literal (khatam nahi hua)");
+        if (pos_ >= text_.size()) error("String band nahi hui -- closing ' missing hai");
         char c = advance();
         if (c == '\'') {
             if (peek() == '\'') { value += '\''; advance(); continue; }  // '' -> '
@@ -162,7 +179,9 @@ std::vector<Token> Tokenizer::tokenize() {
             } else {
                 static const std::string oneChar = "(),;*=<>+-/%.";
                 if (oneChar.find(c) == std::string::npos) {
-                    error(std::string("Anjaan character: '") + c + "'");
+                    // Python formats the character with repr(): '@', "'" or '\\'
+                    std::string shown = (c == '\\') ? std::string("'\\\\'") : std::string("'") + c + "'";
+                    error("Ye character samajh nahi aaya: " + shown);
                 }
                 advance();
                 symbol = std::string(1, c);
