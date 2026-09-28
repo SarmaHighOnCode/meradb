@@ -34,6 +34,7 @@ add_library(meradb_core STATIC
   src/parser.cpp
   src/catalog.cpp
   src/storage.cpp
+  src/table.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
