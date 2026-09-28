@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 using namespace meradb;
 using meradb_test::TempDir;
@@ -442,6 +443,91 @@ TEST_CASE("Non-finite FLOAT defaults round-trip exactly like Python's json", "[c
         cat.save();
     }
     REQUIRE(meradb_test::readText(dir.file("catalog.json")) == pyText);
+}
+
+TEST_CASE("A TEXT default that looks like the non-finite marker stays TEXT", "[catalog]") {
+    // What Python's json.dump writes for TEXT defaults '\0meradb-nonfinite:Infinity'
+    // and '\0meradb-nonfinite-0:NaN' next to a real float('inf') FLOAT default.
+    const std::string pyText = R"({
+  "tables": {
+    "t": {
+      "name": "t",
+      "columns": [
+        {
+          "name": "s",
+          "type_name": "TEXT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": "\u0000meradb-nonfinite:Infinity",
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": null
+        },
+        {
+          "name": "s2",
+          "type_name": "TEXT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": "\u0000meradb-nonfinite-0:NaN",
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": null
+        },
+        {
+          "name": "f",
+          "type_name": "FLOAT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": Infinity,
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": null
+        }
+      ],
+      "composite_unique": [],
+      "composite_pk": null
+    }
+  },
+  "views": {},
+  "triggers": {},
+  "procedures": {}
+})";
+    const std::string marker1 = std::string("\0meradb-nonfinite:Infinity", 26);
+    const std::string marker2 = std::string("\0meradb-nonfinite-0:NaN", 23);
+
+    TempDir dir;
+    writeText(dir.file("catalog.json"), pyText);
+    {
+        Catalog cat(dir.str());
+        const auto& cols = cat.get("t").columns;
+        REQUIRE(std::get<std::string>(cols[0].defaultValue->data) == marker1);
+        REQUIRE(std::get<std::string>(cols[1].defaultValue->data) == marker2);
+        REQUIRE(std::isinf(std::get<double>(cols[2].defaultValue->data)));
+        cat.save();
+    }
+    REQUIRE(meradb_test::readText(dir.file("catalog.json")) == pyText);
+
+    // created on the C++ side too: save + reload keeps both kinds apart
+    TempDir dir2;
+    {
+        Catalog cat(dir2.str());
+        TableSchema s; s.name = "u";
+        Column a; a.name = "a"; a.typeName = "TEXT"; a.defaultValue = Value(marker1);
+        Column b; b.name = "b"; b.typeName = "FLOAT"; b.defaultValue = Value(-std::numeric_limits<double>::infinity());
+        s.columns = {a, b};
+        cat.add(s);
+    }
+    Catalog cat2(dir2.str());
+    const auto& cols = cat2.get("u").columns;
+    REQUIRE(std::get<std::string>(cols[0].defaultValue->data) == marker1);
+    double lo = std::get<double>(cols[1].defaultValue->data);
+    REQUIRE((std::isinf(lo) && lo < 0));
 }
 
 TEST_CASE("A value that can't be serialised raises StorageError and changes nothing", "[catalog]") {

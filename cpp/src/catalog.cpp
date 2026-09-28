@@ -18,15 +18,20 @@ namespace {
 // ---- non-finite floats ----
 // Python's json writes float('inf') / -inf / nan as the bare tokens
 // Infinity / -Infinity / NaN (not valid JSON, but json.load accepts them).
-// nlohmann neither reads nor writes those, so they travel through it as a
-// marker string: quoteNonFinite() turns bare tokens into markers before
-// parsing, renderJson() turns markers back into bare tokens after dumping.
+// nlohmann neither reads nor writes those, so:
+//  * reading: quoteNonFinite() turns bare tokens (outside string literals)
+//    into marker strings before parsing, and ONLY a FLOAT column's default
+//    turns a marker back into a double -- a TEXT/DATE default that happens
+//    to equal the marker is kept as the string it is;
+//  * writing: Catalog::save() puts markers only at the exact spots that hold
+//    a non-finite default, using a nonce that occurs nowhere else in the
+//    document, then swaps those quoted markers for the bare tokens.
 const std::string kNonFiniteMarker = std::string("\0meradb-nonfinite:", 18);
 const char* const kNonFiniteTokens[] = {"-Infinity", "Infinity", "NaN"};
 
-std::string markerFor(double d) {
-    if (std::isnan(d)) return kNonFiniteMarker + "NaN";
-    return kNonFiniteMarker + (d < 0 ? "-Infinity" : "Infinity");
+const char* nonFiniteToken(double d) {
+    if (std::isnan(d)) return "NaN";
+    return d < 0 ? "-Infinity" : "Infinity";
 }
 
 std::optional<double> fromMarker(const std::string& s) {
@@ -73,31 +78,25 @@ std::string quoteNonFinite(const std::string& text) {
     return out;
 }
 
-// dump() the way Python's json.dump(indent=2) writes (ensure_ascii), with
-// marker strings turned back into bare tokens. A library error (e.g. a
-// string that isn't valid UTF-8) becomes a StorageError.
+// dump() the way Python's json.dump(indent=2) writes (ensure_ascii). A
+// library error (e.g. a string that isn't valid UTF-8) becomes a StorageError.
 std::string renderJson(const json& j) {
-    std::string text;
     try {
-        text = j.dump(2, ' ', true);
+        return j.dump(2, ' ', true);
     } catch (const nlohmann::json::exception& e) {
         throw StorageError(std::string("catalog.json likh nahi paaye: ") + e.what());
     }
-    for (const char* token : kNonFiniteTokens) {
-        std::string quoted = std::string("\"\\u0000meradb-nonfinite:") + token + "\"";
-        for (size_t pos = text.find(quoted); pos != std::string::npos; pos = text.find(quoted, pos))
-            text.replace(pos, quoted.size(), token);
-    }
-    return text;
 }
 
+// Non-finite doubles come out as null here (as nlohmann would write them);
+// Catalog::save() patches those spots with Python's bare tokens.
 json valueToJson(const std::optional<Value>& v) {
     if (!v.has_value() || v->isNull()) return nullptr;
     const auto& d = v->data;
     if (std::holds_alternative<int64_t>(d)) return std::get<int64_t>(d);
     if (std::holds_alternative<double>(d)) {
         double x = std::get<double>(d);
-        return std::isfinite(x) ? json(x) : json(markerFor(x));
+        return std::isfinite(x) ? json(x) : json(nullptr);
     }
     if (std::holds_alternative<bool>(d)) return std::get<bool>(d);
     if (std::holds_alternative<std::string>(d)) return std::get<std::string>(d);
@@ -106,7 +105,7 @@ json valueToJson(const std::optional<Value>& v) {
 }
 
 // The raw JSON literal of a WARNA default, before it's coerced to the column type.
-Value jsonToValue(const json& j, const std::string& column) {
+Value jsonToValue(const json& j, const std::string& column, const std::string& typeName) {
     if (j.is_null()) return Value();
     if (j.is_boolean()) return Value(j.get<bool>());
     if (j.is_number_integer()) {
@@ -117,7 +116,8 @@ Value jsonToValue(const json& j, const std::string& column) {
     if (j.is_number_float()) return Value(j.get<double>());
     if (j.is_string()) {
         const auto& s = j.get_ref<const std::string&>();
-        if (auto d = fromMarker(s)) return Value(*d);
+        if (typeName == "FLOAT")  // only a FLOAT default can be a bare Infinity/NaN token
+            if (auto d = fromMarker(s)) return Value(*d);
         return Value(s);
     }
     throw StorageError("catalog.json corrupt hai: column '" + column + "' ka WARNA value samajh nahi aaya");
@@ -159,7 +159,7 @@ Column Column::fromJson(const json& j) {
     c.notNull = j.value("not_null", false);
     c.unique = j.value("unique", false);
     auto def = j.find("default");
-    if (def != j.end() && !def->is_null()) c.defaultValue = coerce(jsonToValue(*def, c.name), c.typeName, c.name);
+    if (def != j.end() && !def->is_null()) c.defaultValue = coerce(jsonToValue(*def, c.name, c.typeName), c.typeName, c.name);
     c.maxLength = optionalField<int>(j, "max_length");
     c.refTable = optionalField<std::string>(j, "ref_table");
     c.refColumn = optionalField<std::string>(j, "ref_column");
@@ -260,6 +260,33 @@ void Catalog::save() {
     // match what Python's open(..., "w") writes on the same platform; and
     // ensure_ascii matches json.dump's default escaping.
     std::string text = renderJson(data);
+
+    // Non-finite FLOAT defaults: Python writes bare Infinity/-Infinity/NaN.
+    // Mark exactly those spots with a marker whose escaped form appears
+    // nowhere in the document, then replace the quoted markers by the tokens.
+    std::vector<std::pair<json*, const char*>> nonFinite;
+    for (const auto& [name, schema] : tables) {
+        for (size_t i = 0; i < schema.columns.size(); ++i) {
+            const auto& def = schema.columns[i].defaultValue;
+            if (def && std::holds_alternative<double>(def->data) && !std::isfinite(std::get<double>(def->data)))
+                nonFinite.emplace_back(&data["tables"][name]["columns"][i]["default"],
+                                       nonFiniteToken(std::get<double>(def->data)));
+        }
+    }
+    if (!nonFinite.empty()) {
+        std::string nonce;
+        for (unsigned k = 0;; ++k) {
+            nonce = "meradb-nonfinite-" + std::to_string(k) + ":";
+            if (text.find("\\u0000" + nonce) == std::string::npos) break;
+        }
+        for (auto& [slot, token] : nonFinite) *slot = std::string(1, '\0') + nonce + token;
+        text = renderJson(data);
+        for (const char* token : kNonFiniteTokens) {
+            std::string quoted = "\"\\u0000" + nonce + token + "\"";
+            for (size_t pos = text.find(quoted); pos != std::string::npos; pos = text.find(quoted, pos))
+                text.replace(pos, quoted.size(), token);
+        }
+    }
     std::string tmp = path_ + ".tmp";
     {
         std::ofstream out(tmp);
