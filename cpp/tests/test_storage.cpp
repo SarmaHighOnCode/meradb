@@ -175,3 +175,22 @@ TEST_CASE("HeapFile.truncate empties the file and destroy removes it", "[storage
     REQUIRE_FALSE(std::filesystem::exists(hf.path()));
     hf.destroy();  // already gone: no error, like Python
 }
+
+TEST_CASE("decodeRow rejects a DATE ordinal Python's date.fromordinal would reject", "[storage]") {
+    REQUIRE_THROWS_AS(decodeRow({0x01, 0x00, 0x00, 0x00, 0x00}, {"DATE"}), StorageError);  // ordinal 0
+    REQUIRE_THROWS_AS(decodeRow({0x01, 0xff, 0xff, 0xff, 0xff}, {"DATE"}), StorageError);  // -1
+    REQUIRE_THROWS_AS(decodeRow({0x01, 0xdc, 0xb9, 0x37, 0x00}, {"DATE"}), StorageError);  // 3652060
+    // the bounds themselves are fine: 0001-01-01 and 9999-12-31
+    REQUIRE(std::get<Date>(decodeRow({0x01, 0x01, 0x00, 0x00, 0x00}, {"DATE"})[0].data).isoFormat() == "0001-01-01");
+    REQUIRE(std::get<Date>(decodeRow({0x01, 0xdb, 0xb9, 0x37, 0x00}, {"DATE"})[0].data).isoFormat() == "9999-12-31");
+}
+
+TEST_CASE("HeapFile.read checks a corrupt record length before allocating", "[storage]") {
+    TempDir dir;
+    std::string path = dir.file("t.tbl");
+    // one live record claiming a 0xFFFFFFFF-byte payload, with 2 bytes present
+    writeBytes(path, {'M', 'E', 'R', 'A', 'D', 'B', '0', '1', 0x01, 0xff, 0xff, 0xff, 0xff, 0x01, 0x02});
+    HeapFile hf(path);
+    REQUIRE_THROWS_AS(hf.read(8), StorageError);
+    REQUIRE_THROWS_AS(hf.scan(), StorageError);
+}

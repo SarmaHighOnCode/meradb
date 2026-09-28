@@ -172,3 +172,126 @@ TEST_CASE("MaterializedTable behaves like Table for reads, is flagged as a view"
     Table t(makeSchema(), "unused.tbl");
     REQUIRE_FALSE(t.isView());
 }
+
+namespace {
+// u(id INT ANOKHA, a INT ANOKHA, b TEXT ANOKHA, c INT, d INT,
+//   e INT ANOKHA, f INT ANOKHA, ANOKHA (c, d), MUKHYA KUNJI (e, f))
+TableSchema makeManyUniqueSchema() {
+    TableSchema s;
+    s.name = "u";
+    auto col = [](const char* name, const char* type) {
+        Column c; c.name = name; c.typeName = type;
+        return c;
+    };
+    Column id = col("id", "INT"); id.unique = true;
+    Column a = col("a", "INT"); a.unique = true;
+    Column b = col("b", "TEXT"); b.unique = true;
+    Column e = col("e", "INT"); e.unique = true;
+    Column f = col("f", "INT"); f.unique = true;
+    s.columns = {id, a, b, col("c", "INT"), col("d", "INT"), e, f};
+    s.compositeUnique = {{"c", "d"}};
+    s.compositePk = std::vector<std::string>{"e", "f"};
+    return s;
+}
+
+std::string pyReprOf(const Value& v) {
+    if (std::holds_alternative<std::string>(v.data)) return pyRepr(std::get<std::string>(v.data));
+    return formatValue(v);
+}
+
+// A port of engine.py's _check_unique first-match loop (Task 16 will own
+// the real one): the FIRST index, in indexes() order, holding one of the
+// row's keys names the error.
+std::string firstDuplicateError(Table& t, const RowValues& values) {
+    const auto& cols = t.schema().columns;
+    for (auto& [positions, index] : t.indexes()) {
+        std::vector<Value> key;
+        bool hasNull = false;
+        for (size_t p : positions) {
+            hasNull = hasNull || values[p].isNull();
+            key.push_back(values[p]);
+        }
+        if (hasNull || index.count(key) == 0) continue;
+        if (positions.size() == 1)
+            return "Duplicate value " + pyReprOf(key[0]) + " column '" + cols[positions[0]].name +
+                   "' mein -- is column mein har value alag honi chahiye";
+        std::string tuple = "(", names = "[";
+        for (size_t i = 0; i < positions.size(); ++i) {
+            tuple += (i ? ", " : "") + pyReprOf(key[i]);
+            names += (i ? ", " : "") + pyRepr(cols[positions[i]].name);
+        }
+        return "Duplicate value " + tuple + ") columns " + names + "] mein -- ye combination alag hona chahiye";
+    }
+    return "";
+}
+}  // namespace
+
+TEST_CASE("indexes() iterates in Python's order: unique columns, composite ANOKHA, composite PK", "[table]") {
+    TempDir dir;
+    std::string path = dir.file("u.tbl");
+    HeapFile(path).create();
+    Table t(makeManyUniqueSchema(), path);
+    std::vector<std::vector<size_t>> order;
+    for (auto& [positions, index] : t.indexes()) order.push_back(positions);
+    REQUIRE(order == std::vector<std::vector<size_t>>{{0}, {1}, {2}, {5}, {6}, {3, 4}, {5, 6}});
+}
+
+TEST_CASE("First-match duplicate error names the same column Python does", "[table]") {
+    TempDir dir;
+    std::string path = dir.file("u.tbl");
+    HeapFile(path).create();
+    Table t(makeManyUniqueSchema(), path);
+    t.insertMany({{I(1), I(10), S("x"), I(5), I(6), I(7), I(8)}});
+
+    // Expected strings are the Python engine's actual messages for
+    //   BANAO TABLE u (id INT ANOKHA, a INT ANOKHA, b TEXT ANOKHA, c INT, d INT,
+    //                  e INT ANOKHA, f INT ANOKHA, ANOKHA (c, d), MUKHYA KUNJI (e, f));
+    //   DAALO MEIN u MAAN (1, 10, 'x', 5, 6, 7, 8);
+    // followed by each clashing DAALO below (same values as the rows here).
+    // (2, 10, 'x', 5, 6, ...): clashes on a, b and (c, d) -> a wins
+    REQUIRE(firstDuplicateError(t, {I(2), I(10), S("x"), I(5), I(6), I(70), I(80)}) ==
+            "Duplicate value 10 column 'a' mein -- is column mein har value alag honi chahiye");
+    // (3, 11, 'x', 5, 6): clashes on b and (c, d) -> b wins
+    REQUIRE(firstDuplicateError(t, {I(3), I(11), S("x"), I(5), I(6), I(71), I(81)}) ==
+            "Duplicate value 'x' column 'b' mein -- is column mein har value alag honi chahiye");
+    // (1, 12, 'y', 7, 8): clashes on id only
+    REQUIRE(firstDuplicateError(t, {I(1), I(12), S("y"), I(7), I(8), I(72), I(82)}) ==
+            "Duplicate value 1 column 'id' mein -- is column mein har value alag honi chahiye");
+    // (4, 13, 'z', 5, 6): clashes on (c, d) only
+    REQUIRE(firstDuplicateError(t, {I(4), I(13), S("z"), I(5), I(6), I(73), I(83)}) ==
+            "Duplicate value (5, 6) columns ['c', 'd'] mein -- ye combination alag hona chahiye");
+}
+
+TEST_CASE("TAKRAAV first-match picks the row of the earliest-declared index", "[table]") {
+    TempDir dir;
+    std::string path = dir.file("u.tbl");
+    HeapFile(path).create();
+    Table t(makeManyUniqueSchema(), path);
+    t.insertMany({{I(1), I(10), S("x"), I(5), I(6), I(7), I(8)}, {I(2), I(20), S("w"), I(1), I(1), I(9), I(9)}});
+    auto rows = t.rows();
+    // (9, 20, 'x', ...) clashes with row 2 on `a` and with row 1 on `b`:
+    // Python's _find_conflict returns row 2, because `a` comes first.
+    RowValues incoming = {I(9), I(20), S("x"), I(0), I(0), I(0), I(0)};
+    std::optional<int64_t> hit;
+    for (auto& [positions, index] : t.indexes()) {
+        std::vector<Value> key;
+        for (size_t p : positions) key.push_back(incoming[p]);
+        auto it = index.find(key);
+        if (it != index.end()) {
+            hit = it->second;
+            break;
+        }
+    }
+    REQUIRE(hit == rows[1].first);
+}
+
+TEST_CASE("insertMany refuses a row with the wrong number of values", "[table]") {
+    TempDir dir;
+    std::string path = dir.file("t.tbl");
+    HeapFile(path).create();
+    Table t(makeSchema(), path);
+    t.indexes();
+    REQUIRE_THROWS_AS(t.insertMany({{I(1)}}), ExecutionError);
+    REQUIRE(t.rows().empty());  // nothing reached the file
+    REQUIRE_THROWS_AS(t.deleteMany({{8, {I(1)}}}), ExecutionError);  // short old row: no out-of-bounds read
+}

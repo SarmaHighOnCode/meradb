@@ -1,9 +1,12 @@
 // cpp/src/catalog.cpp
 #include "meradb/catalog.h"
 #include "meradb/errors.h"
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
+#include <limits>
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -12,11 +15,90 @@ namespace meradb {
 
 namespace {
 
+// ---- non-finite floats ----
+// Python's json writes float('inf') / -inf / nan as the bare tokens
+// Infinity / -Infinity / NaN (not valid JSON, but json.load accepts them).
+// nlohmann neither reads nor writes those, so they travel through it as a
+// marker string: quoteNonFinite() turns bare tokens into markers before
+// parsing, renderJson() turns markers back into bare tokens after dumping.
+const std::string kNonFiniteMarker = std::string("\0meradb-nonfinite:", 18);
+const char* const kNonFiniteTokens[] = {"-Infinity", "Infinity", "NaN"};
+
+std::string markerFor(double d) {
+    if (std::isnan(d)) return kNonFiniteMarker + "NaN";
+    return kNonFiniteMarker + (d < 0 ? "-Infinity" : "Infinity");
+}
+
+std::optional<double> fromMarker(const std::string& s) {
+    if (s.compare(0, kNonFiniteMarker.size(), kNonFiniteMarker) != 0) return std::nullopt;
+    std::string token = s.substr(kNonFiniteMarker.size());
+    if (token == "Infinity") return std::numeric_limits<double>::infinity();
+    if (token == "-Infinity") return -std::numeric_limits<double>::infinity();
+    if (token == "NaN") return std::numeric_limits<double>::quiet_NaN();
+    return std::nullopt;
+}
+
+// Bare Infinity/-Infinity/NaN tokens OUTSIDE string literals -> marker strings.
+std::string quoteNonFinite(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool inString = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (inString) {
+            out += c;
+            if (c == '\\' && i + 1 < text.size()) out += text[++i];
+            else if (c == '"') inString = false;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out += c;
+            continue;
+        }
+        bool replaced = false;
+        for (const char* token : kNonFiniteTokens) {
+            size_t len = std::strlen(token);
+            if (text.compare(i, len, token) == 0) {
+                out += "\"\\u0000meradb-nonfinite:";
+                out += token;
+                out += '"';
+                i += len - 1;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) out += c;
+    }
+    return out;
+}
+
+// dump() the way Python's json.dump(indent=2) writes (ensure_ascii), with
+// marker strings turned back into bare tokens. A library error (e.g. a
+// string that isn't valid UTF-8) becomes a StorageError.
+std::string renderJson(const json& j) {
+    std::string text;
+    try {
+        text = j.dump(2, ' ', true);
+    } catch (const nlohmann::json::exception& e) {
+        throw StorageError(std::string("catalog.json likh nahi paaye: ") + e.what());
+    }
+    for (const char* token : kNonFiniteTokens) {
+        std::string quoted = std::string("\"\\u0000meradb-nonfinite:") + token + "\"";
+        for (size_t pos = text.find(quoted); pos != std::string::npos; pos = text.find(quoted, pos))
+            text.replace(pos, quoted.size(), token);
+    }
+    return text;
+}
+
 json valueToJson(const std::optional<Value>& v) {
     if (!v.has_value() || v->isNull()) return nullptr;
     const auto& d = v->data;
     if (std::holds_alternative<int64_t>(d)) return std::get<int64_t>(d);
-    if (std::holds_alternative<double>(d)) return std::get<double>(d);
+    if (std::holds_alternative<double>(d)) {
+        double x = std::get<double>(d);
+        return std::isfinite(x) ? json(x) : json(markerFor(x));
+    }
     if (std::holds_alternative<bool>(d)) return std::get<bool>(d);
     if (std::holds_alternative<std::string>(d)) return std::get<std::string>(d);
     if (std::holds_alternative<Date>(d)) return std::get<Date>(d).isoFormat();  // like Column.to_dict
@@ -33,7 +115,11 @@ Value jsonToValue(const json& j, const std::string& column) {
         return Value(j.get<int64_t>());
     }
     if (j.is_number_float()) return Value(j.get<double>());
-    if (j.is_string()) return Value(j.get<std::string>());
+    if (j.is_string()) {
+        const auto& s = j.get_ref<const std::string&>();
+        if (auto d = fromMarker(s)) return Value(*d);
+        return Value(s);
+    }
     throw StorageError("catalog.json corrupt hai: column '" + column + "' ka WARNA value samajh nahi aaya");
 }
 
@@ -142,9 +228,10 @@ void Catalog::load() {
 
     std::ifstream in(path_);
     if (!in) throw StorageError(path_ + " khul nahi paayi");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     json data;
     try {
-        data = json::parse(in);
+        data = json::parse(quoteNonFinite(text));
         for (const auto& [name, tj] : data.at("tables").items()) tables[name] = TableSchema::fromJson(tj);
         // "views"/"triggers"/"procedures" keys are absent in older catalog.json files
         if (auto it = data.find("views"); it != data.end())
@@ -172,11 +259,12 @@ void Catalog::save() {
     // swap it in (Python: os.replace). Text mode on purpose, so line endings
     // match what Python's open(..., "w") writes on the same platform; and
     // ensure_ascii matches json.dump's default escaping.
+    std::string text = renderJson(data);
     std::string tmp = path_ + ".tmp";
     {
         std::ofstream out(tmp);
         if (!out) throw StorageError(tmp + " likh nahi paaye");
-        out << data.dump(2, ' ', true);
+        out << text;
         out.flush();
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
@@ -200,9 +288,22 @@ TableSchema* Catalog::find(const std::string& table) {
     return it == tables.end() ? nullptr : &it->second;
 }
 
+// add/addView: check the new entry serialises BEFORE touching memory, and
+// undo the change if writing the file fails, so memory and catalog.json
+// never disagree. (remove/removeView can only fail on I/O; like Python,
+// the entry is then already gone from memory.)
 void Catalog::add(const TableSchema& schema) {
+    renderJson(schema.toJson());
+    std::optional<TableSchema> previous;
+    if (auto* existing = find(schema.name)) previous = *existing;
     tables[schema.name] = schema;
-    save();
+    try {
+        save();
+    } catch (...) {
+        if (previous) tables[schema.name] = std::move(*previous);
+        else tables.erase(schema.name);
+        throw;
+    }
 }
 
 void Catalog::remove(const std::string& table) {
@@ -212,8 +313,17 @@ void Catalog::remove(const std::string& table) {
 }
 
 void Catalog::addView(const std::string& name, const std::string& queryText) {
+    renderJson(json(queryText));
+    std::optional<std::string> previous;
+    if (auto it = views.find(name); it != views.end()) previous = it->second;
     views[name] = queryText;
-    save();
+    try {
+        save();
+    } catch (...) {
+        if (previous) views[name] = std::move(*previous);
+        else views.erase(name);
+        throw;
+    }
 }
 
 void Catalog::removeView(const std::string& name) {

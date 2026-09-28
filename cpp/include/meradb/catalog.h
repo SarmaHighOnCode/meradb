@@ -7,78 +7,15 @@
 // opened by either engine.
 #pragma once
 #include "meradb/datatypes.h"
+#include "meradb/ordered_map.h"
 #include <nlohmann/json.hpp>
 #include <cstddef>
-#include <iterator>
-#include <list>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace meradb {
-
-// A string-keyed map that iterates in INSERTION order, like a Python dict.
-// catalog.json lists tables/views in creation order and several engine
-// checks walk every table in that order, so the order must survive a
-// save/reload round trip. Element references stay valid until that element
-// is erased (backed by std::list).
-template <typename V>
-class InsertionOrderedMap {
-public:
-    using value_type = std::pair<const std::string, V>;
-    using iterator = typename std::list<value_type>::iterator;
-    using const_iterator = typename std::list<value_type>::const_iterator;
-
-    iterator begin() { return items_.begin(); }
-    iterator end() { return items_.end(); }
-    const_iterator begin() const { return items_.begin(); }
-    const_iterator end() const { return items_.end(); }
-
-    size_t size() const { return items_.size(); }
-    bool empty() const { return items_.empty(); }
-    size_t count(const std::string& key) const { return index_.count(key); }
-
-    iterator find(const std::string& key) {
-        auto it = index_.find(key);
-        return it == index_.end() ? items_.end() : it->second;
-    }
-    const_iterator find(const std::string& key) const {
-        auto it = index_.find(key);
-        return it == index_.end() ? items_.cend() : const_iterator(it->second);
-    }
-
-    V& at(const std::string& key) { return index_.at(key)->second; }
-    const V& at(const std::string& key) const { return index_.at(key)->second; }
-
-    // Existing keys keep their position (Python dict semantics); new keys go last.
-    V& operator[](const std::string& key) {
-        auto it = index_.find(key);
-        if (it != index_.end()) return it->second->second;
-        items_.emplace_back(key, V{});
-        auto last = std::prev(items_.end());
-        index_.emplace(key, last);
-        return last->second;
-    }
-
-    size_t erase(const std::string& key) {
-        auto it = index_.find(key);
-        if (it == index_.end()) return 0;
-        items_.erase(it->second);
-        index_.erase(it);
-        return 1;
-    }
-
-    void clear() {
-        items_.clear();
-        index_.clear();
-    }
-
-private:
-    std::list<value_type> items_;
-    std::unordered_map<std::string, iterator> index_;
-};
 
 struct Column {
     std::string name;

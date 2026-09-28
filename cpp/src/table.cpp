@@ -68,6 +68,9 @@ std::optional<std::vector<Value>> keyFor(const std::vector<size_t>& positions, c
     std::vector<Value> key;
     key.reserve(positions.size());
     for (size_t p : positions) {
+        if (p >= values.size())
+            throw ExecutionError("Row mein sirf " + std::to_string(values.size()) + " values hain, column #" +
+                                 std::to_string(p) + " nahi mila");
         if (values[p].isNull()) return std::nullopt;
         key.push_back(values[p]);
     }
@@ -117,7 +120,16 @@ std::optional<RowValues> Table::get(int64_t rowId) const {
     return decodeRow(*payload, schema_.types());
 }
 
+void Table::checkWidth(const RowValues& values) const {
+    if (values.size() != schema_.columns.size())
+        throw ExecutionError("Table '" + schema_.name + "' mein " + std::to_string(schema_.columns.size()) +
+                             " columns hain, par row mein " + std::to_string(values.size()) + " values");
+}
+
 void Table::insertMany(const std::vector<RowValues>& newRows) {
+    // A short row would be silently truncated by encodeRow (and break the
+    // index keys); refuse it before anything reaches the file.
+    for (const auto& values : newRows) checkWidth(values);
     auto types = schema_.types();
     std::vector<std::vector<uint8_t>> payloads;
     payloads.reserve(newRows.size());
@@ -132,6 +144,7 @@ void Table::insertMany(const std::vector<RowValues>& newRows) {
 }
 
 void Table::deleteMany(const std::vector<StoredRow>& oldRows) {
+    for (const auto& row : oldRows) checkWidth(row.second);
     std::vector<int64_t> ids;
     ids.reserve(oldRows.size());
     for (const auto& row : oldRows) ids.push_back(row.first);

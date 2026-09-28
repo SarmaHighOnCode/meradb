@@ -20,6 +20,7 @@ constexpr uint8_t kStatusLive = 1;
 constexpr uint8_t kStatusDeleted = 0;
 constexpr uint8_t kTagNull = 0;
 constexpr uint8_t kTagValue = 1;
+constexpr int32_t kMaxDateOrdinal = 3652059;  // date(9999, 12, 31).toordinal()
 
 void putU32(std::vector<uint8_t>& out, uint32_t v) {
     for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
@@ -148,7 +149,12 @@ std::vector<Value> decodeRow(const std::vector<uint8_t>& payload, const std::vec
             i += len;
         } else if (type == "DATE") {
             need(4);
-            values.emplace_back(Date::fromOrdinal(static_cast<int32_t>(getU32(&payload[i]))));
+            int32_t ordinal = static_cast<int32_t>(getU32(&payload[i]));
+            // date(1, 1, 1) .. date(9999, 12, 31); Python's date.fromordinal raises outside it
+            if (ordinal < 1 || ordinal > kMaxDateOrdinal)
+                throw StorageError("Row decode nahi hua: DATE ordinal " + std::to_string(ordinal) +
+                                   " range (1.." + std::to_string(kMaxDateOrdinal) + ") ke bahar hai");
+            values.emplace_back(Date::fromOrdinal(ordinal));
             i += 4;
         } else {
             throw StorageError("Unknown type " + type);
@@ -227,6 +233,12 @@ std::optional<std::vector<uint8_t>> HeapFile::read(int64_t offset) const {
         throw StorageError("Row id " + std::to_string(offset) + " file ke bahar hai");
     if (header[0] != kStatusLive) return std::nullopt;
     uint32_t len = getU32(header + 1);
+    // check a (possibly corrupt) length against what's left BEFORE allocating
+    std::streamoff here = f.tellg();
+    f.seekg(0, std::ios::end);
+    std::streamoff remaining = f.tellg() - here;
+    if (static_cast<std::streamoff>(len) > remaining) throw StorageError(path_ + " corrupt hai: record adhoora hai");
+    f.seekg(here, std::ios::beg);
     std::vector<uint8_t> payload(len);
     f.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(len));
     if (f.gcount() < static_cast<std::streamsize>(len))

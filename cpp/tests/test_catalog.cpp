@@ -3,6 +3,7 @@
 #include "meradb/catalog.h"
 #include "meradb/errors.h"
 #include "test_util.h"
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -314,4 +315,156 @@ TEST_CASE("Catalog::remove drops a table and keeps the others in order", "[catal
     for (const auto& [name, schema] : cat2.tables) names.push_back(name);
     REQUIRE(names == std::vector<std::string>{"c", "b"});
     REQUIRE(cat2.tablePath("c") == (dir.path() / "c.tbl").string());
+}
+
+TEST_CASE("InsertionOrderedMap copies are deep and independent", "[catalog]") {
+    InsertionOrderedMap<int> a;
+    a["x"] = 1;
+    a["y"] = 2;
+    a["z"] = 3;
+
+    InsertionOrderedMap<int> b = a;  // copy construction
+    b["x"] = 99;
+    b.erase("y");
+    REQUIRE(a.at("x") == 1);
+    REQUIRE(a.size() == 3);
+    std::vector<std::string> keys;
+    for (const auto& [k, v] : a) keys.push_back(k);
+    REQUIRE(keys == std::vector<std::string>{"x", "y", "z"});
+
+    InsertionOrderedMap<int> c;
+    c["old"] = 0;
+    c = a;  // copy assignment
+    c.erase("x");
+    c["w"] = 4;
+    REQUIRE(a.count("x") == 1);
+    REQUIRE(a.count("w") == 0);
+    keys.clear();
+    for (const auto& [k, v] : c) keys.push_back(k);
+    REQUIRE(keys == std::vector<std::string>{"y", "z", "w"});
+
+    {
+        InsertionOrderedMap<int> source;
+        source["k"] = 7;
+        b = source;
+    }  // the source is gone: b must not point into it
+    REQUIRE(b.at("k") == 7);
+    REQUIRE(b.find("k") != b.end());
+    b.erase("k");
+    REQUIRE(b.empty());
+
+    InsertionOrderedMap<int> moved = std::move(c);  // moves keep lookups working
+    REQUIRE(moved.at("w") == 4);
+    moved.erase("y");
+    REQUIRE(moved.size() == 2);
+}
+
+TEST_CASE("A copied Catalog map does not share tables with the original", "[catalog]") {
+    TempDir dir;
+    Catalog cat(dir.str());
+    TableSchema s; s.name = "t";
+    cat.add(s);
+    auto saved = cat.tables;
+    saved.erase("t");
+    saved["u"].name = "u";
+    REQUIRE(cat.find("t") != nullptr);
+    REQUIRE(cat.find("u") == nullptr);
+    REQUIRE(cat.tables.size() == 1);
+}
+
+TEST_CASE("Non-finite FLOAT defaults round-trip exactly like Python's json", "[catalog]") {
+    // json.dump writes float('inf') / -inf / nan as bare Infinity / -Infinity / NaN
+    const std::string pyText = R"({
+  "tables": {
+    "f": {
+      "name": "f",
+      "columns": [
+        {
+          "name": "hi",
+          "type_name": "FLOAT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": Infinity,
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": null
+        },
+        {
+          "name": "lo",
+          "type_name": "FLOAT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": -Infinity,
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": null
+        },
+        {
+          "name": "nan",
+          "type_name": "FLOAT",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": NaN,
+          "max_length": null,
+          "ref_table": null,
+          "ref_column": null,
+          "check": "nan != 'NaN Infinity \"-Infinity\"'"
+        }
+      ],
+      "composite_unique": [],
+      "composite_pk": null
+    }
+  },
+  "views": {
+    "v": "DIKHAO 'Infinity' SE f;"
+  },
+  "triggers": {},
+  "procedures": {}
+})";
+    TempDir dir;
+    writeText(dir.file("catalog.json"), pyText);
+    {
+        Catalog cat(dir.str());
+        const auto& cols = cat.get("f").columns;
+        double hi = std::get<double>(cols[0].defaultValue->data);
+        double lo = std::get<double>(cols[1].defaultValue->data);
+        double nan = std::get<double>(cols[2].defaultValue->data);
+        REQUIRE((std::isinf(hi) && hi > 0));
+        REQUIRE((std::isinf(lo) && lo < 0));
+        REQUIRE(std::isnan(nan));
+        REQUIRE(cols[2].check == std::string("nan != 'NaN Infinity \"-Infinity\"'"));  // strings untouched
+        REQUIRE(cat.views.at("v") == "DIKHAO 'Infinity' SE f;");
+        cat.save();
+    }
+    REQUIRE(meradb_test::readText(dir.file("catalog.json")) == pyText);
+}
+
+TEST_CASE("A value that can't be serialised raises StorageError and changes nothing", "[catalog]") {
+    TempDir dir;
+    Catalog cat(dir.str());
+    TableSchema ok; ok.name = "ok";
+    cat.add(ok);
+    std::string before = meradb_test::readText(dir.file("catalog.json"));
+
+    TableSchema bad; bad.name = "bad";
+    Column c; c.name = "naam"; c.typeName = "TEXT"; c.defaultValue = Value(std::string("\xFF\xFE"));  // not UTF-8
+    bad.columns = {c};
+    REQUIRE_THROWS_AS(cat.add(bad), StorageError);
+    REQUIRE(cat.find("bad") == nullptr);
+    REQUIRE(cat.tables.size() == 1);
+
+    // replacing an existing table: the old schema must survive the failure
+    TableSchema badOk = bad; badOk.name = "ok";
+    REQUIRE_THROWS_AS(cat.add(badOk), StorageError);
+    REQUIRE(cat.get("ok").columns.empty());
+
+    REQUIRE_THROWS_AS(cat.addView("v", std::string("DIKHAO '\xC3';")), StorageError);
+    REQUIRE(cat.views.empty());
+    REQUIRE(meradb_test::readText(dir.file("catalog.json")) == before);
+    REQUIRE_FALSE(std::filesystem::exists(dir.file("catalog.json.tmp")));
 }

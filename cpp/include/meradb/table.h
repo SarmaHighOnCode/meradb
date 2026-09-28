@@ -13,6 +13,7 @@
 #pragma once
 #include "meradb/catalog.h"
 #include "meradb/datatypes.h"
+#include "meradb/ordered_map.h"
 #include "meradb/storage.h"
 #include <cstddef>
 #include <cstdint>
@@ -45,8 +46,11 @@ using StoredRow = std::pair<int64_t, RowValues>;
 // key tuple -> row id
 using HashIndex = std::unordered_map<std::vector<Value>, int64_t, ValueVecHash, ValueVecEq>;
 // column positions -> index. {i} for a single unique column, {i, j, ...} for
-// a composite constraint.
-using IndexMap = std::unordered_map<std::vector<size_t>, HashIndex, VecSizeTHash>;
+// a composite constraint. Iterates in Python's order: unique columns in
+// declaration order, then composite ANOKHA groups, then the composite
+// MUKHYA KUNJI -- the UNIQUE / TAKRAAV checks act on the FIRST matching
+// index, so this order decides which error / which conflicting row wins.
+using IndexMap = InsertionOrderedMap<HashIndex, std::vector<size_t>, VecSizeTHash>;
 // A slot that can be shared by several Table objects for the same table
 // (Python passes the engine-wide index_cache dict + key); empty = not built.
 using IndexCache = std::shared_ptr<std::optional<IndexMap>>;
@@ -83,6 +87,7 @@ private:
     IndexCache cache_;
 
     std::vector<std::vector<size_t>> indexedGroups() const;
+    void checkWidth(const RowValues& values) const;  // ExecutionError unless one value per column
 };
 
 // A VIEW's already-computed result set, usable wherever a Table is read
