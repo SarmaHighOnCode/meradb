@@ -8,6 +8,7 @@ add_executable(meradb_tests
   test_parser_ddl.cpp
   test_parser_dml.cpp
   test_catalog.cpp
+  test_storage.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
