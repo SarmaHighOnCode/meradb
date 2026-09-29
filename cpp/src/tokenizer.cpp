@@ -21,6 +21,9 @@ const std::unordered_set<std::string>& keywordSet() {
         "SHURU", "PAKKA", "WAPAS",
         "JAISA", "BEECH", "AUR", "YA", "NAHI", "HAI", "KHALI", "SACH", "JHOOTH",
         "SANYUKT", "SAAJHA", "CHHODKAR", "AGAR", "TAB", "KHATAM", "TAKRAAV",
+        // Phase 2 words (users/triggers/procedures): reserved now, exactly like
+        // Python, so a name valid here is valid there. No grammar uses them yet.
+        "USER", "GUPT", "ADHIKAR", "DO", "KO", "SAB", "TRIGGER", "PEHLE", "BAAD", "PROCEDURE", "CHALAO",
     };
     return kw;
 }

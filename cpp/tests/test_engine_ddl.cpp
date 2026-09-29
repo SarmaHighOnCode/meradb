@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/engine.h"
 #include "meradb/errors.h"
+#include "golden_runner.h"
 #include "meradb/parser.h"
 #include "test_util.h"
 #include <filesystem>
@@ -253,4 +254,50 @@ TEST_CASE("runScript keeps going after an error and reports it", "[engine][ddl]"
     auto bad = e.runScript("BANAO BANAO;");
     REQUIRE(bad.size() == 1);
     REQUIRE_FALSE(bad[0].error.empty());
+}
+
+TEST_CASE("golden transaction scripts match the Python engine", "[engine][ddl][golden]") {
+    meradb_test::replayGolden("txn");
+}
+
+TEST_CASE("An open transaction is rolled back by crash recovery at the next start", "[engine][ddl][recovery]") {
+    TempDir dir;
+    {
+        Engine e(dir.str());
+        e.execute("BANAO TABLE t (id INT MUKHYA KUNJI); DAALO MEIN t MAAN (1);");
+        e.execute("SHURU; DAALO MEIN t MAAN (2); BANAO TABLE u (a INT);");
+        REQUIRE(e.inTransaction());
+        // dropped WITHOUT close(): the snapshot stays on disk, like a crash
+    }
+    REQUIRE(fs::is_directory(dir.path() / ".wapas" / "main"));
+    Engine e2(dir.str());
+    REQUIRE(e2.instance().recovered() == std::vector<std::string>{"main"});
+    REQUIRE_FALSE(e2.inTransaction());
+    auto r = e2.execute("DIKHAO * SE t;");
+    REQUIRE(rowStrings(r[0]) == Lines{"1"});
+    REQUIRE(e2.catalog().find("u") == nullptr);
+    REQUIRE_FALSE(fs::exists(dir.path() / ".wapas" / "main"));
+}
+
+TEST_CASE("close() rolls back an open transaction and frees the lock", "[engine][ddl][recovery]") {
+    TempDir dir;
+    auto instance = std::make_shared<Instance>(dir.str());
+    Engine e(instance);
+    e.execute("BANAO TABLE t (id INT); SHURU; DAALO MEIN t MAAN (1);");
+    e.close();
+    REQUIRE_FALSE(e.inTransaction());
+    REQUIRE(e.execute("DIKHAO * SE t;")[0].rows.empty());
+    Engine other(instance);  // a second session on the same Instance can work again
+    REQUIRE(other.execute("DAALO MEIN t MAAN (5);")[0].message == "1 row(s) daal di");
+}
+
+TEST_CASE("A stray std::exception becomes a StorageError, not an escape", "[engine][ddl]") {
+    TempDir dir;
+    Engine e(dir.str());
+    e.execute("BANAO TABLE t (id INT);");
+    fs::remove(e.catalog().tablePath("t"));  // vanished heap file: fs::file_size would throw
+    auto results = e.runScript("SIKODO TABLE t;");
+    REQUIRE(results.size() == 1);
+    REQUIRE_FALSE(results[0].error.empty());
+    REQUIRE_THROWS_AS(e.execute("SIKODO TABLE t;"), MeraDBError);
 }

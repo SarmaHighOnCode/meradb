@@ -147,8 +147,10 @@ Engine::~Engine() {
     // Like a Python Engine that is simply dropped (no close()): an open
     // transaction is NOT rolled back here -- its snapshot stays on disk and
     // crash recovery undoes it at the next start. Only the extra lock hold
-    // taken by SHURU is released.
-    if (inTransaction()) instance_->lock.unlock();
+    // taken by SHURU is released -- but only from the thread that owns it
+    // (unlocking a recursive mutex from another thread is undefined; in that
+    // case the hold is left alone rather than corrupting the mutex).
+    if (inTransaction() && txnThread_ == std::this_thread::get_id()) instance_->lock.unlock();
 }
 
 Catalog& Engine::catalog() { return instance_->catalog(currentDb); }
@@ -257,10 +259,23 @@ const char* setOpName(const std::string& op) {
 // public API
 // ============================================================================
 
+// executeStatement, with a stray std::exception (e.g. std::filesystem_error
+// from a locked or vanished file) turned into a StorageError, so callers only
+// ever have to deal with MeraDBError.
+Result Engine::guarded(const ast::Statement& stmt) {
+    try {
+        return executeStatement(stmt);
+    } catch (const MeraDBError&) {
+        throw;
+    } catch (const std::exception& e) {
+        throw StorageError(e.what());
+    }
+}
+
 std::vector<Result> Engine::execute(const std::string& text) {
     auto statements = parseScript(text);
     std::vector<Result> results;
-    for (const auto& stmt : statements) results.push_back(executeStatement(*stmt));
+    for (const auto& stmt : statements) results.push_back(guarded(*stmt));
     return results;
 }
 
@@ -276,7 +291,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
     std::vector<Result> results;
     for (const auto& stmt : statements) {
         try {
-            results.push_back(executeStatement(*stmt));
+            results.push_back(guarded(*stmt));
         } catch (const MeraDBError& e) {
             Result r;
             r.error = e.what();
@@ -430,12 +445,15 @@ Result Engine::execBegin(const ast::Begin&) {
     // Take the lock ONE EXTRA time and keep it until PAKKA/WAPAS: other
     // sessions now wait, so nobody sees our half-finished changes.
     instance_->lock.lock();
+    txnThread_ = std::this_thread::get_id();
     txnDb = currentDb;
     return messageResult("Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.");
 }
 
 Result Engine::execCommit(const ast::Commit&) {
     if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
+    if (txnThread_ != std::this_thread::get_id())
+        throw ExecutionError("Transaction jis thread ne SHURU kiya, PAKKA bhi wahi kar sakta hai");
     instance_->discardSnapshot(*txnDb);
     txnDb.reset();
     instance_->lock.unlock();
@@ -444,6 +462,8 @@ Result Engine::execCommit(const ast::Commit&) {
 
 Result Engine::execRollback(const ast::Rollback&) {
     if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
+    if (txnThread_ != std::this_thread::get_id())
+        throw ExecutionError("Transaction jis thread ne SHURU kiya, WAPAS bhi wahi kar sakta hai");
     instance_->restoreSnapshot(*txnDb);
     txnDb.reset();
     instance_->lock.unlock();
@@ -1384,7 +1404,11 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
         fired = true;
         return std::make_unique<Literal>(outerRow.at(key));
     }
-    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) return std::make_unique<BinaryOp>(b->op, rec(b->left.get()), rec(b->right.get()));
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        auto l = rec(b->left.get());  // left first: its error wins, like Python
+        auto r = rec(b->right.get());
+        return std::make_unique<BinaryOp>(b->op, std::move(l), std::move(r));
+    }
     if (auto* u = dynamic_cast<const UnaryOp*>(&expr)) {
         auto out = std::make_unique<UnaryOp>();
         out->op = u->op;

@@ -1,0 +1,12 @@
+BANAO TABLE user (a INT);
+BANAO TABLE t (sab INT, do INT);
+BANAO TABLE t (a INT, trigger INT);
+BANAO TABLE procedure (a INT);
+DIKHAO ko SE t;
+BANAO TABLE gupt (a INT);
+BANAO TABLE t (pehle INT);
+BANAO TABLE t (baad INT);
+BANAO TABLE adhikar (a INT);
+BANAO TABLE chalao (a INT);
+BANAO TABLE users (a INT);
+DIKHAO TABLES;

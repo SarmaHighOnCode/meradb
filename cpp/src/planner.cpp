@@ -118,8 +118,13 @@ std::unique_ptr<Expr> bind(const Expr* expr, const Scope& scope) {
 std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
     if (dynamic_cast<const Literal*>(&expr) || dynamic_cast<const Star*>(&expr)) return cloneExpr(expr);
     if (auto* c = dynamic_cast<const ColumnRef*>(&expr)) return boundRef(scope.resolve(*c));
-    if (auto* b = dynamic_cast<const BinaryOp*>(&expr))
-        return std::make_unique<BinaryOp>(b->op, bind(*b->left, scope), bind(*b->right, scope));
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        // named locals: call arguments are evaluated in unspecified (GCC: right-to-left) order,
+        // and the LEFT operand's error must win
+        auto l = bind(*b->left, scope);
+        auto r = bind(*b->right, scope);
+        return std::make_unique<BinaryOp>(b->op, std::move(l), std::move(r));
+    }
     if (auto* u = dynamic_cast<const UnaryOp*>(&expr)) {
         auto out = std::make_unique<UnaryOp>();
         out->op = u->op;
@@ -145,7 +150,11 @@ std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
     }
     if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
         auto out = std::make_unique<CaseWhen>();
-        for (auto& [cond, value] : cw->branches) out->branches.emplace_back(bind(*cond, scope), bind(*value, scope));
+        for (auto& [cond, value] : cw->branches) {
+            auto c = bind(*cond, scope);
+            auto v = bind(*value, scope);
+            out->branches.emplace_back(std::move(c), std::move(v));
+        }
         out->elseExpr = bind(cw->elseExpr.get(), scope);
         return out;
     }

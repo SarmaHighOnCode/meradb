@@ -24,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -111,6 +112,9 @@ public:
 
 private:
     std::shared_ptr<Instance> instance_;
+    // The thread that ran SHURU: it owns the extra lock hold (a recursive
+    // mutex may only be unlocked by its owner).
+    std::thread::id txnThread_;
 
     // Per-row precomputed subquery results (see precomputeSubqueries).
     struct RowSubqueries {
@@ -118,6 +122,8 @@ private:
         std::vector<SubqueryResults> perRow;     // filled only when something is correlated
         const SubqueryResults* at(size_t i) const { return perRow.empty() ? &shared : &perRow[i]; }
     };
+
+    Result guarded(const ast::Statement& stmt);  // executeStatement + std::exception -> StorageError
 
     // ---- statements ----
     Result execCreateDatabase(const ast::CreateDatabase&);
