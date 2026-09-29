@@ -75,7 +75,7 @@ Output matches `meradb run --local`: each statement's result (an ASCII table for
 rows, a message, or the `[Stage Galti] ...` error) followed by a blank line. A
 failing statement does not stop the script. The exit code is `1` if any statement
 failed (the example scripts contain deliberate errors), otherwise `0`. `--data`
-defaults to `data` in the current directory.
+defaults to the `MERADB_DATA` environment variable if set, otherwise `data` in the current directory.
 
 ## Cross-engine verification
 
@@ -85,7 +85,7 @@ python cpp/tests/cross_engine_diff.py cpp/tests/rdbms_lab_coverage_phase1.mdb
 ```
 
 The script runs a `.mdb` file through the Python engine and the C++ CLI, each on a
-fresh data folder, and diffs the output and exit code. Both files currently match
+fresh data folder, and diffs the output and exit code. Both are also registered as ctest tests when Python is found at configure time. The harness looks for the CLI in `cpp/build` and `cpp/build/Release`; for any other build folder pass `--cli <path-to-meradb_cli>`. Both files currently match
 line for line. `demo_phase1.mdb` and `rdbms_lab_coverage_phase1.mdb` are copies of
 `examples/demo.mdb` and `examples/rdbms_lab_coverage.mdb` with the users and
 privileges, trigger and stored-procedure sections removed (those need Phase 2).
@@ -122,6 +122,7 @@ exceptions carrying the same `[Stage Galti] message` text as Python, with a
 
 These are deliberate and small.
 
+- **Default data folder**: without `--data`, C++ uses `data` in the current directory; Python uses a per-user folder (`%LOCALAPPDATA%\MeraDB\data` on Windows, `~/.local/share/MeraDB/data` elsewhere). Both honour `MERADB_DATA`.
 - **ALTER ADD composite constraint**: the C++ engine changes a copy of the schema and
   saves it only after the data check passes. Python changes its in-memory schema
   first, so after a failed ALTER a Python session keeps a constraint that was never

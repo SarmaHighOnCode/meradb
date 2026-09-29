@@ -1,6 +1,6 @@
 """
 Runs the same .mdb script through the Python engine and the C++ CLI and diffs
-their output line by line. Exits non-zero (printing a unified diff) on any
+their raw output. Exits non-zero (printing a unified diff) on any
 mismatch, so it can be wired into a CI-style check.
 
 Usage:
@@ -44,14 +44,15 @@ def main() -> int:
         py_out, py_code = run([sys.executable, "-m", "meradb", "run", "--local", "--data", py_dir, args.script])
         cpp_out, cpp_code = run([str(args.cli), "run", args.script, "--data", cpp_dir])
 
-    py_lines, cpp_lines = py_out.splitlines(), cpp_out.splitlines()
-    if py_lines == cpp_lines and py_code == cpp_code:
-        print(f"MATCH: {args.script} ({len(py_lines)} lines identical, exit={py_code})")
+    # Compare raw text (CRLF already normalised) so trailing-newline differences are not hidden.
+    if py_out == cpp_out and py_code == cpp_code:
+        print(f"MATCH: {args.script} ({len(py_out.splitlines())} lines identical, exit={py_code})")
         return 0
 
     print(f"MISMATCH: {args.script} (exit python={py_code}, cpp={cpp_code})")
-    diff = difflib.unified_diff(py_lines, cpp_lines, fromfile="python", tofile="cpp", lineterm="")
-    print("\n".join(diff))
+    diff = difflib.unified_diff(py_out.splitlines(keepends=True), cpp_out.splitlines(keepends=True),
+                                fromfile="python", tofile="cpp")
+    print("".join(diff) or f"(only trailing whitespace differs) python={py_out[-20:]!r} cpp={cpp_out[-20:]!r}")
     return 1
 
 

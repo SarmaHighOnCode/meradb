@@ -11,6 +11,9 @@ else()
 endif()
 
 include(FetchContent)
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)  # extracted files get the time of extraction (silences FetchContent warning)
+endif()
 
 FetchContent_Declare(
   json

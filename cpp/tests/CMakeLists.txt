@@ -26,3 +26,18 @@ target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
 include(CTest)
 include(Catch)
 catch_discover_tests(meradb_tests)
+
+# Cross-engine diffs need Python (and the Python reference engine); skip cleanly if absent.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  set(_diff ${CMAKE_CURRENT_SOURCE_DIR}/cross_engine_diff.py)
+  foreach(_script demo_phase1 rdbms_lab_coverage_phase1)
+    add_test(NAME cross_engine_${_script}
+      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli>
+              ${CMAKE_CURRENT_SOURCE_DIR}/${_script}.mdb)
+  endforeach()
+  add_test(NAME cross_engine_missing_file
+    COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> no_such_script.mdb)
+else()
+  message(STATUS "Python not found: cross-engine ctest checks skipped")
+endif()

@@ -7,16 +7,30 @@
 // if any statement (or file) failed.
 #include "meradb/cli_format.h"
 #include "meradb/engine.h"
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace {
 
 bool runFile(meradb::Engine& engine, const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::cout << "File nahi khuli: " << path << "\n";
+        // Same wording as Python's OSError text: "[Errno 2] No such file or directory: 'x'"
+        std::string quoted;
+        for (char c : path) {
+            if (c == '\\' || c == '\'') quoted += '\\';
+            quoted += c;
+        }
+        std::error_code ec;
+        bool missing = !std::filesystem::exists(std::filesystem::u8path(path), ec);
+        std::cout << "File nahi khuli: "
+                  << (missing ? "[Errno 2] No such file or directory: '" : "[Errno 13] Permission denied: '")
+                  << quoted << "'\n";
         return false;
     }
     std::ostringstream buffer;
@@ -37,7 +51,9 @@ bool runFile(meradb::Engine& engine, const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dataDir = "data";
+    // MERADB_DATA overrides the default, like Python (whose default is a per-user folder; ours is ./data)
+    const char* envData = std::getenv("MERADB_DATA");
+    std::string dataDir = (envData && *envData) ? envData : "data";
     std::vector<std::string> files;
     bool runCommand = false;
     for (int i = 1; i < argc; ++i) {
