@@ -1,0 +1,197 @@
+-- MeraDB demo script: every feature, top to bottom.
+--   meradb run examples/demo.mdb          (through the server, or local mode if none)
+-- Lines starting with -- are comments. The script cleans up after itself.
+
+-- ======================= DDL =======================
+BANAO DATABASE college;
+ISTEMAL college;
+
+BANAO TABLE courses (
+    id     INT  MUKHYA KUNJI,
+    title  TEXT ZAROORI ANOKHA
+);
+
+BANAO TABLE students (
+    id     INT  MUKHYA KUNJI,
+    naam   TEXT ZAROORI,
+    umar   ANK  SHART (umar >= 0 AUR umar < 150),  -- SHART = CHECK
+    shehar VARCHAR(20),                            -- length limit on TEXT
+    cgpa   FLOAT,
+    cid    INT  SANDARBH courses(id),               -- SANDARBH = FOREIGN KEY -> courses.id
+    active BOOL WARNA SACH,                         -- WARNA = DEFAULT
+    dob    DATE                                     -- alias: TAREEKH
+);
+
+BATAO students;
+DIKHAO TABLES;
+
+-- ======================= INSERT =======================
+DAALO MEIN courses MAAN (10, 'DBMS'), (20, 'Operating Systems'), (30, 'Networks');
+
+DAALO MEIN students (id, naam, umar, shehar, cgpa, cid, dob) MAAN
+    (1, 'Ravi',  20,    'Delhi',  8.4, 10, '2004-05-12'),
+    (2, 'Priya', 19,    'Mumbai', 9.1, 20, '2005-08-23'),
+    (3, 'Aman',  22,    'Delhi',  7.2, 10, '2002-11-02'),
+    (4, 'Sneha', 21,    'Pune',   8.8, KHALI, '2003-01-15'),
+    (5, 'Karan', KHALI, 'Delhi',  6.9, 20, KHALI);
+
+-- constraints protect the data (these all fail on purpose)
+DAALO MEIN students (id, naam) MAAN (1, 'Duplicate');                    -- MUKHYA KUNJI violation
+DAALO MEIN students (id) MAAN (6);                                       -- naam ZAROORI violation
+DAALO MEIN students (id, naam, cid) MAAN (7, 'BadCourse', 999);          -- SANDARBH: course 999 doesn't exist
+DAALO MEIN students (id, naam, umar) MAAN (8, 'BadAge', 200);            -- SHART: umar >= 150
+DAALO MEIN students (id, naam, shehar) MAAN (9, 'LongCity', 'Thiruvananthapuram Extension');  -- VARCHAR(20) too long
+
+-- ======================= SELECT =======================
+DIKHAO * SE students;
+DIKHAO naam, cgpa SE students JAHAN shehar = 'Delhi' KRAM cgpa ULTA;
+DIKHAO naam, umar + 1 SE students JAHAN umar HAI NAHI KHALI AUR umar >= 20;
+DIKHAO naam SE students KRAM cgpa ULTA SIRF 2;
+DIKHAO naam, dob SE students JAHAN dob HAI NAHI KHALI AUR dob > '2003-01-01' KRAM dob;  -- DATE compared to a string
+
+-- pattern, range and list matching
+DIKHAO naam SE students JAHAN naam JAISA '%a%';            -- LIKE
+DIKHAO naam, cgpa SE students JAHAN cgpa BEECH 8 AUR 9;    -- BETWEEN
+DIKHAO naam SE students JAHAN shehar NAHI MEIN ('Delhi');  -- NOT IN
+
+-- aggregates, grouping, distinct -- KAHO renames the output columns
+DIKHAO GINO(*) KAHO total, AUSAT(cgpa) KAHO avg_cgpa, ADHIKTAM(cgpa) KAHO best_cgpa SE students;
+DIKHAO shehar, GINO(*) KAHO total, AUSAT(cgpa) KAHO avg_cgpa
+    SE students SAMOOH shehar KRAM total ULTA;             -- KRAM uses the KAHO alias, not GINO(*)
+DIKHAO shehar SE students SAMOOH shehar JINKA GINO(*) > 1;  -- HAVING
+DIKHAO ALAG shehar SE students;
+
+-- ======================= JOINS (MILAO) =======================
+DIKHAO s.naam, c.title SE students s MILAO courses c PAR s.cid = c.id KRAM s.naam;
+DIKHAO s.naam, c.title SE students s BAAYAN MILAO courses c PAR s.cid = c.id;   -- LEFT JOIN
+DIKHAO c.title, GINO(s.id) KAHO enrolled, AUSAT(s.cgpa) KAHO avg_cgpa
+    SE courses c BAAYAN MILAO students s PAR s.cid = c.id
+    SAMOOH c.title KRAM enrolled ULTA;
+
+-- ======================= SUBQUERIES =======================
+DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);                 -- scalar subquery
+DIKHAO title SE courses JAHAN id MEIN (DIKHAO cid SE students JAHAN cid HAI NAHI KHALI); -- IN subquery
+DIKHAO s.naam SE students s
+    JAHAN s.cgpa > (DIKHAO AUSAT(s2.cgpa) SE students s2 JAHAN s2.shehar = s.shehar);  -- correlated
+SAMJHAO DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);
+
+-- ======================= VIEWS =======================
+BANAO VIEW delhi_students KAHO DIKHAO naam, cgpa SE students JAHAN shehar = 'Delhi';
+DIKHAO * SE delhi_students KRAM naam;
+DIKHAO VIEWS;
+BATAO delhi_students;
+DAALO MEIN delhi_students MAAN ('X', 1);                     -- FAILS ON PURPOSE: can't insert into a VIEW
+HATAO VIEW delhi_students;
+
+-- ======================= SET OPERATIONS =======================
+DIKHAO naam SE students JAHAN shehar = 'Delhi'
+SANYUKT
+DIKHAO naam SE students JAHAN shehar = 'Mumbai';                                       -- UNION
+DIKHAO naam SE students JAHAN cgpa > 8
+SAAJHA
+DIKHAO naam SE students JAHAN shehar = 'Delhi';                                        -- INTERSECT
+DIKHAO naam SE students
+CHHODKAR
+DIKHAO naam SE students JAHAN shehar = 'Delhi';                                        -- EXCEPT
+
+-- ======================= NATURAL / RIGHT / FULL OUTER JOIN =======================
+BANAO TABLE depts (dept_id INT MUKHYA KUNJI, dname TEXT);
+BANAO TABLE staff (id INT MUKHYA KUNJI, naam TEXT, dept_id INT);
+DAALO MEIN depts MAAN (1, 'CS'), (2, 'EE'), (3, 'ME');
+DAALO MEIN staff MAAN (1, 'Meena', 1), (2, 'Rohit', 2), (3, 'Zara', KHALI);
+DIKHAO naam, dname SE staff SAMAAN MILAO depts;                             -- NATURAL JOIN
+DIKHAO naam, dname SE staff DAHINA MILAO depts PAR staff.dept_id = depts.dept_id;  -- RIGHT JOIN: ME has no staff
+DIKHAO naam, dname SE staff DONO MILAO depts PAR staff.dept_id = depts.dept_id;    -- FULL OUTER JOIN: both sides
+HATAO TABLE staff;
+HATAO TABLE depts;
+
+-- ======================= PEHLA (COALESCE) / CASE WHEN =======================
+DIKHAO naam, PEHLA(shehar, 'Unknown') SE students KRAM naam;
+DIKHAO naam,
+    AGAR cgpa >= 9 TAB 'Excellent'
+    AGAR cgpa >= 8 TAB 'Good'
+    WARNA 'Average'
+    KHATAM KAHO grade
+    SE students KRAM naam;
+
+-- ======================= INSERT ... DIKHAO and TAKRAAV PAR BADLO (upsert) =======================
+BANAO TABLE toppers (id INT MUKHYA KUNJI, naam TEXT);
+DAALO MEIN toppers (id, naam) DIKHAO id, naam SE students JAHAN cgpa > 8.5;
+DIKHAO * SE toppers KRAM id;
+DAALO MEIN toppers MAAN (2, 'Priya Verma') TAKRAAV PAR BADLO naam = naam;  -- id 2 already exists -> UPDATE not INSERT
+DIKHAO * SE toppers JAHAN id = 2;
+HATAO TABLE toppers;
+
+-- ======================= composite (multi-column) ANOKHA / MUKHYA KUNJI =======================
+BANAO TABLE enrollments (
+    id         INT MUKHYA KUNJI,
+    student_id INT SANDARBH students(id),
+    course_id  INT SANDARBH courses(id),
+    grade      TEXT,
+    ANOKHA (student_id, course_id)                          -- a student can enroll in a course only once
+);
+DAALO MEIN enrollments MAAN (1, 1, 10, 'A'), (2, 1, 20, 'B');
+DAALO MEIN enrollments MAAN (3, 1, 10, 'C');                 -- FAILS ON PURPOSE: (1, 10) already used
+BATAO enrollments;
+HATAO TABLE enrollments;
+
+-- ======================= QUERY PLANS (SAMJHAO = EXPLAIN) =======================
+SAMJHAO DIKHAO * SE students JAHAN id = 3;                  -- uses the hash index
+SAMJHAO DIKHAO * SE students JAHAN cgpa > 8;                -- full scan
+SAMJHAO DIKHAO s.naam, c.title SE students s MILAO courses c PAR s.cid = c.id;
+SAMJHAO DIKHAO GINO(*) KAHO total SE students;               -- PROJECT line shows the alias
+
+-- ======================= UPDATE / DELETE =======================
+BADLO students RAKHO umar = 23 JAHAN naam = 'Karan';
+BADLO students RAKHO cgpa = cgpa + 0.5 JAHAN cgpa < 7.5;
+DIKHAO * SE students;
+
+-- SANDARBH RESTRICT: a course still used by students can't be deleted
+MITAO SE courses JAHAN id = 10;                              -- FAILS ON PURPOSE: students still reference it
+
+MITAO SE students JAHAN id = 3;
+SIKODO TABLE students;          -- reclaim space left by deleted/updated rows
+
+-- ======================= TRANSACTIONS =======================
+SHURU;                                                  -- BEGIN
+MITAO SE students;
+DIKHAO GINO(*) SE students;                              -- 0 inside the transaction...
+WAPAS;                                                  -- ROLLBACK
+DIKHAO GINO(*) SE students;                              -- ...and back to 4 after WAPAS
+
+SHURU;
+BADLO students RAKHO active = JHOOTH JAHAN id = 5;
+PAKKA;                                                  -- COMMIT
+DIKHAO naam, active SE students JAHAN id = 5;
+
+-- ======================= RENAME (NAYA_NAAM) =======================
+SUDHARO TABLE students NAYA_NAAM pupils;                  -- rename table
+SUDHARO TABLE pupils COLUMN naam NAYA_NAAM full_naam;      -- rename column
+DIKHAO id, full_naam SE pupils KRAM id;
+BATAO pupils;                                             -- SANDARBH/SHART text follows the rename
+
+-- ======================= ALTER / TRUNCATE / DROP =======================
+SUDHARO TABLE pupils JODO email TEXT;
+BADLO pupils RAKHO email = 'ravi@college.edu' JAHAN id = 1;
+DIKHAO id, full_naam, email SE pupils;
+SUDHARO TABLE pupils HATAO shehar;
+BATAO pupils;
+
+-- SANDARBH RESTRICT applies to SAAF too: a parent can't be emptied while a child still points at it
+SAAF TABLE courses;                                        -- FAILS ON PURPOSE: pupils.cid still live
+BADLO pupils RAKHO cid = KHALI;                             -- clear the FK values first
+SAAF TABLE courses;                                         -- now it works
+SAAF TABLE pupils;
+DIKHAO * SE pupils;
+HATAO TABLE pupils;
+HATAO TABLE courses;
+DIKHAO TABLES;
+
+-- (TRIGGERS, STORED PROCEDURES and USERS & PRIVILEGES sections removed: Phase 2)
+
+-- ======================= errors are friendly too =======================
+DAALO MEIN nahi_hai MAAN (1);
+
+-- clean up so the demo can be run again
+ISTEMAL main;
+HATAO DATABASE college;
