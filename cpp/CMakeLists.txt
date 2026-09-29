@@ -40,6 +40,7 @@ add_library(meradb_core STATIC
   src/evaluator.cpp
   src/aggregates.cpp
   src/engine.cpp
+  src/cli_format.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
