@@ -853,14 +853,6 @@ Result Engine::execRenameColumn(const ast::RenameColumn& stmt) {
 }
 
 // ============================================================================
-// Not yet implemented (later tasks)
-// ============================================================================
-
-namespace {
-[[noreturn]] void notYet(const char* what) { throw ExecutionError(std::string(what) + " abhi supported nahi hai"); }
-}  // namespace
-
-// ============================================================================
 // constraint checks
 // ============================================================================
 
@@ -1845,10 +1837,169 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
     return result;
 }
 
+// ============================================================================
+// views
+// ============================================================================
 
-Result Engine::execCreateView(const ast::CreateView&) { notYet("BANAO VIEW"); }
-Result Engine::execDropView(const ast::DropView&) { notYet("HATAO VIEW"); }
-Result Engine::execShowViews(const ast::ShowViews&) { notYet("DIKHAO VIEWS"); }
-Result Engine::execExplain(const ast::Explain&) { notYet("SAMJHAO"); }
+Result Engine::execShowViews(const ast::ShowViews&) {
+    std::vector<std::string> names;
+    for (const auto& entry : catalog().views) names.push_back(entry.first);
+    std::sort(names.begin(), names.end());
+    Result r;
+    r.columns = {"view"};
+    for (auto& n : names) r.rows.push_back({textValue(n)});
+    r.message = std::to_string(names.size()) + " view(s) in '" + currentDb + "'";
+    return r;
+}
+
+Result Engine::execCreateView(const ast::CreateView& stmt) {
+    Catalog& cat = catalog();
+    if (cat.find(stmt.name) != nullptr)
+        throw ExecutionError("Table '" + stmt.name + "' pehle se hai -- VIEW usi naam se nahi ban sakti");
+    if (cat.views.count(stmt.name)) throw ExecutionError("View '" + stmt.name + "' pehle se hai");
+    auto parsed = parseScript(stmt.queryText);
+    auto* select = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
+    if (select == nullptr) throw ExecutionError("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai");
+    execSelect(*select);  // sanity check: must run cleanly against the CURRENT schema
+    cat.addView(stmt.name, stmt.queryText);
+    return messageResult("View '" + stmt.name + "' ban gaya");
+}
+
+Result Engine::execDropView(const ast::DropView& stmt) {
+    Catalog& cat = catalog();
+    if (!cat.views.count(stmt.name)) throw ExecutionError("View '" + stmt.name + "' exist nahi karta");
+    cat.removeView(stmt.name);
+    return messageResult("View '" + stmt.name + "' hata diya");
+}
+
+// ============================================================================
+// SAMJHAO (EXPLAIN)
+// ============================================================================
+
+Result Engine::execExplain(const ast::Explain& stmt) {
+    const ast::Statement& inner = *stmt.statement;
+    std::vector<std::string> lines;
+    if (auto* sel = dynamic_cast<const ast::Select*>(&inner)) {
+        auto plan = planSelect(*sel);
+        lines = explainSelect(*sel, *plan);
+    } else if (auto* setOp = dynamic_cast<const ast::SetOp*>(&inner)) {
+        lines.push_back(setOp->op + " (" + setOpName(setOp->op) + ") of:");
+        const std::pair<const ast::Statement*, const char*> sides[] = {{setOp->left.get(), "LEFT"},
+                                                                       {setOp->right.get(), "RIGHT"}};
+        for (const auto& [side, label] : sides) {
+            auto subLines = explainOne(*side);
+            lines.push_back(std::string("  ") + label + ":");
+            for (const auto& line : subLines) lines.push_back("    " + line);
+        }
+    } else if (dynamic_cast<const ast::Update*>(&inner) || dynamic_cast<const ast::Delete*>(&inner)) {
+        auto* upd = dynamic_cast<const ast::Update*>(&inner);
+        const std::string& tableName = upd ? upd->table : static_cast<const ast::Delete&>(inner).table;
+        const ast::Expr* where = upd ? upd->where.get() : static_cast<const ast::Delete&>(inner).where.get();
+        auto t = table(tableName);
+        Scope scope({{tableName, t->schema()}});
+        auto access = chooseAccess(*t, scope, bind(where, scope).get());
+        lines.push_back(access ? access->describe(*t) : "FULL SCAN " + tableName);
+        if (where) lines.push_back("FILTER  JAHAN " + exprLabel(*where));
+        lines.push_back(std::string(upd ? "BADLO (update)" : "MITAO (delete)") + " matching rows");
+    } else {
+        throw ExecutionError("SAMJHAO sirf DIKHAO, BADLO aur MITAO ke saath chalta hai");
+    }
+    Result r;
+    r.columns = {"plan"};
+    for (size_t i = 0; i < lines.size(); ++i) r.rows.push_back({textValue(std::to_string(i + 1) + ". " + lines[i])});
+    r.message = "Query plan (query chalayi nahi gayi)";
+    return r;
+}
+
+// One side of a SetOp -- itself a Select or (recursively) a SetOp.
+std::vector<std::string> Engine::explainOne(const ast::Statement& stmt) {
+    if (auto* setOp = dynamic_cast<const ast::SetOp*>(&stmt)) {
+        std::vector<std::string> lines{setOp->op + " (" + setOpName(setOp->op) + ") of:"};
+        for (const ast::Statement* side : {setOp->left.get(), setOp->right.get()})
+            for (const auto& line : explainOne(*side)) lines.push_back("  " + line);
+        return lines;
+    }
+    auto* sel = dynamic_cast<const ast::Select*>(&stmt);
+    if (sel == nullptr) throw ExecutionError("SAMJHAO sirf DIKHAO, BADLO aur MITAO ke saath chalta hai");
+    auto plan = planSelect(*sel);
+    return explainSelect(*sel, *plan);
+}
+
+std::vector<std::string> Engine::explainSelect(const ast::Select& stmt, const SelectPlan& plan) {
+    auto joinLabel = [](const std::string& kind) -> std::string {
+        if (kind == "LEFT") return "LEFT ";
+        if (kind == "RIGHT") return "RIGHT ";
+        if (kind == "FULL") return "FULL ";
+        if (kind == "NATURAL") return "NATURAL ";
+        return "";
+    };
+    std::vector<std::string> lines;
+    std::string alias = stmt.alias.has_value() && !stmt.alias->empty() ? " " + *stmt.alias : "";
+    lines.push_back(plan.access ? plan.access->describe(*plan.tables[0]) : "FULL SCAN " + stmt.table + alias);
+    for (const auto& step : plan.joins) {
+        std::string kind = joinLabel(step.join->kind) + (step.hashKeys ? "HASH JOIN" : "NESTED LOOP JOIN");
+        std::string name = step.join->alias == step.join->table ? step.join->table : step.join->table + " " + step.join->alias;
+        lines.push_back(kind + " " + name + " PAR " + exprLabel(*step.on));
+    }
+    auto append = [&](const std::vector<std::string>& more) { lines.insert(lines.end(), more.begin(), more.end()); };
+    if (stmt.where) lines.push_back("FILTER  JAHAN " + exprLabel(*stmt.where));
+    append(explainSubqueries({stmt.where.get()}, *plan.scope));
+    if (plan.grouped) {
+        std::vector<std::string> aggLabels;
+        for (const auto* a : plan.aggregates) aggLabels.push_back(exprLabel(*a));
+        std::string aggs = aggLabels.empty() ? "-" : joinStrs(aggLabels, ", ");
+        if (!stmt.groupBy.empty()) {
+            std::vector<std::string> groupLabels;
+            for (const auto& g : stmt.groupBy) groupLabels.push_back(exprLabel(*g));
+            lines.push_back("GROUP  SAMOOH " + joinStrs(groupLabels, ", ") + "  [aggregates: " + aggs + "]");
+        } else {
+            lines.push_back("AGGREGATE saari rows ek group  [aggregates: " + aggs + "]");
+        }
+    }
+    if (stmt.having) {
+        lines.push_back("FILTER GROUPS  JINKA " + exprLabel(*stmt.having));
+        append(explainSubqueries({stmt.having.get()}, *plan.scope));
+    }
+    if (!stmt.orderBy.empty()) {
+        std::vector<std::string> keys;
+        for (const auto& o : stmt.orderBy) keys.push_back(exprLabel(*o.expr) + (o.descending ? " ULTA" : ""));
+        lines.push_back("SORT  KRAM " + joinStrs(keys, ", "));
+    }
+    lines.push_back("PROJECT  " + joinStrs(plan.labels, ", "));
+    std::vector<const ast::Expr*> outputs;
+    for (const auto& o : plan.outputs) outputs.push_back(o.get());
+    append(explainSubqueries(outputs, *plan.scope));
+    if (stmt.distinct) lines.push_back("DISTINCT  ALAG");
+    if (stmt.limit.has_value()) lines.push_back("LIMIT  SIRF " + std::to_string(*stmt.limit));
+    return lines;
+}
+
+// One line per DISTINCT subquery node found in `exprs`, naming whether it's
+// correlated. Deliberately shallow: only the subquery's OWN first plan line is
+// shown, not its whole nested plan tree.
+std::vector<std::string> Engine::explainSubqueries(const std::vector<const ast::Expr*>& exprs, const Scope& scope) {
+    std::vector<std::string> lines;
+    std::unordered_set<const ast::Subquery*> seen;
+    const std::vector<std::string> keys = scope.allKeys();
+    Row dummyOuter;
+    for (const auto& k : keys) dummyOuter[k] = Value();
+    for (const auto* e : exprs) {
+        if (!e) continue;
+        std::vector<const ast::Expr*> nodes;
+        findSubqueries(*e, nodes);
+        for (const auto* node : nodes) {
+            const ast::Subquery* sub = dynamic_cast<const ast::Subquery*>(node);
+            if (!sub) sub = static_cast<const ast::InSubquery*>(node)->subquery.get();
+            if (!seen.insert(sub).second) continue;
+            Scope subqueryScope = selectSourcesScope(*sub->statement, nullptr);
+            bool fired = false;
+            auto substituted = correlateSelect(*sub->statement, subqueryScope, dummyOuter, keys, fired);
+            auto innerPlan = planSelect(*substituted);
+            std::string firstLine = explainSelect(*substituted, *innerPlan).at(0);
+            lines.push_back(std::string("SUBQUERY (") + (fired ? "correlated" : "uncorrelated") + "): " + firstLine);
+        }
+    }
+    return lines;
+}
 
 }  // namespace meradb
