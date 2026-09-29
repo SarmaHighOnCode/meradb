@@ -39,6 +39,7 @@ add_library(meradb_core STATIC
   src/pyvalue.cpp
   src/evaluator.cpp
   src/aggregates.cpp
+  src/engine.cpp
   # source files are appended here by later tasks
 )
 target_include_directories(meradb_core PUBLIC include)
