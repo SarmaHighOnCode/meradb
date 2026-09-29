@@ -1,5 +1,7 @@
 // cpp/src/engine.cpp -- mirrors meradb/engine.py
 #include "meradb/engine.h"
+#include "meradb/aggregates.h"
+#include "meradb/ast_util.h"
 #include "meradb/errors.h"
 #include "meradb/parser.h"
 #include "meradb/pyvalue.h"
@@ -179,49 +181,12 @@ Result messageResult(std::string message) {
     return r;
 }
 
-// Python's repr(float): shortest round-tripping digits, fixed notation for
-// 1e-4 <= |x| < 1e16, exponent form otherwise.
-std::string pyReprDouble(double d) {
-    if (std::isnan(d)) return "nan";
-    if (std::isinf(d)) return d < 0 ? "-inf" : "inf";
-    if (d == 0) return std::signbit(d) ? "-0.0" : "0.0";
-    char buf[48];
-    for (int prec = 1; prec <= 17; ++prec) {
-        std::snprintf(buf, sizeof buf, "%.*e", prec - 1, d);
-        if (std::strtod(buf, nullptr) == d) break;
-    }
-    std::string s = buf;
-    bool neg = s[0] == '-';
-    if (neg) s.erase(0, 1);
-    size_t e = s.find('e');
-    int exp10 = std::atoi(s.c_str() + e + 1);
-    std::string digits;
-    for (size_t i = 0; i < e; ++i)
-        if (s[i] != '.') digits += s[i];
-    while (digits.size() > 1 && digits.back() == '0') digits.pop_back();
-    std::string out;
-    if (exp10 >= -4 && exp10 < 16) {
-        int decpt = exp10 + 1;
-        if (decpt <= 0) out = "0." + std::string(static_cast<size_t>(-decpt), '0') + digits;
-        else if (static_cast<size_t>(decpt) >= digits.size())
-            out = digits + std::string(static_cast<size_t>(decpt) - digits.size(), '0') + ".0";
-        else out = digits.substr(0, static_cast<size_t>(decpt)) + "." + digits.substr(static_cast<size_t>(decpt));
-    } else {
-        out = digits.substr(0, 1);
-        if (digits.size() > 1) out += "." + digits.substr(1);
-        std::string ex = std::to_string(std::abs(exp10));
-        if (ex.size() < 2) ex = "0" + ex;
-        out += std::string("e") + (exp10 < 0 ? "-" : "+") + ex;
-    }
-    return neg ? "-" + out : out;
-}
-
 // Python's repr() of a stored value, for the `{v!r}` in error messages.
 std::string pyReprValue(const Value& v) {
     if (v.isNull()) return "None";
     if (isBoolValue(v)) return std::get<bool>(v.data) ? "True" : "False";
     if (isIntValue(v)) return std::to_string(std::get<int64_t>(v.data));
-    if (isDoubleValue(v)) return pyReprDouble(std::get<double>(v.data));
+    if (isDoubleValue(v)) return pyReprFloat(std::get<double>(v.data));
     if (isTextValue(v)) return pyRepr(std::get<std::string>(v.data));
     if (isDateValue(v)) {
         std::string iso = std::get<Date>(v.data).isoFormat();  // YYYY-MM-DD
@@ -269,7 +234,7 @@ void checkLength(const Column& col, const Value& value) {
 
 // A VIEW's MaterializedTable has no declared column types -- infer one from
 // the FIRST non-KHALI value in that column, defaulting to TEXT.
-[[maybe_unused]] std::string inferColumnType(const std::vector<std::vector<Value>>& rows, size_t position) {
+std::string inferColumnType(const std::vector<std::vector<Value>>& rows, size_t position) {
     for (const auto& row : rows) {
         const Value& v = row[position];
         if (v.isNull()) continue;
@@ -282,7 +247,7 @@ void checkLength(const Column& col, const Value& value) {
     return "TEXT";
 }
 
-[[maybe_unused]] const char* setOpName(const std::string& op) {
+const char* setOpName(const std::string& op) {
     return op == "SANYUKT" ? "UNION" : op == "SAAJHA" ? "INTERSECT" : "EXCEPT";
 }
 
@@ -1261,20 +1226,626 @@ Result Engine::execDelete(const ast::Delete& stmt) {
     return messageResult(std::to_string(doomed.size()) + " row(s) mita di");
 }
 
-Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::Expr*>& exprs,
-                                                   const std::vector<Row>& rows,
-                                                   const std::vector<std::string>&) {
-    RowSubqueries out;
-    if (rows.empty()) return out;
-    std::vector<const ast::Expr*> nodes;
-    for (const auto* e : exprs)
-        if (e) findSubqueries(*e, nodes);
-    if (!nodes.empty()) notYet("Subquery");
+// ============================================================================
+// SELECT
+// ============================================================================
+
+// Everything the planner decided about one DIKHAO (also what SAMJHAO prints).
+struct Engine::SelectPlan {
+    struct JoinStep {
+        const ast::Join* join;
+        std::unique_ptr<ast::Expr> on;                                   // bound PAR
+        std::optional<std::pair<std::string, std::string>> hashKeys;     // (left key, right key) or nullopt
+    };
+    std::vector<std::unique_ptr<Table>> tables;
+    std::unique_ptr<Scope> scope;
+    std::vector<std::string> labels;
+    std::vector<std::unique_ptr<ast::Expr>> outputs;
+    std::unique_ptr<ast::Expr> where;
+    std::vector<std::unique_ptr<ast::Expr>> groupBy;
+    std::unique_ptr<ast::Expr> having;
+    std::vector<std::pair<std::unique_ptr<ast::Expr>, bool>> orderBy;  // (bound expr, descending)
+    std::vector<const ast::FuncCall*> aggregates;
+    bool grouped = false;
+    std::optional<IndexLookup> access;
+    std::vector<JoinStep> joins;
+};
+
+namespace {
+
+// KHALI sorts before every real value (in SEEDHA / ascending order).
+bool sortLess(const Value& a, const Value& b) {
+    if (a.isNull()) return !b.isNull();
+    if (b.isNull()) return false;
+    return pyLess(a, b);
+}
+
+Row combineRows(const Row& left, const Row& right) {
+    Row combined = left;
+    for (const auto& kv : right) combined[kv.first] = kv.second;  // keys never clash: they carry the source alias
+    return combined;
+}
+
+using ValueBuckets = std::unordered_map<Value, std::vector<size_t>, PyValueHash, PyValueEq>;
+
+// Combine every left row with the right rows that satisfy PAR.
+//
+// HASH JOIN (when PAR has `left.x = right.y`): put the right rows in a hash
+// map keyed by y, then each left row finds its partners in O(1).  O(n + m)
+// NESTED LOOP (anything else): try every pair.                    O(n * m)
+//
+//   INNER/NATURAL  only matched rows (NATURAL just has a synthesised PAR)
+//   LEFT   (BAAYAN MILAO)  every left row kept once, KHALI-padded if unmatched
+//   RIGHT  (DAHINA MILAO)  every right row kept once, KHALI-padded if unmatched
+//   FULL   (DONO MILAO)    LEFT semantics PLUS any right row that matched nothing
+std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Row>& rightRows, const ast::Expr& on,
+                          const std::optional<std::pair<std::string, std::string>>& hashKeys,
+                          const std::string& kind, const Row& nullLeft, const Row& nullRight) {
+    std::vector<Row> out;
+    if (kind == "RIGHT") {
+        // Symmetric to LEFT but on the OTHER side: hash the left rows, drive the
+        // loop from the right rows; the OUTPUT still holds both sides' keys.
+        ValueBuckets buckets;
+        std::vector<size_t> everyLeft;
+        if (hashKeys) {
+            for (size_t i = 0; i < leftRows.size(); ++i) {
+                const Value& v = leftRows[i].at(hashKeys->first);
+                if (!v.isNull()) buckets[v].push_back(i);
+            }
+        } else {
+            for (size_t i = 0; i < leftRows.size(); ++i) everyLeft.push_back(i);
+        }
+        for (const auto& rRow : rightRows) {
+            const std::vector<size_t>* partners = &everyLeft;
+            static const std::vector<size_t> none;
+            if (hashKeys) {
+                const Value& v = rRow.at(hashKeys->second);
+                auto it = v.isNull() ? buckets.end() : buckets.find(v);
+                partners = it == buckets.end() ? &none : &it->second;
+            }
+            bool matched = false;
+            for (size_t li : *partners) {
+                Row combined = combineRows(leftRows[li], rRow);
+                if (isTrue(evaluate(on, combined))) {
+                    out.push_back(std::move(combined));
+                    matched = true;
+                }
+            }
+            if (!matched) out.push_back(combineRows(nullLeft, rRow));
+        }
+        return out;
+    }
+
+    bool keepLeftUnmatched = kind == "LEFT" || kind == "FULL";
+    bool keepRightUnmatched = kind == "FULL";
+    ValueBuckets buckets;
+    std::vector<size_t> everyRight;
+    if (hashKeys) {
+        for (size_t i = 0; i < rightRows.size(); ++i) {
+            const Value& v = rightRows[i].at(hashKeys->second);
+            if (!v.isNull()) buckets[v].push_back(i);  // KHALI never equals anything, so it never joins
+        }
+    } else {
+        for (size_t i = 0; i < rightRows.size(); ++i) everyRight.push_back(i);
+    }
+    std::vector<bool> matchedRight(rightRows.size(), false);
+    for (const auto& lRow : leftRows) {
+        const std::vector<size_t>* partners = &everyRight;
+        static const std::vector<size_t> none;
+        if (hashKeys) {
+            const Value& v = lRow.at(hashKeys->first);
+            auto it = v.isNull() ? buckets.end() : buckets.find(v);
+            partners = it == buckets.end() ? &none : &it->second;
+        }
+        bool matched = false;
+        for (size_t ri : *partners) {
+            Row combined = combineRows(lRow, rightRows[ri]);
+            if (isTrue(evaluate(on, combined))) {  // re-check the full PAR (it may have more conditions)
+                out.push_back(std::move(combined));
+                matched = true;
+                matchedRight[ri] = true;
+            }
+        }
+        if (keepLeftUnmatched && !matched) out.push_back(combineRows(lRow, nullRight));
+    }
+    if (keepRightUnmatched) {
+        // FULL = LEFT (matched + left-unmatched-padded) UNION right-only-unmatched
+        for (size_t ri = 0; ri < rightRows.size(); ++ri)
+            if (!matchedRight[ri]) out.push_back(combineRows(nullLeft, rightRows[ri]));
+    }
     return out;
 }
 
-Result Engine::execSelect(const ast::Select&) { notYet("DIKHAO"); }
-Result Engine::execSetOp(const ast::SetOp&) { notYet("SetOp"); }
+// Replace every ColumnRef in `expr` that does NOT resolve against the
+// subquery's OWN scope with a Literal of the matching outer-row value.
+std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub, const Row& outerRow,
+                                         const std::vector<std::string>& outerKeys, bool& fired) {
+    using namespace ast;
+    auto rec = [&](const Expr* e) -> std::unique_ptr<Expr> {
+        return e ? correlateExpr(*e, sub, outerRow, outerKeys, fired) : nullptr;
+    };
+    if (dynamic_cast<const Literal*>(&expr) || dynamic_cast<const Star*>(&expr)) return cloneExpr(expr);
+    if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) {
+        try {
+            sub.resolve(*ref);
+            return cloneExpr(expr);  // resolves locally -- this is NOT a correlation
+        } catch (const ExecutionError&) {
+        }
+        std::string key;
+        if (ref->table.has_value()) {
+            key = *ref->table + "." + ref->name;
+            if (!outerRow.count(key))
+                throw ExecutionError("'" + key + "' na is subquery mein na outer query mein mila");
+        } else {
+            std::vector<std::string> matches;
+            std::string suffix = "." + ref->name;
+            for (const auto& k : outerKeys)
+                if (k.size() >= suffix.size() && k.compare(k.size() - suffix.size(), suffix.size(), suffix) == 0)
+                    matches.push_back(k);
+            if (matches.empty())
+                throw ExecutionError("Column '" + ref->name + "' na is subquery mein na outer query mein mila");
+            if (matches.size() > 1)
+                throw ExecutionError("Column '" + ref->name + "' outer query mein ek se zyada tables mein hai -- " +
+                                     joinStrs(matches, " ya ") + " likho");
+            key = matches[0];
+        }
+        fired = true;
+        return std::make_unique<Literal>(outerRow.at(key));
+    }
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) return std::make_unique<BinaryOp>(b->op, rec(b->left.get()), rec(b->right.get()));
+    if (auto* u = dynamic_cast<const UnaryOp*>(&expr)) {
+        auto out = std::make_unique<UnaryOp>();
+        out->op = u->op;
+        out->operand = rec(u->operand.get());
+        return out;
+    }
+    if (auto* isn = dynamic_cast<const IsNull*>(&expr)) {
+        auto out = std::make_unique<IsNull>();
+        out->expr = rec(isn->expr.get());
+        out->negated = isn->negated;
+        return out;
+    }
+    if (auto* f = dynamic_cast<const FuncCall*>(&expr)) {
+        auto out = std::make_unique<FuncCall>();
+        out->name = f->name;
+        out->arg = rec(f->arg.get());
+        return out;
+    }
+    if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
+        auto out = std::make_unique<Coalesce>();
+        for (const auto& a : co->args) out->args.push_back(rec(a.get()));
+        return out;
+    }
+    if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
+        auto out = std::make_unique<CaseWhen>();
+        for (const auto& [cond, value] : cw->branches) {
+            auto c = rec(cond.get());
+            auto v = rec(value.get());
+            out->branches.emplace_back(std::move(c), std::move(v));
+        }
+        out->elseExpr = rec(cw->elseExpr.get());
+        return out;
+    }
+    if (dynamic_cast<const Subquery*>(&expr) || dynamic_cast<const InSubquery*>(&expr))
+        return cloneExpr(expr);  // a NESTED subquery correlates against ITS OWN nesting when IT runs
+    throw ExecutionError("Unknown expression");
+}
+
+// Scalar context (Subquery): exactly 1 column, 0 or 1 row. List context
+// (InSubquery): exactly 1 column, any number of rows.
+SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result) {
+    if (result.columns.size() != 1) throw ExecutionError("Subquery sirf 1 column return kar sakti hai is jagah");
+    SubqueryResult out;
+    if (dynamic_cast<const ast::Subquery*>(&node)) {
+        if (result.rows.size() > 1)
+            throw ExecutionError("Subquery ek se zyada rows return kar rahi hai -- sirf 1 row honi chahiye");
+        if (!result.rows.empty()) out.scalar = result.rows[0][0];
+    } else {
+        for (const auto& r : result.rows) out.values.push_back(r[0]);
+    }
+    return out;
+}
+
+}  // namespace
+
+// A SE/MILAO source: a real Table, or -- if `name` isn't a table -- a VIEW,
+// materialized fresh by re-running its stored DIKHAO text (so it always
+// reflects the CURRENT schema of whatever it selects from).
+std::unique_ptr<Table> Engine::resolveSource(const std::string& name) {
+    Catalog& cat = catalog();
+    if (cat.find(name) != nullptr) return table(name);
+    if (cat.views.count(name)) {
+        auto parsed = parseScript(cat.views.at(name));
+        auto* viewStmt = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
+        if (viewStmt == nullptr) throw ExecutionError("View '" + name + "' ki definition DIKHAO nahi hai");
+        Result result = execSelect(*viewStmt);
+        TableSchema schema;
+        schema.name = name;
+        for (size_t i = 0; i < result.columns.size(); ++i) {
+            Column c;
+            c.name = result.columns[i];
+            c.typeName = inferColumnType(result.rows, i);
+            schema.columns.push_back(c);
+        }
+        return std::make_unique<MaterializedTable>(schema, result.rows);
+    }
+    throw ExecutionError("Table '" + name + "' exist nahi karta");
+}
+
+Scope Engine::selectSourcesScope(const ast::Select& stmt, std::vector<std::unique_ptr<Table>>* tablesOut) {
+    std::vector<std::pair<std::string, std::string>> sources;  // (alias, table)
+    sources.emplace_back(stmt.alias.has_value() && !stmt.alias->empty() ? *stmt.alias : stmt.table, stmt.table);
+    for (const auto& j : stmt.joins) sources.emplace_back(j.alias, j.table);
+    std::vector<std::unique_ptr<Table>> tables;
+    for (const auto& s : sources) tables.push_back(resolveSource(s.second));
+    std::vector<std::pair<std::string, TableSchema>> withSchemas;
+    for (size_t i = 0; i < sources.size(); ++i) withSchemas.emplace_back(sources[i].first, tables[i]->schema());
+    Scope scope(std::move(withSchemas));
+    if (tablesOut) *tablesOut = std::move(tables);
+    return scope;
+}
+
+std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) {
+    auto plan = std::make_unique<SelectPlan>();
+    plan->scope = std::make_unique<Scope>(selectSourcesScope(stmt, &plan->tables));
+    const Scope& scope = *plan->scope;
+
+    // KAHO: an output alias becomes the column header, and (only) KRAM may
+    // refer back to it by name -- JAHAN/JINKA do not (standard SQL: they run
+    // before the output list exists). We collect {alias: unbound expr} here so
+    // KRAM can be rewritten to that expr BEFORE binding.
+    std::unordered_map<std::string, const ast::Expr*> aliasExprs;
+    for (size_t i = 0; i < stmt.columns.size(); ++i) {
+        const ast::Expr& e = *stmt.columns[i];
+        std::optional<std::string> alias = i < stmt.aliases.size() ? stmt.aliases[i] : std::nullopt;
+        bool hasAlias = alias.has_value() && !alias->empty();
+        if (auto* star = dynamic_cast<const ast::Star*>(&e)) {
+            for (const auto& [label, ref] : scope.expandStar(*star)) {
+                plan->labels.push_back(label);
+                plan->outputs.push_back(bind(ref, scope));
+            }
+        } else {
+            plan->labels.push_back(hasAlias ? *alias : exprLabel(e));  // KAHO wins over the default header
+            plan->outputs.push_back(bind(e, scope));
+            if (hasAlias) aliasExprs[*alias] = &e;
+        }
+    }
+
+    auto isRealColumn = [&](const std::string& name) {
+        for (const auto& [alias, schema] : scope.sources()) {
+            (void)alias;
+            for (const auto& c : schema.columns)
+                if (c.name == name) return true;
+        }
+        return false;
+    };
+    // a bare `naam` in KRAM that matches an alias (and isn't a real column)
+    // means the output expression, not a column lookup
+    auto orderExpr = [&](const ast::Expr& e) -> const ast::Expr& {
+        if (auto* ref = dynamic_cast<const ast::ColumnRef*>(&e)) {
+            auto it = aliasExprs.find(ref->name);
+            if (!ref->table.has_value() && it != aliasExprs.end() && !isRealColumn(ref->name)) return *it->second;
+        }
+        return e;
+    };
+
+    plan->where = bind(stmt.where.get(), scope);
+    for (const auto& g : stmt.groupBy) plan->groupBy.push_back(bind(*g, scope));
+    plan->having = bind(stmt.having.get(), scope);
+    for (const auto& o : stmt.orderBy) plan->orderBy.emplace_back(bind(orderExpr(*o.expr), scope), o.descending);
+
+    // every distinct aggregate call, in first-seen order
+    std::vector<const ast::Expr*> aggSources;
+    for (const auto& o : plan->outputs) aggSources.push_back(o.get());
+    aggSources.push_back(plan->having.get());
+    for (const auto& o : plan->orderBy) aggSources.push_back(o.first.get());
+    std::set<std::string> seenAggs;
+    for (const auto* e : aggSources) {
+        if (!e) continue;
+        std::vector<const ast::FuncCall*> found;
+        findAggregates(*e, found);
+        for (const auto* func : found) {
+            canonicalName(*func);  // fail early on unknown functions
+            if (seenAggs.insert(aggKey(*func)).second) plan->aggregates.push_back(func);
+        }
+    }
+    plan->grouped = !plan->groupBy.empty() || !plan->aggregates.empty() || plan->having != nullptr;
+    if (plan->grouped) {
+        // In a grouped query each output row stands for a whole GROUP of rows,
+        // so a bare column like `naam` has no single value -- unless we grouped by it.
+        std::set<std::string> grouped;
+        for (const auto& g : plan->groupBy)
+            for (const auto& name : columnRefKeys(g.get())) grouped.insert(name);
+        for (const auto* e : aggSources)
+            for (const auto& name : columnRefKeys(e, true))
+                if (!grouped.count(name))
+                    throw ExecutionError("Column '" + scope.display(name) +
+                                         "' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate "
+                                         "(GINO, KUL, AUSAT...) ke andar use karo");
+    }
+
+    plan->access = chooseAccess(*plan->tables[0], scope, plan->where.get());
+    for (size_t i = 0; i < stmt.joins.size(); ++i) {
+        const ast::Join& join = stmt.joins[i];
+        size_t sourceIndex = i + 1;
+        SelectPlan::JoinStep step;
+        step.join = &join;
+        if (join.kind == "NATURAL") {
+            // no PAR written by the user -- synthesise `earlier.col = new.col`
+            // for every column name shared with an already-joined table
+            step.on = naturalJoinCondition(scope, sourceIndex);
+        } else {
+            step.on = bind(join.on.get(), scope);
+        }
+        checkJoinCondition(step.on.get(), scope, sourceIndex);
+        step.hashKeys = chooseJoin(step.on.get(), scope, sourceIndex);
+        plan->joins.push_back(std::move(step));
+    }
+    return plan;
+}
+
+// Bucket rows by their SAMOOH values, then turn each bucket into ONE row: the
+// bucket's first row (for the grouped columns) plus every aggregate's result
+// stored under aggKey(). evaluate() then finds them there.
+std::vector<Row> Engine::group(const std::vector<Row>& rows, const SelectPlan& plan) {
+    std::vector<std::vector<Row>> buckets;  // in first-seen order
+    std::unordered_map<std::vector<Value>, size_t, PyValuesHash, PyValuesEq> bucketOf;
+    for (const auto& r : rows) {
+        std::vector<Value> key;
+        for (const auto& g : plan.groupBy) key.push_back(evaluate(*g, r));
+        auto it = bucketOf.find(key);
+        if (it == bucketOf.end()) {
+            it = bucketOf.emplace(std::move(key), buckets.size()).first;
+            buckets.emplace_back();
+        }
+        buckets[it->second].push_back(r);
+    }
+    if (plan.groupBy.empty() && buckets.empty()) buckets.emplace_back();  // `DIKHAO GINO(*) SE empty_table` must still return one row: 0
+
+    std::vector<Row> out;
+    for (const auto& members : buckets) {
+        Row groupRow;
+        if (!members.empty()) {
+            groupRow = members[0];
+        } else {
+            for (const auto& k : plan.scope->allKeys()) groupRow[k] = Value();
+        }
+        for (const auto* func : plan.aggregates) groupRow[aggKey(*func)] = computeAggregate(*func, members);
+        out.push_back(std::move(groupRow));
+    }
+    return out;
+}
+
+std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, const Scope& subqueryScope,
+                                                     const Row& outerRow, const std::vector<std::string>& outerKeys,
+                                                     bool& fired) {
+    auto corr = [&](const ast::Expr* e) -> std::unique_ptr<ast::Expr> {
+        return e ? correlateExpr(*e, subqueryScope, outerRow, outerKeys, fired) : nullptr;
+    };
+    auto out = std::make_unique<ast::Select>();
+    for (const auto& c : stmt.columns) out->columns.push_back(corr(c.get()));
+    out->table = stmt.table;
+    out->alias = stmt.alias;
+    for (const auto& j : stmt.joins) {
+        ast::Join nj;
+        nj.table = j.table;
+        nj.alias = j.alias;
+        nj.on = corr(j.on.get());
+        nj.kind = j.kind;
+        out->joins.push_back(std::move(nj));
+    }
+    out->where = corr(stmt.where.get());
+    for (const auto& g : stmt.groupBy) out->groupBy.push_back(corr(g.get()));
+    out->having = corr(stmt.having.get());
+    for (const auto& o : stmt.orderBy) {
+        ast::OrderItem item;
+        item.expr = corr(o.expr.get());
+        item.descending = o.descending;
+        out->orderBy.push_back(std::move(item));
+    }
+    out->limit = stmt.limit;
+    out->distinct = stmt.distinct;
+    out->aliases = stmt.aliases;
+    return out;
+}
+
+// Runs `sub` against one outer row and returns its Result; `fired` says
+// whether it turned out to be CORRELATED (some column resolved in the outer
+// row). If it never fires, the result doesn't depend on the outer row's
+// VALUES at all (only its KEYS, which are the same for every row of the same
+// outer query -- see precomputeSubqueries).
+Result Engine::runSubquery(const ast::Subquery& sub, const Row& outerRow, const std::vector<std::string>& outerKeys,
+                           bool& fired) {
+    const ast::Select& stmt = *sub.statement;
+    Scope subqueryScope = selectSourcesScope(stmt, nullptr);
+    auto newStmt = correlateSelect(stmt, subqueryScope, outerRow, outerKeys, fired);
+    return execSelect(*newStmt);
+}
+
+// One SubqueryResults per row, ready to pass into evaluate(). A subquery is
+// structurally either correlated or not -- whether its columns resolve
+// locally depends only on which KEYS the outer row has, not their values, and
+// every row here has the same keys -- so ONE dry run (against the first row)
+// decides correlated-vs-not for ALL rows: uncorrelated results are computed
+// once and shared; correlated ones are recomputed per row.
+Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::Expr*>& exprs,
+                                                   const std::vector<Row>& rows,
+                                                   const std::vector<std::string>& outerKeys) {
+    RowSubqueries out;
+    std::vector<const ast::Expr*> nodes;
+    std::unordered_set<const ast::Expr*> seen;
+    for (const auto* e : exprs) {
+        if (!e) continue;
+        std::vector<const ast::Expr*> found;
+        findSubqueries(*e, found);
+        for (const auto* node : found)
+            if (seen.insert(node).second) nodes.push_back(node);
+    }
+    if (nodes.empty() || rows.empty()) return out;
+
+    auto subqueryOf = [](const ast::Expr* node) -> const ast::Subquery& {
+        if (auto* s = dynamic_cast<const ast::Subquery*>(node)) return *s;
+        return *static_cast<const ast::InSubquery*>(node)->subquery;
+    };
+    std::unordered_set<const ast::Expr*> correlated;
+    for (const auto* node : nodes) {
+        bool fired = false;
+        Result result = runSubquery(subqueryOf(node), rows[0], outerKeys, fired);
+        if (fired) correlated.insert(node);
+        else out.shared[node] = reduceSubqueryResult(*node, result);
+    }
+    if (!correlated.empty()) {
+        out.perRow.reserve(rows.size());
+        for (const auto& row : rows) {
+            SubqueryResults d = out.shared;
+            for (const auto* node : nodes) {
+                if (!correlated.count(node)) continue;
+                bool fired = false;
+                Result result = runSubquery(subqueryOf(node), row, outerKeys, fired);
+                d[node] = reduceSubqueryResult(*node, result);
+            }
+            out.perRow.push_back(std::move(d));
+        }
+    }
+    return out;
+}
+
+Result Engine::execSelect(const ast::Select& stmt) {
+    auto planPtr = planSelect(stmt);
+    SelectPlan& plan = *planPtr;
+    const Scope& scope = *plan.scope;
+    const std::vector<std::string> keys = scope.allKeys();
+
+    // The pipeline, in the same order a real database runs it:
+    //   scan/index -> MILAO -> JAHAN -> SAMOOH + aggregates -> JINKA -> KRAM
+    //   -> project -> ALAG -> SIRF
+
+    // 1. READ the first table (index lookup or full scan)
+    std::vector<Row> rows;
+    for (const auto& c : candidates(*plan.tables[0], plan.access)) rows.push_back(scope.row(0, c.second));
+
+    // 2. JOIN (MILAO) each further table
+    for (size_t i = 0; i < plan.joins.size(); ++i) {
+        size_t src = i + 1;
+        std::vector<Row> rightRows;
+        for (const auto& r : plan.tables[src]->rows()) rightRows.push_back(scope.row(src, r.second));
+        Row nullLeft;
+        for (size_t j = 0; j < src; ++j)
+            for (auto& kv : scope.nullRow(j)) nullLeft[kv.first] = kv.second;
+        rows = joinRows(rows, rightRows, *plan.joins[i].on, plan.joins[i].hashKeys, plan.joins[i].join->kind,
+                        nullLeft, scope.nullRow(src));
+    }
+
+    // 3. FILTER (JAHAN) -- any WHERE subquery is pre-computed per outer row
+    //    (once, if uncorrelated; per row, if correlated -- see precomputeSubqueries)
+    if (plan.where) {
+        auto subq = precomputeSubqueries({plan.where.get()}, rows, keys);
+        std::vector<Row> kept;
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (isTrue(evaluate(*plan.where, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+        rows = std::move(kept);
+    }
+
+    // 4. GROUP (SAMOOH) + compute aggregates, then filter groups (JINKA)
+    if (plan.grouped) {
+        rows = group(rows, plan);
+        if (plan.having) {
+            auto subq = precomputeSubqueries({plan.having.get()}, rows, keys);
+            std::vector<Row> kept;
+            for (size_t i = 0; i < rows.size(); ++i)
+                if (isTrue(evaluate(*plan.having, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+            rows = std::move(kept);
+        }
+    }
+
+    // 5. SORT (KRAM). The sort is *stable*, so sorting by the LAST key first
+    //    and the FIRST key last gives a correct multi-column sort.
+    for (auto it = plan.orderBy.rbegin(); it != plan.orderBy.rend(); ++it) {
+        const ast::Expr& expr = *it->first;
+        bool descending = it->second;
+        auto subq = precomputeSubqueries({&expr}, rows, keys);
+        std::vector<Value> sortKeys;
+        for (size_t i = 0; i < rows.size(); ++i) sortKeys.push_back(evaluate(expr, rows[i], subq.at(i)));
+        std::vector<size_t> order(rows.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        if (descending)
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[b], sortKeys[a]); });
+        else
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[a], sortKeys[b]); });
+        std::vector<Row> sorted;
+        sorted.reserve(rows.size());
+        for (size_t idx : order) sorted.push_back(std::move(rows[idx]));
+        rows = std::move(sorted);
+    }
+
+    // 6. PROJECT (pick / compute the output columns)
+    std::vector<const ast::Expr*> outputPtrs;
+    for (const auto& o : plan.outputs) outputPtrs.push_back(o.get());
+    auto projSubq = precomputeSubqueries(outputPtrs, rows, keys);
+    std::vector<std::vector<Value>> outRows;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        std::vector<Value> out;
+        for (const auto* e : outputPtrs) out.push_back(evaluate(*e, rows[i], projSubq.at(i)));
+        outRows.push_back(std::move(out));
+    }
+
+    // 7. DISTINCT (ALAG): keep the first copy of each row, preserving order
+    if (stmt.distinct) {
+        std::unordered_set<std::vector<Value>, PyValuesHash, PyValuesEq> seen;
+        std::vector<std::vector<Value>> unique;
+        for (auto& row : outRows)
+            if (seen.insert(row).second) unique.push_back(std::move(row));
+        outRows = std::move(unique);
+    }
+
+    // 8. LIMIT (SIRF)  (Python's `rows[:n]`)
+    if (stmt.limit.has_value()) {
+        int64_t n = *stmt.limit;
+        int64_t size = static_cast<int64_t>(outRows.size());
+        int64_t keep = n >= 0 ? std::min(n, size) : std::max<int64_t>(0, size + n);
+        outRows.resize(static_cast<size_t>(keep));
+    }
+
+    Result result;
+    result.columns = plan.labels;
+    result.message = std::to_string(outRows.size()) + " row(s)";
+    result.rows = std::move(outRows);
+    return result;
+}
+
+// ============================================================================
+// set operations: SANYUKT (UNION), SAAJHA (INTERSECT), CHHODKAR (EXCEPT)
+// ============================================================================
+
+Result Engine::execSetOp(const ast::SetOp& stmt) {
+    Result left = executeStatement(*stmt.left);
+    Result right = executeStatement(*stmt.right);
+    if (left.columns.size() != right.columns.size())
+        throw ExecutionError(stmt.op + " (" + setOpName(stmt.op) + ") ke dono taraf " +
+                             std::to_string(left.columns.size()) + " columns chahiye, " +
+                             std::to_string(left.columns.size()) + " aur " + std::to_string(right.columns.size()) +
+                             " mile");
+    using RowSet = std::unordered_set<std::vector<Value>, PyValuesHash, PyValuesEq>;
+    std::vector<std::vector<Value>> out;
+    RowSet seen;
+    if (stmt.op == "SANYUKT") {  // UNION: dedupe, preserving first-occurrence order
+        for (const auto* side : {&left.rows, &right.rows})
+            for (const auto& row : *side)
+                if (seen.insert(row).second) out.push_back(row);
+    } else {
+        RowSet rightSet(right.rows.begin(), right.rows.end());
+        bool intersect = stmt.op == "SAAJHA";  // INTERSECT: in BOTH; EXCEPT: in left but NOT right -- both deduped, left's order
+        for (const auto& row : left.rows)
+            if ((rightSet.count(row) > 0) == intersect && seen.insert(row).second) out.push_back(row);
+    }
+    Result result;
+    result.columns = left.columns;
+    result.message = std::to_string(out.size()) + " row(s)";
+    result.rows = std::move(out);
+    return result;
+}
+
+
 Result Engine::execCreateView(const ast::CreateView&) { notYet("BANAO VIEW"); }
 Result Engine::execDropView(const ast::DropView&) { notYet("HATAO VIEW"); }
 Result Engine::execShowViews(const ast::ShowViews&) { notYet("DIKHAO VIEWS"); }

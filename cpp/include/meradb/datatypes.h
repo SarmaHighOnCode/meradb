@@ -41,4 +41,8 @@ std::string formatValue(const Value& value);
 // messages and labels write `{text!r}`.
 std::string pyRepr(const std::string& s);
 
+// Python's repr() of a float: shortest round-tripping digits, fixed notation
+// for 1e-4 <= |x| < 1e16, exponent form otherwise (inf / nan spelled like Python).
+std::string pyReprFloat(double d);
+
 }  // namespace meradb

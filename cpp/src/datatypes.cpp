@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace meradb {
@@ -244,6 +245,43 @@ std::string Date::isoFormat() const {
     char buf[32];
     snprintf(buf, sizeof(buf), "%04lld-%02d-%02d", static_cast<long long>(year), month, day);
     return buf;
+}
+
+// Python's repr(float): shortest round-tripping digits, fixed notation for
+// 1e-4 <= |x| < 1e16, exponent form otherwise.
+std::string pyReprFloat(double d) {
+    if (std::isnan(d)) return "nan";
+    if (std::isinf(d)) return d < 0 ? "-inf" : "inf";
+    if (d == 0) return std::signbit(d) ? "-0.0" : "0.0";
+    char buf[48];
+    for (int prec = 1; prec <= 17; ++prec) {
+        std::snprintf(buf, sizeof buf, "%.*e", prec - 1, d);
+        if (std::strtod(buf, nullptr) == d) break;
+    }
+    std::string s = buf;
+    bool neg = s[0] == '-';
+    if (neg) s.erase(0, 1);
+    size_t e = s.find('e');
+    int exp10 = std::atoi(s.c_str() + e + 1);
+    std::string digits;
+    for (size_t i = 0; i < e; ++i)
+        if (s[i] != '.') digits += s[i];
+    while (digits.size() > 1 && digits.back() == '0') digits.pop_back();
+    std::string out;
+    if (exp10 >= -4 && exp10 < 16) {
+        int decpt = exp10 + 1;
+        if (decpt <= 0) out = "0." + std::string(static_cast<size_t>(-decpt), '0') + digits;
+        else if (static_cast<size_t>(decpt) >= digits.size())
+            out = digits + std::string(static_cast<size_t>(decpt) - digits.size(), '0') + ".0";
+        else out = digits.substr(0, static_cast<size_t>(decpt)) + "." + digits.substr(static_cast<size_t>(decpt));
+    } else {
+        out = digits.substr(0, 1);
+        if (digits.size() > 1) out += "." + digits.substr(1);
+        std::string ex = std::to_string(std::abs(exp10));
+        if (ex.size() < 2) ex = "0" + ex;
+        out += std::string("e") + (exp10 < 0 ? "-" : "+") + ex;
+    }
+    return neg ? "-" + out : out;
 }
 
 }  // namespace meradb

@@ -47,7 +47,17 @@ std::string Parser::expectIdent(const std::string& what) {
     return advance().textValue;
 }
 [[noreturn]] void Parser::error(const std::string& msg) const {
-    throw ParseError(msg + " (line " + std::to_string(peek().line) + ")");
+    // Python: f"{msg}, par {found} mila (line {line}, col {col})", where found
+    // is "end of query" or repr(token value).
+    const Token& tok = peek();
+    std::string found;
+    switch (tok.type) {
+        case TokenType::Eof: found = "end of query"; break;
+        case TokenType::Number: found = tok.isFloat ? pyReprFloat(tok.doubleValue) : std::to_string(tok.intValue); break;
+        default: found = pyRepr(tok.textValue); break;
+    }
+    throw ParseError(msg + ", par " + found + " mila (line " + std::to_string(tok.line) + ", col " +
+                     std::to_string(tok.col) + ")");
 }
 
 // ---------------------------------------------------------------------

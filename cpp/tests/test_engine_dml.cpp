@@ -4,64 +4,23 @@
 // engine (tests/golden/gen_golden.py): same statements, same messages, same
 // error wording, same rows.
 #include <catch2/catch_test_macros.hpp>
-#include "golden_engine.h"
+#include "golden_runner.h"
 #include "meradb/engine.h"
 #include "meradb/errors.h"
 #include "meradb/parser.h"
 #include "test_util.h"
-#include <regex>
 
 using namespace meradb;
 using meradb_test::TempDir;
 
 namespace {
 
-std::string canonical(const Result& r) {
-    std::string s = "C:";
-    for (size_t i = 0; i < r.columns.size(); ++i) s += (i ? "," : "") + r.columns[i];
-    s += " R:";
-    for (size_t i = 0; i < r.rows.size(); ++i) {
-        s += i ? ";" : "";
-        for (size_t j = 0; j < r.rows[i].size(); ++j) s += (j ? "|" : "") + formatValue(r.rows[i][j]);
-    }
-    return s + " M:" + r.message + " E:" + r.error;
-}
-
-Result run(Engine& e, const std::string& sql) {
-    Result last;
-    for (auto& r : e.runScript(sql)) last = r;
-    return last;
-}
-
-// Until DIKHAO exists, `DIKHAO * SE t;` steps read the heap file directly (same
-// columns, file order, and row-count message as the real thing).
-Result stepResult(Engine& e, const std::string& sql) {
-    static const std::regex star(R"(^DIKHAO \* SE (\w+);$)");
-    std::smatch m;
-    if (!std::regex_match(sql, m, star)) return run(e, sql);
-    Table t(e.catalog().get(m[1]), e.catalog().tablePath(m[1]));
-    Result r;
-    r.columns = t.schema().columnNames();
-    for (auto& [id, values] : t.rows()) r.rows.push_back(values);
-    r.message = std::to_string(r.rows.size()) + " row(s)";
-    return r;
-}
+Result run(Engine& e, const std::string& sql) { return meradb_test::runLast(e, sql); }
 
 }  // namespace
 
 TEST_CASE("golden DML scripts match the Python engine", "[engine][dml][golden]") {
-    for (const auto& script : golden::scripts()) {
-        if (std::string(script.group) != "dml") continue;
-        TempDir dir;
-        Engine e(dir.str());
-        int n = 0;
-        for (const auto& step : script.steps) {
-            ++n;
-            INFO("script " << script.name << ", step " << n << ": " << step.sql);
-            Result got = stepResult(e, step.sql);
-            CHECK(canonical(got) == step.expect);
-        }
-    }
+    meradb_test::replayGolden("dml");
 }
 
 TEST_CASE("INSERT validates all rows before writing any", "[engine][dml]") {
