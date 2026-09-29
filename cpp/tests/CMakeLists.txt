@@ -15,6 +15,7 @@ add_executable(meradb_tests
   test_aggregates.cpp
   test_instance.cpp
   test_engine_ddl.cpp
+  test_engine_dml.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

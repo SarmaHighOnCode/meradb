@@ -895,9 +895,384 @@ namespace {
 [[noreturn]] void notYet(const char* what) { throw ExecutionError(std::string(what) + " abhi supported nahi hai"); }
 }  // namespace
 
-Result Engine::execInsert(const ast::Insert&) { notYet("DAALO"); }
-Result Engine::execUpdate(const ast::Update&) { notYet("BADLO"); }
-Result Engine::execDelete(const ast::Delete&) { notYet("MITAO"); }
+// ============================================================================
+// constraint checks
+// ============================================================================
+
+namespace {
+
+// SHART (CHECK), SQL semantics: the row is rejected ONLY when the expression
+// is exactly JHOOTH. KHALI (unknown, e.g. a column it uses is KHALI) passes.
+void checkShart(const TableSchema& schema, const std::vector<Value>& values) {
+    Row row;
+    for (size_t i = 0; i < schema.columns.size() && i < values.size(); ++i) row[schema.columns[i].name] = values[i];
+    for (const auto& col : schema.columns) {
+        if (!nonEmpty(col.check)) continue;
+        auto expr = parseExpression(*col.check);
+        Value result = evaluate(*expr, row);
+        if (isBoolValue(result) && !std::get<bool>(result.data))
+            throw ExecutionError("SHART toot gayi: (" + *col.check + ") -- column '" + col.name + "'");
+    }
+}
+
+// Is this index a plain single-column one (Python: int key) rather than a
+// composite constraint (Python: tuple key)?
+bool isSingleIndex(const TableSchema& schema, const std::vector<size_t>& positions) {
+    return positions.size() == 1 && schema.columns[positions[0]].isUnique();
+}
+
+// The index key for `positions`, or nullopt when any part is KHALI.
+std::optional<std::vector<Value>> indexKey(const std::vector<size_t>& positions, const std::vector<Value>& values) {
+    std::vector<Value> key;
+    key.reserve(positions.size());
+    for (size_t p : positions) {
+        if (values[p].isNull()) return std::nullopt;
+        key.push_back(values[p]);
+    }
+    return key;
+}
+
+}  // namespace
+
+// Type-check each value and enforce ZAROORI / MUKHYA KUNJI (not null) / VARCHAR(n) / SHART.
+std::vector<Value> Engine::validateRow(const TableSchema& schema, const std::vector<Value>& values) const {
+    std::vector<Value> out;
+    for (size_t i = 0; i < schema.columns.size() && i < values.size(); ++i) {
+        const Column& col = schema.columns[i];
+        Value value = coerce(values[i], col.typeName, col.name);
+        if (value.isNull() && col.isRequired())
+            throw ExecutionError("Column '" + col.name + "' ZAROORI hai, KHALI nahi ho sakta");
+        checkLength(col, value);
+        out.push_back(std::move(value));
+    }
+    checkShart(schema, out);
+    return out;
+}
+
+// Enforce ANOKHA / MUKHYA KUNJI (single-column AND composite) using the hash
+// indexes. `ignoreRowIds` are rows being replaced (UPDATE), so their old
+// values don't count.
+void Engine::checkUnique(Table& table, const std::vector<std::vector<Value>>& newRows,
+                         const std::set<int64_t>& ignoreRowIds) {
+    const TableSchema schema = table.schema();
+    IndexMap& indexes = table.indexes();
+    using KeySet = std::unordered_set<std::vector<Value>, ValueVecHash, ValueVecEq>;
+    std::vector<KeySet> seen(indexes.size());  // values within this statement, one set per index
+    for (const auto& values : newRows) {
+        size_t k = 0;
+        for (auto& [positions, index] : indexes) {
+            KeySet& seenHere = seen[k++];
+            auto key = indexKey(positions, values);
+            if (!key) continue;  // KHALI never participates in a uniqueness violation
+            auto it = index.find(*key);
+            bool clash = (it != index.end() && !ignoreRowIds.count(it->second)) || seenHere.count(*key);
+            if (clash) {
+                if (isSingleIndex(schema, positions))
+                    throw ExecutionError("Duplicate value " + pyReprValue((*key)[0]) + " column '" +
+                                         schema.columns[positions[0]].name +
+                                         "' mein -- is column mein har value alag honi chahiye");
+                std::vector<std::string> names;
+                for (size_t p : positions) names.push_back(schema.columns[p].name);
+                throw ExecutionError("Duplicate value " + pyReprTuple(*key) + " columns " + pyReprStrList(names) +
+                                     " mein -- ye combination alag hona chahiye");
+            }
+            seenHere.insert(*key);
+        }
+    }
+}
+
+// SANDARBH (FOREIGN KEY), child side: every non-KHALI value must already exist
+// in the parent's column. For a self-reference, a value is also accepted if it
+// appears among the OTHER rows of this very statement.
+void Engine::checkFk(Table& table, const std::vector<std::vector<Value>>& newRows) {
+    const TableSchema schema = table.schema();
+    for (size_t pos = 0; pos < schema.columns.size(); ++pos) {
+        const Column& col = schema.columns[pos];
+        if (!nonEmpty(col.refTable)) continue;
+        bool isSelf = *col.refTable == schema.name;
+        std::unique_ptr<Table> parentOwned;
+        Table* parent = &table;
+        if (!isSelf) {
+            parentOwned = this->table(*col.refTable);
+            parent = parentOwned.get();
+        }
+        size_t parentPos = parent->schema().indexOf(col.refColumn.value_or(""));
+        IndexMap& parentIndexes = parent->indexes();
+        auto idxIt = parentIndexes.find(std::vector<size_t>{parentPos});
+        const HashIndex* parentIndex = idxIt == parentIndexes.end() ? nullptr : &idxIt->second;
+        ValueSet localValues;
+        if (isSelf)
+            for (const auto& r : newRows)
+                if (!r[parentPos].isNull()) localValues.insert(r[parentPos]);
+        for (const auto& row : newRows) {
+            const Value& v = row[pos];
+            if (v.isNull()) continue;
+            if (parentIndex && parentIndex->count(std::vector<Value>{v})) continue;
+            if (localValues.count(v)) continue;
+            throw ExecutionError("Column '" + col.name + "': value " + formatValue(v) + " table '" + *col.refTable +
+                                 "' ke column '" + col.refColumn.value_or("") + "' mein nahi mila (SANDARBH)");
+        }
+    }
+}
+
+// SANDARBH, parent side: RESTRICT. Refuse a DELETE/UPDATE on `schema` if any
+// child row still points at a value that is disappearing from it.
+//   changedByColumn: {parent column position -> values going away}
+//   exemptRowIds (DELETE): rows of `schema` that are themselves being removed
+//   overrides (UPDATE): {row id -> new values} for rows this statement also updates
+void Engine::checkNoChildren(const TableSchema& schema, const std::unordered_map<size_t, ValueSet>& changedByColumn,
+                             const std::set<int64_t>& exemptRowIds,
+                             const std::unordered_map<int64_t, std::vector<Value>>* overrides) {
+    std::vector<std::string> otherNames;
+    for (const auto& entry : catalog().tables) otherNames.push_back(entry.first);
+    for (const auto& otherName : otherNames) {
+        const TableSchema other = catalog().get(otherName);
+        for (const auto& childCol : other.columns) {
+            if (!childCol.refTable.has_value() || *childCol.refTable != schema.name) continue;
+            size_t parentPos = schema.indexOf(childCol.refColumn.value_or(""));
+            auto removedIt = changedByColumn.find(parentPos);
+            if (removedIt == changedByColumn.end() || removedIt->second.empty()) continue;
+            const ValueSet& removed = removedIt->second;
+            bool isSelf = otherName == schema.name;
+            size_t childPos = other.indexOf(childCol.name);
+            for (const auto& [rowId, values] : table(otherName)->rows()) {
+                if (isSelf && exemptRowIds.count(rowId)) continue;
+                const std::vector<Value>* current = &values;
+                if (isSelf && overrides) {
+                    auto ov = overrides->find(rowId);
+                    if (ov != overrides->end()) current = &ov->second;
+                }
+                const Value& v = (*current)[childPos];
+                if (!v.isNull() && removed.count(v))
+                    throw ExecutionError("Table '" + schema.name + "' mein ye value(s) hata/badal nahi sakte -- table '" +
+                                         otherName + "' ka column '" + childCol.name + "' (SANDARBH " + schema.name +
+                                         "." + childCol.refColumn.value_or("") + ") abhi bhi inhe use karta hai");
+            }
+        }
+    }
+}
+
+// Does `values` collide with an EXISTING row on any unique/PK column (single
+// or composite)? Returns that row's id. The first matching index wins.
+std::optional<int64_t> Engine::findConflict(Table& table, const std::vector<Value>& values) {
+    for (auto& [positions, index] : table.indexes()) {
+        auto key = indexKey(positions, values);
+        if (!key) continue;
+        auto it = index.find(*key);
+        if (it != index.end()) return it->second;
+    }
+    return std::nullopt;
+}
+
+// The rows worth looking at: one index lookup, or every row (full scan).
+std::vector<StoredRow> Engine::candidates(Table& table, const std::optional<IndexLookup>& access) {
+    if (access.has_value()) return table.lookup(access->column, access->value);
+    return table.rows();
+}
+
+// ============================================================================
+// DML
+// ============================================================================
+
+Result Engine::execInsert(const ast::Insert& stmt) {
+    auto t = table(stmt.table);
+    const TableSchema schema = t->schema();
+    std::vector<std::string> targetCols =
+        stmt.columns.has_value() && !stmt.columns->empty() ? *stmt.columns : schema.columnNames();
+    for (const auto& col : targetCols) schema.indexOf(col);  // raises if the column doesn't exist
+    if (std::set<std::string>(targetCols.begin(), targetCols.end()).size() != targetCols.size())
+        throw ExecutionError("Ek column do baar diya hai");
+
+    auto defaults = [&]() {
+        std::vector<Value> values;
+        for (const auto& c : schema.columns) values.push_back(c.defaultValue.value_or(Value()));  // WARNA values (KHALI if none)
+        return values;
+    };
+
+    // Validate EVERY row before writing ANY -- so a bad 3rd row doesn't leave
+    // rows 1 and 2 half-inserted.
+    std::vector<std::vector<Value>> newRows;
+    if (stmt.select) {
+        Result selectResult = execSelect(*stmt.select);
+        if (selectResult.columns.size() != targetCols.size())
+            throw ExecutionError(std::to_string(targetCols.size()) + " values chahiye thi, DIKHAO ne " +
+                                 std::to_string(selectResult.columns.size()) + " columns di");
+        for (const auto& row : selectResult.rows) {
+            auto values = defaults();
+            for (size_t i = 0; i < targetCols.size(); ++i) values[schema.indexOf(targetCols[i])] = row[i];
+            newRows.push_back(validateRow(schema, values));
+        }
+    } else {
+        for (const auto& tuple : stmt.rows) {
+            if (tuple.size() != targetCols.size())
+                throw ExecutionError(std::to_string(targetCols.size()) + " values chahiye thi, " +
+                                     std::to_string(tuple.size()) + " mili");
+            auto values = defaults();
+            for (size_t i = 0; i < targetCols.size(); ++i) values[schema.indexOf(targetCols[i])] = evaluate(*tuple[i], Row{});
+            newRows.push_back(validateRow(schema, values));
+        }
+    }
+
+    if (!stmt.onConflictUpdate.has_value()) {
+        checkUnique(*t, newRows);
+        checkFk(*t, newRows);
+        t->insertMany(newRows);
+        return messageResult(std::to_string(newRows.size()) + " row(s) daal di");
+    }
+
+    // TAKRAAV PAR BADLO (simplified upsert): rows colliding with an EXISTING
+    // row (by any unique/PK column, single or composite) get UPDATEd instead
+    // of inserted. A collision against another row IN THIS SAME BATCH is still
+    // a hard error -- only pre-existing rows are rescued.
+    std::vector<std::vector<Value>> toInsert;
+    std::vector<std::pair<int64_t, std::vector<Value>>> toUpdate;
+    for (auto& row : newRows) {
+        auto existing = findConflict(*t, row);
+        if (!existing) toInsert.push_back(row);
+        else toUpdate.emplace_back(*existing, row);
+    }
+    checkUnique(*t, toInsert);
+    checkFk(*t, toInsert);
+
+    std::vector<StoredRow> updatedTargets;
+    std::vector<std::vector<Value>> updatedNewRows;
+    std::vector<std::pair<size_t, const ast::Expr*>> assignments;
+    for (const auto& [col, expr] : *stmt.onConflictUpdate) assignments.emplace_back(schema.indexOf(col), expr.get());
+    for (const auto& [rowId, attempted] : toUpdate) {
+        auto oldValues = t->get(rowId);
+        if (!oldValues) throw ExecutionError("Row #" + std::to_string(rowId) + " nahi mili");
+        // assignments see the ATTEMPTED (incoming) row's values, not the
+        // existing row's -- so `TAKRAAV PAR BADLO naam = naam` means "keep inserting naam"
+        Row env;
+        for (size_t i = 0; i < schema.columns.size(); ++i) env[schema.columns[i].name] = attempted[i];
+        auto newValues = *oldValues;
+        for (const auto& [position, expr] : assignments) newValues[position] = evaluate(*expr, env);
+        updatedTargets.emplace_back(rowId, *oldValues);
+        updatedNewRows.push_back(validateRow(schema, newValues));
+    }
+    if (!updatedNewRows.empty()) {
+        std::set<int64_t> ignore;
+        for (const auto& [rowId, oldValues] : updatedTargets) {
+            (void)oldValues;
+            ignore.insert(rowId);
+        }
+        checkUnique(*t, updatedNewRows, ignore);
+        checkFk(*t, updatedNewRows);
+        t->deleteMany(updatedTargets);
+        t->insertMany(updatedNewRows);
+    }
+    t->insertMany(toInsert);
+    return messageResult(std::to_string(toInsert.size()) + " row(s) daali, " + std::to_string(updatedNewRows.size()) +
+                         " row(s) TAKRAAV par badli");
+}
+
+Result Engine::execUpdate(const ast::Update& stmt) {
+    auto t = table(stmt.table);
+    const TableSchema schema = t->schema();
+    Scope scope({{stmt.table, schema}});
+    std::vector<std::pair<size_t, std::unique_ptr<ast::Expr>>> assignments;
+    for (const auto& [col, expr] : stmt.assignments) assignments.emplace_back(schema.indexOf(col), bind(*expr, scope));
+    auto where = bind(stmt.where.get(), scope);
+    auto outerKeys = scope.allKeys();
+
+    // Collect matching rows FIRST, then modify. If we updated while scanning,
+    // the re-inserted rows (appended at the end of the file) would be scanned
+    // again and updated twice -- the famous "Halloween problem".
+    auto cands = candidates(*t, chooseAccess(*t, scope, where.get()));
+    std::vector<StoredRow> targets;
+    if (where) {
+        std::vector<Row> candidateRows;
+        for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
+        auto subq = precomputeSubqueries({where.get()}, candidateRows, outerKeys);
+        for (size_t i = 0; i < cands.size(); ++i)
+            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) targets.push_back(cands[i]);
+    } else {
+        targets = cands;
+    }
+
+    std::vector<Row> oldRows;  // SET expressions see the OLD values
+    for (const auto& target : targets) oldRows.push_back(scope.row(0, target.second));
+    std::vector<const ast::Expr*> assignExprs;
+    for (const auto& a : assignments) assignExprs.push_back(a.second.get());
+    auto setSubq = precomputeSubqueries(assignExprs, oldRows, outerKeys);
+    std::vector<std::vector<Value>> newRows;
+    for (size_t i = 0; i < targets.size(); ++i) {
+        auto newValues = targets[i].second;
+        for (const auto& [position, expr] : assignments) newValues[position] = evaluate(*expr, oldRows[i], setSubq.at(i));
+        newRows.push_back(validateRow(schema, newValues));
+    }
+
+    std::set<int64_t> ignore;
+    for (const auto& target : targets) ignore.insert(target.first);
+    checkUnique(*t, newRows, ignore);
+    checkFk(*t, newRows);  // child side: new FK values must exist in the parent
+
+    // parent side (RESTRICT): if a referenced column's value is CHANGING, no
+    // child row may still be pointing at the value that is disappearing
+    std::unordered_map<size_t, ValueSet> changedByColumn;
+    for (size_t i = 0; i < targets.size(); ++i)
+        for (size_t pos = 0; pos < schema.columns.size(); ++pos) {
+            const Value& oldValue = targets[i].second[pos];
+            if (!oldValue.isNull() && !pyEquals(oldValue, newRows[i][pos])) changedByColumn[pos].insert(oldValue);
+        }
+    if (!changedByColumn.empty()) {
+        std::unordered_map<int64_t, std::vector<Value>> overrides;
+        for (size_t i = 0; i < targets.size(); ++i) overrides[targets[i].first] = newRows[i];
+        checkNoChildren(schema, changedByColumn, {}, &overrides);
+    }
+
+    // An update = delete old versions + insert new versions. All deletes happen
+    // first, so an index entry moved from one row to another (e.g. swapping two
+    // ids) is never removed by mistake.
+    t->deleteMany(targets);
+    t->insertMany(newRows);
+    return messageResult(std::to_string(newRows.size()) + " row(s) badal di");
+}
+
+Result Engine::execDelete(const ast::Delete& stmt) {
+    auto t = table(stmt.table);
+    const TableSchema schema = t->schema();
+    Scope scope({{stmt.table, schema}});
+    auto where = bind(stmt.where.get(), scope);
+
+    auto cands = candidates(*t, chooseAccess(*t, scope, where.get()));
+    std::vector<StoredRow> doomed;
+    if (where) {
+        std::vector<Row> candidateRows;
+        for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
+        auto subq = precomputeSubqueries({where.get()}, candidateRows, scope.allKeys());
+        for (size_t i = 0; i < cands.size(); ++i)
+            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) doomed.push_back(cands[i]);
+    } else {
+        doomed = cands;
+    }
+
+    // RESTRICT: refuse if any child row still references a value about to be deleted
+    std::unordered_map<size_t, ValueSet> deletedByColumn;
+    std::set<int64_t> exempt;
+    for (const auto& [rowId, values] : doomed) {
+        exempt.insert(rowId);
+        for (size_t pos = 0; pos < schema.columns.size(); ++pos)
+            if (!values[pos].isNull()) deletedByColumn[pos].insert(values[pos]);
+    }
+    if (!deletedByColumn.empty()) checkNoChildren(schema, deletedByColumn, exempt);
+
+    t->deleteMany(doomed);
+    return messageResult(std::to_string(doomed.size()) + " row(s) mita di");
+}
+
+Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::Expr*>& exprs,
+                                                   const std::vector<Row>& rows,
+                                                   const std::vector<std::string>&) {
+    RowSubqueries out;
+    if (rows.empty()) return out;
+    std::vector<const ast::Expr*> nodes;
+    for (const auto* e : exprs)
+        if (e) findSubqueries(*e, nodes);
+    if (!nodes.empty()) notYet("Subquery");
+    return out;
+}
+
 Result Engine::execSelect(const ast::Select&) { notYet("DIKHAO"); }
 Result Engine::execSetOp(const ast::SetOp&) { notYet("SetOp"); }
 Result Engine::execCreateView(const ast::CreateView&) { notYet("BANAO VIEW"); }

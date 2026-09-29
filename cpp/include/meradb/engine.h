@@ -17,6 +17,7 @@
 #include "meradb/catalog.h"
 #include "meradb/evaluator.h"
 #include "meradb/planner.h"
+#include "meradb/pyvalue.h"
 #include "meradb/table.h"
 #include <memory>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace meradb {
@@ -160,8 +162,9 @@ private:
     void checkUnique(Table& table, const std::vector<std::vector<Value>>& newRows,
                      const std::set<int64_t>& ignoreRowIds = {});
     void checkFk(Table& table, const std::vector<std::vector<Value>>& newRows);
-    void checkNoChildren(const TableSchema& schema,
-                         const std::unordered_map<size_t, std::vector<Value>>& changedByColumn,
+    // Values are compared the way Python's set membership does (pyEquals).
+    using ValueSet = std::unordered_set<Value, PyValueHash, PyValueEq>;
+    void checkNoChildren(const TableSchema& schema, const std::unordered_map<size_t, ValueSet>& changedByColumn,
                          const std::set<int64_t>& exemptRowIds = {},
                          const std::unordered_map<int64_t, std::vector<Value>>* overrides = nullptr);
     std::optional<int64_t> findConflict(Table& table, const std::vector<Value>& values);

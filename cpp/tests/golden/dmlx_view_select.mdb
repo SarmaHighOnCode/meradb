@@ -1,0 +1,17 @@
+BANAO TABLE p (id INT MUKHYA KUNJI, naam TEXT, score INT);
+DAALO MEIN p MAAN (1, 'a', 10), (2, 'b', 20);
+BANAO VIEW vv KAHO DIKHAO * SE p;
+DAALO MEIN vv MAAN (1, 'a', 2);
+BADLO vv RAKHO id = 1;
+MITAO SE vv;
+DIKHAO * SE vv;
+BANAO TABLE src (a INT, b TEXT);
+DAALO MEIN src MAAN (1, 'q'), (2, 'r');
+BANAO TABLE dst (a INT, b TEXT, z INT WARNA 7);
+DAALO MEIN dst (a, b) DIKHAO a, b SE src;
+DAALO MEIN dst (a) DIKHAO a, b SE src;
+DIKHAO * SE dst;
+BADLO dst RAKHO z = z * 2 JAHAN a = 1;
+DIKHAO * SE dst;
+DAALO MEIN dst DIKHAO a, b, a * 10 SE src JAHAN a > 1;
+DIKHAO * SE dst;
