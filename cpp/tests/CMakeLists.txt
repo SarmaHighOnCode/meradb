@@ -19,6 +19,7 @@ add_executable(meradb_tests
   test_engine_select.cpp
   test_engine_views_explain.cpp
   test_cli_output.cpp
+  test_sys_compat.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

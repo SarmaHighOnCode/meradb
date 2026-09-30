@@ -558,7 +558,7 @@ Result Engine::execCreateTable(const ast::CreateTable& stmt) {
         std::vector<std::string> sorted(dupes.begin(), dupes.end());
         throw ExecutionError("Column naam do baar diya: " + joinStrs(sorted, ", "));
     }
-    long pkCount = std::count_if(stmt.columns.begin(), stmt.columns.end(), [](const ast::ColumnDef& c) { return c.primaryKey; });
+    auto pkCount = std::count_if(stmt.columns.begin(), stmt.columns.end(), [](const ast::ColumnDef& c) { return c.primaryKey; });
     if (pkCount > 1) throw ExecutionError("Ek table mein sirf ek MUKHYA KUNJI ho sakti hai");
     bool hasCompositePk = stmt.compositePk.has_value() && !stmt.compositePk->empty();
     if (stmt.compositePk.has_value() && pkCount > 0)

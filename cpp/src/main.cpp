@@ -7,6 +7,7 @@
 // if any statement (or file) failed.
 #include "meradb/cli_format.h"
 #include "meradb/engine.h"
+#include "meradb/sys_compat.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -51,9 +52,18 @@ bool runFile(meradb::Engine& engine, const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // MERADB_DATA overrides the default, like Python (whose default is a per-user folder; ours is ./data)
-    const char* envData = std::getenv("MERADB_DATA");
-    std::string dataDir = (envData && *envData) ? envData : "data";
+    // Same default as Python's default_data_dir(): MERADB_DATA, else a per-user folder.
+    std::string dataDir;
+    if (auto envData = meradb::sys::getEnv("MERADB_DATA"); envData && !envData->empty()) {
+        dataDir = *envData;
+    } else {
+        std::filesystem::path base = std::filesystem::path(meradb::sys::homeDir()) / ".local" / "share";
+#ifdef _WIN32
+        if (auto local = meradb::sys::getEnv("LOCALAPPDATA"); local && !local->empty())
+            base = std::filesystem::path(*local);
+#endif
+        dataDir = (base / "MeraDB" / "data").string();
+    }
     std::vector<std::string> files;
     bool runCommand = false;
     for (int i = 1; i < argc; ++i) {
