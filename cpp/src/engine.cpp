@@ -4,6 +4,7 @@
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
 #include "meradb/parser.h"
+#include "meradb/protocol.h"
 #include "meradb/pyvalue.h"
 #include "meradb/storage.h"
 #include <algorithm>
@@ -44,8 +45,17 @@ void replacePath(const fs::path& from, const fs::path& to) {
 
 }  // namespace
 
-Instance::Instance(std::string dataDir) : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(dataDir_) {
+Instance::Instance(std::string dataDir, bool served)
+    : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(dataDir_) {
     fs::create_directories(dataDir_);
+    if (!served) {
+        // Two processes must never write the same files: refuse a folder a server is serving.
+        if (auto info = protocol::runningServer(dataDir_)) {
+            std::string port = info->contains("port") ? info->at("port").dump() : "None";
+            throw MeraDBError("Is data folder par MeraDB server chal raha hai (port " + port +
+                              "). Seedha files mat kholo -- `meradb shell` se server se connect karo.");
+        }
+    }
     recovered_ = recover();
     fs::create_directories(dbDir(DEFAULT_DATABASE));
 }
@@ -54,9 +64,12 @@ std::string Instance::dbDir(const std::string& name) const { return (fs::path(da
 
 std::vector<std::string> Instance::databases() const {
     std::vector<std::string> names;
-    for (const auto& entry : fs::directory_iterator(dataDir_)) {
-        std::string name = entry.path().filename().string();
-        if (!name.empty() && name[0] != '.' && entry.is_directory()) names.push_back(name);
+    // Error-code overloads: a concurrent DROP DATABASE may remove an entry mid-listing.
+    std::error_code ec;
+    for (fs::directory_iterator it(dataDir_, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        std::string name = it->path().filename().string();
+        if (!name.empty() && name[0] != '.' && it->is_directory(entryEc) && !entryEc) names.push_back(name);
     }
     std::sort(names.begin(), names.end());
     return names;
@@ -303,11 +316,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
 
 Result Engine::executeStatement(const ast::Statement& stmt) {
     // Hold the instance lock for the statement (waiting at most lockTimeoutSeconds).
-    std::unique_lock<std::recursive_timed_mutex> guard(instance_->lock, std::defer_lock);
-    auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::duration<double>(instance_->lockTimeoutSeconds));
-    if (!guard.try_lock_for(wait))
-        throw ExecutionError("Database busy hai -- kisi aur session ka transaction chal raha hai. Thodi der baad try karo.");
+    auto guard = acquireLock(instance_->lockTimeoutSeconds);
     if (!fs::is_directory(instance_->dbDir(currentDb))) {
         std::string gone = currentDb;
         currentDb = DEFAULT_DATABASE;
@@ -351,6 +360,41 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const DropProcedure*>(&stmt)) return execDropProcedure(*s);
     if (auto* s = dynamic_cast<const CallProcedure*>(&stmt)) return execCallProcedure(*s);
     throw ExecutionError("Ye statement abhi supported nahi hai");
+}
+
+std::unique_lock<std::recursive_timed_mutex> Engine::acquireLock(double timeoutSeconds) {
+    std::unique_lock<std::recursive_timed_mutex> guard(instance_->lock, std::defer_lock);
+    auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(timeoutSeconds));
+    if (!guard.try_lock_for(wait))
+        throw ExecutionError("Database busy hai -- kisi aur session ka transaction chal raha hai. Thodi der baad try karo.");
+    return guard;
+}
+
+nlohmann::ordered_json Engine::schemaTree() {
+    using nlohmann::ordered_json;
+    auto guard = acquireLock(2.0);
+    ordered_json tree = ordered_json::array();
+    for (const auto& db : instance_->databases()) {
+        Catalog& cat = instance_->catalog(db);
+        std::vector<std::string> names;
+        for (const auto& entry : cat.tables) names.push_back(entry.first);
+        std::sort(names.begin(), names.end());  // Python: sorted(catalog.tables)
+        ordered_json tables = ordered_json::array();
+        for (const auto& name : names) {
+            ordered_json columns = ordered_json::array();
+            for (const auto& col : cat.tables.at(name).columns) columns.push_back(col.toJson());
+            ordered_json table = ordered_json::object();
+            table["name"] = name;
+            table["columns"] = std::move(columns);
+            tables.push_back(std::move(table));
+        }
+        ordered_json entry = ordered_json::object();
+        entry["name"] = db;
+        entry["current"] = (db == currentDb);
+        entry["tables"] = std::move(tables);
+        tree.push_back(std::move(entry));
+    }
+    return tree;
 }
 
 void Engine::close() {

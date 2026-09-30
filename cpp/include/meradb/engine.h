@@ -38,7 +38,9 @@ constexpr const char* SNAPSHOT_DIR = ".wapas";  // where transactions keep their
 
 class Instance {
 public:
-    explicit Instance(std::string dataDir);
+    // `served` is true only inside the server process. Otherwise the constructor refuses a
+    // folder that a running server is serving (two processes must never write the same files).
+    explicit Instance(std::string dataDir, bool served = false);
 
     // Every statement runs while holding this; a transaction holds it once
     // more from SHURU until PAKKA/WAPAS (see engine.py's concurrency notes).
@@ -115,6 +117,9 @@ public:
     Result executeStatement(const ast::Statement& stmt);
     // End the session: an unfinished transaction is rolled back.
     void close();
+    // Every database -> table -> column as plain JSON (what the server sends for the
+    // workbench sidebar). Waits at most 2 s for the lock, like Python's schema_tree().
+    nlohmann::ordered_json schemaTree();
 
     struct SelectPlan;  // everything the planner decided about one DIKHAO
 
@@ -130,6 +135,9 @@ private:
         std::vector<SubqueryResults> perRow;     // filled only when something is correlated
         const SubqueryResults* at(size_t i) const { return perRow.empty() ? &shared : &perRow[i]; }
     };
+
+    // Waits up to `timeoutSeconds` for the instance lock; throws the "Database busy hai" error.
+    std::unique_lock<std::recursive_timed_mutex> acquireLock(double timeoutSeconds);
 
     Result guarded(const ast::Statement& stmt);  // executeStatement + std::exception -> StorageError
 
