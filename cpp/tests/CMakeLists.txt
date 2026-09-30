@@ -27,6 +27,7 @@ add_executable(meradb_tests
   test_parser_phase2.cpp
   test_crypto.cpp
   test_users.cpp
+  test_net_compat.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
