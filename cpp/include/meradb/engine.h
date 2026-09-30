@@ -166,6 +166,9 @@ private:
     Result execRevoke(const ast::Revoke&);
     Result execCreateTrigger(const ast::CreateTrigger&);
     Result execDropTrigger(const ast::DropTrigger&);
+    Result execCreateProcedure(const ast::CreateProcedure&);
+    Result execDropProcedure(const ast::DropProcedure&);
+    Result execCallProcedure(const ast::CallProcedure&);
 
     // Trigger / procedure bodies (Design decisions D5). `newRow`/`oldRow` are plain
     // {column: value} dicts, independent of any Scope's "table.col" aliasing.

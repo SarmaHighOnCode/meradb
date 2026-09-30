@@ -347,6 +347,9 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const Revoke*>(&stmt)) return execRevoke(*s);
     if (auto* s = dynamic_cast<const CreateTrigger*>(&stmt)) return execCreateTrigger(*s);
     if (auto* s = dynamic_cast<const DropTrigger*>(&stmt)) return execDropTrigger(*s);
+    if (auto* s = dynamic_cast<const CreateProcedure*>(&stmt)) return execCreateProcedure(*s);
+    if (auto* s = dynamic_cast<const DropProcedure*>(&stmt)) return execDropProcedure(*s);
+    if (auto* s = dynamic_cast<const CallProcedure*>(&stmt)) return execCallProcedure(*s);
     throw ExecutionError("Ye statement abhi supported nahi hai");
 }
 
@@ -498,6 +501,71 @@ void Engine::fireTriggers(const std::string& timing, const std::string& event, c
         };
         runBody(trigger.bodyText, replace, nullptr);
     }
+}
+
+// ============================================================================
+// stored procedures (a named, parameterised sequence of statements)
+// ============================================================================
+
+Result Engine::execCreateProcedure(const ast::CreateProcedure& stmt) {
+    Catalog& cat = catalog();
+    if (cat.hasProcedure(stmt.name)) throw ExecutionError("Procedure '" + stmt.name + "' pehle se hai");
+    std::set<std::string> names;
+    for (const auto& p : stmt.params) names.insert(p.name);
+    if (names.size() != stmt.params.size())
+        throw ExecutionError("Procedure '" + stmt.name + "': ek parameter naam do baar diya hai");
+    parseScript(stmt.bodyText);  // sanity check: the body must parse cleanly
+    std::vector<std::pair<std::string, std::string>> params;
+    for (const auto& p : stmt.params) params.emplace_back(p.name, p.typeName);
+    cat.addProcedure(stmt.name, params, stmt.bodyText);
+    return messageResult("Procedure '" + stmt.name + "' ban gaya (" + std::to_string(stmt.params.size()) +
+                         " parameter(s))");
+}
+
+Result Engine::execDropProcedure(const ast::DropProcedure& stmt) {
+    Catalog& cat = catalog();
+    if (!cat.hasProcedure(stmt.name)) throw ExecutionError("Procedure '" + stmt.name + "' exist nahi karta");
+    cat.removeProcedure(stmt.name);
+    return messageResult("Procedure '" + stmt.name + "' hata diya");
+}
+
+Result Engine::execCallProcedure(const ast::CallProcedure& stmt) {
+    auto proc = catalog().findProcedure(stmt.name);
+    if (!proc) throw ExecutionError("Procedure '" + stmt.name + "' exist nahi karta");
+    if (stmt.args.size() != proc->params.size())
+        throw ExecutionError("Procedure '" + stmt.name + "' ko " + std::to_string(proc->params.size()) +
+                             " argument(s) chahiye, " + std::to_string(stmt.args.size()) + " mile");
+
+    // Arguments are evaluated as CONSTANT expressions (no outer row at a bare CHALAO),
+    // left to right, each coerced to its parameter's type.
+    std::unordered_map<std::string, Value> values;
+    for (size_t i = 0; i < proc->params.size(); ++i) {
+        const auto& pname = proc->params[i].first;
+        const auto& ptype = proc->params[i].second;
+        Value raw = evaluate(*stmt.args[i], Row{});
+        Value coerced = coerce(raw, ptype, pname);
+        values[pname] = std::move(coerced);
+    }
+
+    // Only a BARE (unqualified) reference matching a parameter name is substituted.
+    RefReplacer replace = [&values](const ast::ColumnRef& ref) -> std::optional<Value> {
+        if (!ref.table) {
+            auto it = values.find(ref.name);
+            if (it != values.end()) return it->second;
+        }
+        return std::nullopt;
+    };
+
+    std::vector<Result> results;
+    runBody(proc->bodyText, replace, &results);
+    std::string summary;
+    for (const auto& r : results) {
+        if (r.message.empty()) continue;
+        if (!summary.empty()) summary += "; ";
+        summary += r.message;
+    }
+    return messageResult("Procedure '" + stmt.name + "' chal gaya (" + std::to_string(results.size()) +
+                         " statement(s)): " + summary);
 }
 
 void Engine::noTransaction(const std::string& command) const {
