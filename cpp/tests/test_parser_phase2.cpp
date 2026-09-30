@@ -74,3 +74,77 @@ TEST_CASE("parser_phase2 CHALAO parses arguments as expressions", "[parser][phas
     CHECK(as<ast::CallProcedure>(stmts[1]).args.empty());
     REQUIRE_THROWS_WITH(parseScript("CHALAO badhao 10;"), ContainsSubstring("'(' expected tha"));
 }
+
+TEST_CASE("parser_phase2 BANAO TRIGGER captures the raw body text", "[parser][phase2]") {
+    auto stmts = parseScript(
+        "BANAO TRIGGER note_it BAAD DAALO PAR accounts SHURU\n"
+        "  DAALO MEIN audit_log MAAN (NAYA.id, 'new');\n"
+        "  BADLO counters RAKHO n = n + 1;\n"
+        "KHATAM;");
+    REQUIRE(stmts.size() == 1);
+    auto& t = as<ast::CreateTrigger>(stmts[0]);
+    CHECK(t.name == "note_it");
+    CHECK(t.timing == "BAAD");
+    CHECK(t.event == "DAALO");
+    CHECK(t.table == "accounts");
+    // starts at the first body token, ends right after the last ';' (no leading/trailing whitespace)
+    CHECK(t.bodyText == "DAALO MEIN audit_log MAAN (NAYA.id, 'new');\n  BADLO counters RAKHO n = n + 1;");
+}
+
+TEST_CASE("parser_phase2 trigger timing and event alternatives", "[parser][phase2]") {
+    auto stmts = parseScript(
+        "BANAO TRIGGER a PEHLE BADLO PAR t SHURU DIKHAO * SE t; KHATAM;"
+        "BANAO TRIGGER b PEHLE MITAO PAR t SHURU DIKHAO * SE t; KHATAM;");
+    CHECK(as<ast::CreateTrigger>(stmts[0]).timing == "PEHLE");
+    CHECK(as<ast::CreateTrigger>(stmts[0]).event == "BADLO");
+    CHECK(as<ast::CreateTrigger>(stmts[1]).event == "MITAO");
+}
+
+TEST_CASE("parser_phase2 BANAO TRIGGER errors", "[parser][phase2]") {
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x DAALO PAR t SHURU DIKHAO * SE t; KHATAM;"),
+                        ContainsSubstring("BANAO TRIGGER naam ke baad PEHLE ya BAAD expected tha"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE SAAF PAR t SHURU DIKHAO * SE t; KHATAM;"),
+                        ContainsSubstring("PEHLE/BAAD ke baad DAALO, BADLO ya MITAO expected tha"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE DAALO t SHURU DIKHAO * SE t; KHATAM;"),
+                        ContainsSubstring("'PAR' expected tha"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE DAALO PAR t SHURU KHATAM;"),
+                        ContainsSubstring("TRIGGER ke SHURU...KHATAM ke andar kam se kam ek statement chahiye"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE DAALO PAR t SHURU DIKHAO * SE t;"),
+                        ContainsSubstring("TRIGGER ka SHURU...KHATAM band nahi hua (KHATAM missing)"));
+    // a typo inside the body is caught at CREATE time
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE DAALO PAR t SHURU DAALO ; KHATAM;"),
+                        ContainsSubstring("expected tha"));
+    // every statement in the body needs its own ';'
+    REQUIRE_THROWS_WITH(parseScript("BANAO TRIGGER x PEHLE DAALO PAR t SHURU DIKHAO * SE t KHATAM;"),
+                        ContainsSubstring("';' expected tha"));
+}
+
+TEST_CASE("parser_phase2 BANAO PROCEDURE with parameters", "[parser][phase2]") {
+    auto stmts = parseScript(
+        "BANAO PROCEDURE badhao(dept TEXT, pct ANK) SHURU\n"
+        "  BADLO emp RAKHO salary = salary + pct JAHAN d = dept;\n"
+        "KHATAM;"
+        "BANAO PROCEDURE kuch() SHURU DIKHAO * SE t; KHATAM;");
+    auto& p = as<ast::CreateProcedure>(stmts[0]);
+    CHECK(p.name == "badhao");
+    REQUIRE(p.params.size() == 2);
+    CHECK(p.params[0].name == "dept");
+    CHECK(p.params[0].typeName == "TEXT");
+    CHECK(p.params[1].name == "pct");
+    CHECK(p.params[1].typeName == "INT");  // ANK is an alias, normalised at parse time
+    CHECK(p.bodyText == "BADLO emp RAKHO salary = salary + pct JAHAN d = dept;");
+    CHECK(as<ast::CreateProcedure>(stmts[1]).params.empty());
+}
+
+TEST_CASE("parser_phase2 BANAO PROCEDURE errors", "[parser][phase2]") {
+    REQUIRE_THROWS_WITH(parseScript("BANAO PROCEDURE p(x nonsense) SHURU DIKHAO * SE t; KHATAM;"),
+                        ContainsSubstring("Parameter 'x' ka type expected tha (INT/ANK, FLOAT, TEXT/SHABD, BOOL, DATE/TAREEKH, ...)"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO PROCEDURE p(x INT SHURU DIKHAO * SE t; KHATAM;"), ContainsSubstring("')' expected tha"));
+    REQUIRE_THROWS_WITH(parseScript("BANAO PROCEDURE p() SHURU KHATAM;"),
+                        ContainsSubstring("PROCEDURE ke SHURU...KHATAM ke andar kam se kam ek statement chahiye"));
+}
+
+TEST_CASE("parser_phase2 SHURU inside a body parses as Begin, like Python", "[parser][phase2]") {
+    auto stmts = parseScript("BANAO PROCEDURE p() SHURU SHURU; KHATAM;");
+    CHECK(as<ast::CreateProcedure>(stmts[0]).bodyText == "SHURU;");
+}

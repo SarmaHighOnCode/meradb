@@ -62,6 +62,10 @@ private:
     std::vector<std::string> parsePrivilegeList();
     std::string expectPrivilege();
     std::string expectString(const std::string& what);
+    std::string parseBlockBody(const std::string& what);
+    std::unique_ptr<ast::Statement> parseCreateTrigger();
+    std::unique_ptr<ast::Statement> parseCreateProcedure();
+    ast::ProcParam parseProcParam();
     std::unique_ptr<ast::Statement> parseSudharo();
     std::unique_ptr<ast::Statement> parseSaaf();
     std::unique_ptr<ast::Statement> parseSikodo();

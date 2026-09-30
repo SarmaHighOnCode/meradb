@@ -352,6 +352,10 @@ std::unique_ptr<Statement> Parser::parseBanao() {
         u->password = expectString("password");
         return u;
     }
+    // BANAO TRIGGER naam PEHLE|BAAD DAALO|BADLO|MITAO PAR table SHURU ... KHATAM
+    if (matchKeyword("TRIGGER")) return parseCreateTrigger();
+    // BANAO PROCEDURE naam (p1 TYPE, ...) SHURU ... KHATAM
+    if (matchKeyword("PROCEDURE")) return parseCreateProcedure();
 
     // BANAO TABLE name ( coldef | table-constraint, ... )
     expectKeyword("TABLE");
@@ -511,6 +515,72 @@ std::unique_ptr<Statement> Parser::parseHatao() {
     auto d = std::make_unique<DropTable>();
     d->name = expectIdent("table ka naam");
     return d;
+}
+
+// SHURU stmt; stmt; ... KHATAM -- captures the RAW SOURCE TEXT between SHURU and
+// KHATAM ("store source text, reparse fresh later", like BANAO VIEW), and
+// parse-validates every statement NOW. Mirrors Parser._parse_block_body.
+std::string Parser::parseBlockBody(const std::string& what) {
+    expectKeyword("SHURU");
+    size_t start = peek().start < 0 ? 0 : static_cast<size_t>(peek().start);
+    size_t statementCount = 0;
+    while (!checkKeyword("KHATAM")) {
+        if (peek().type == TokenType::Eof) error(what + " ka SHURU...KHATAM band nahi hua (KHATAM missing)");
+        auto body = parseStatement();
+        (void)body;  // only validated here; the text is stored and re-parsed when used
+        ++statementCount;
+        expectSymbol(";");
+    }
+    if (statementCount == 0) error(what + " ke SHURU...KHATAM ke andar kam se kam ek statement chahiye");
+    size_t end = static_cast<size_t>(peek(-1).end);  // end of the last ';'
+    std::string bodyText = sourceText_.substr(start, end - start);
+    expectKeyword("KHATAM");
+    return bodyText;
+}
+
+std::unique_ptr<Statement> Parser::parseCreateTrigger() {
+    auto t = std::make_unique<CreateTrigger>();
+    t->name = expectIdent("trigger ka naam");
+    if (matchKeyword("PEHLE")) t->timing = "PEHLE";
+    else if (matchKeyword("BAAD")) t->timing = "BAAD";
+    else error("BANAO TRIGGER naam ke baad PEHLE ya BAAD expected tha");
+    for (const char* kw : {"DAALO", "BADLO", "MITAO"}) {
+        if (matchKeyword(kw)) {
+            t->event = kw;
+            break;
+        }
+    }
+    if (t->event.empty()) error("PEHLE/BAAD ke baad DAALO, BADLO ya MITAO expected tha");
+    expectKeyword("PAR");
+    t->table = expectIdent("table ka naam");
+    t->bodyText = parseBlockBody("TRIGGER");
+    return t;
+}
+
+ProcParam Parser::parseProcParam() {
+    ProcParam param;
+    param.name = expectIdent("parameter ka naam");
+    std::optional<std::string> typeName;
+    if (peek().type == TokenType::Ident) typeName = normalizeType(peek().textValue);
+    if (!typeName) {
+        error("Parameter '" + param.name + "' ka type expected tha (INT/ANK, FLOAT, TEXT/SHABD, BOOL, DATE/TAREEKH, ...)");
+    }
+    advance();
+    param.typeName = *typeName;
+    return param;
+}
+
+std::unique_ptr<Statement> Parser::parseCreateProcedure() {
+    auto p = std::make_unique<CreateProcedure>();
+    p->name = expectIdent("procedure ka naam");
+    expectSymbol("(");
+    if (!checkSymbol(")")) {
+        p->params.push_back(parseProcParam());
+        while (matchSymbol(",")) p->params.push_back(parseProcParam());
+    }
+    expectSymbol(")");
+    p->bodyText = parseBlockBody("PROCEDURE");
+    return p;
 }
 
 std::string Parser::expectString(const std::string& what) {
