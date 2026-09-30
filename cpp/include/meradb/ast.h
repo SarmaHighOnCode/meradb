@@ -180,4 +180,40 @@ struct Delete : Statement {
     std::unique_ptr<Expr> where;
 };
 
+// ---- users & privileges (Phase 2) ----
+struct CreateUser : Statement { std::string name; std::string password; };
+struct DropUser : Statement { std::string name; };
+struct Grant : Statement {
+    std::vector<std::string> privileges;  // DIKHAO | DAALO | BADLO | MITAO (SAB is expanded by the parser)
+    std::string table;                    // a table OR a view name
+    std::string user;
+};
+struct Revoke : Statement {
+    std::vector<std::string> privileges;
+    std::string table;
+    std::string user;
+};
+
+// ---- triggers & stored procedures (Phase 2) ----
+struct CreateTrigger : Statement {
+    std::string name;
+    std::string timing;    // PEHLE | BAAD
+    std::string event;     // DAALO | BADLO | MITAO
+    std::string table;
+    std::string bodyText;  // raw source between SHURU and KHATAM, ending with the last ';'
+};
+struct DropTrigger : Statement { std::string name; };
+
+struct ProcParam { std::string name; std::string typeName; };  // typeName is normalised (INT, TEXT, ...)
+struct CreateProcedure : Statement {
+    std::string name;
+    std::vector<ProcParam> params;
+    std::string bodyText;
+};
+struct DropProcedure : Statement { std::string name; };
+struct CallProcedure : Statement {
+    std::string name;
+    std::vector<std::unique_ptr<Expr>> args;
+};
+
 }  // namespace meradb::ast

@@ -99,4 +99,22 @@ std::unique_ptr<Select> cloneSelect(const Select& s) {
     return out;
 }
 
+std::string astClassName(const ast::Statement& stmt) {
+#define MERADB_CLASS_NAME(T) if (dynamic_cast<const T*>(&stmt)) return #T;
+    MERADB_CLASS_NAME(CreateDatabase) MERADB_CLASS_NAME(DropDatabase) MERADB_CLASS_NAME(UseDatabase)
+    MERADB_CLASS_NAME(ShowTables) MERADB_CLASS_NAME(Describe) MERADB_CLASS_NAME(CreateView)
+    MERADB_CLASS_NAME(DropView) MERADB_CLASS_NAME(ShowViews) MERADB_CLASS_NAME(CreateTable)
+    MERADB_CLASS_NAME(AlterAddComposite) MERADB_CLASS_NAME(DropTable) MERADB_CLASS_NAME(AlterAddColumn)
+    MERADB_CLASS_NAME(AlterDropColumn) MERADB_CLASS_NAME(RenameTable) MERADB_CLASS_NAME(RenameColumn)
+    MERADB_CLASS_NAME(TruncateTable) MERADB_CLASS_NAME(CompactTable) MERADB_CLASS_NAME(Begin)
+    MERADB_CLASS_NAME(Commit) MERADB_CLASS_NAME(Rollback) MERADB_CLASS_NAME(Explain)
+    MERADB_CLASS_NAME(Insert) MERADB_CLASS_NAME(Select) MERADB_CLASS_NAME(SetOp)
+    MERADB_CLASS_NAME(Update) MERADB_CLASS_NAME(Delete) MERADB_CLASS_NAME(CreateUser)
+    MERADB_CLASS_NAME(DropUser) MERADB_CLASS_NAME(Grant) MERADB_CLASS_NAME(Revoke)
+    MERADB_CLASS_NAME(CreateTrigger) MERADB_CLASS_NAME(DropTrigger) MERADB_CLASS_NAME(CreateProcedure)
+    MERADB_CLASS_NAME(DropProcedure) MERADB_CLASS_NAME(CallProcedure)
+#undef MERADB_CLASS_NAME
+    return "Statement";
+}
+
 }  // namespace meradb
