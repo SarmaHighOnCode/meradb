@@ -24,6 +24,16 @@ private:
     std::string sourceText_;
     size_t pos_ = 0;
 
+    // Hostile-input limits (a deliberate divergence from Python, which has none and
+    // dies with RecursionError): every operator and every nesting level of ONE
+    // statement spends one unit of a shared budget; a statement inside a
+    // TRIGGER/PROCEDURE body gets a fresh budget, and statements nest 32 deep.
+    static constexpr int kMaxNesting = 400;
+    static constexpr int kMaxStatementNesting = 32;
+    int nestingUsed_ = 0;
+    int statementDepth_ = 0;
+    void spend();
+
     const Token& peek(int offset = 0) const;
     const Token& advance();
     bool checkKeyword(const std::string& kw) const;
@@ -52,7 +62,8 @@ private:
     std::unique_ptr<ast::CaseWhen> parseCase();
 
     // Task 7/8: statement-level parsing
-    std::unique_ptr<ast::Statement> parseStatement();
+    std::unique_ptr<ast::Statement> parseStatement();      // guarded: see spend() / the Scope in parser.cpp
+    std::unique_ptr<ast::Statement> parseStatementBody();  // the real statement dispatcher
     std::unique_ptr<ast::Select> parseSelectBody();
     std::unique_ptr<ast::Statement> parseBanao();
     std::unique_ptr<ast::Statement> parseHatao();

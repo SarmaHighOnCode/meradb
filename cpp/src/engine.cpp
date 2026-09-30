@@ -1759,6 +1759,16 @@ std::unique_ptr<Table> Engine::resolveSource(const std::string& name) {
     Catalog& cat = catalog();
     if (cat.find(name) != nullptr) return table(name);
     if (cat.views.count(name)) {
+        struct ViewDepth {
+            Engine& engine;
+            ViewDepth(Engine& e, const std::string& view) : engine(e) {
+                if (e.viewDepth_ >= kMaxViewDepth)
+                    throw ExecutionError("View '" + view + "' bahut gehri nested hai (limit " +
+                                         std::to_string(kMaxViewDepth) + " views ek ke andar ek)");
+                ++e.viewDepth_;
+            }
+            ~ViewDepth() { --engine.viewDepth_; }
+        } viewDepth(*this, name);
         auto parsed = parseScript(cat.views.at(name));
         auto* viewStmt = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
         if (viewStmt == nullptr) throw ExecutionError("View '" + name + "' ki definition DIKHAO nahi hai");

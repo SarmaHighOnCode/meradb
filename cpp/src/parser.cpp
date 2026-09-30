@@ -46,6 +46,11 @@ std::string Parser::expectIdent(const std::string& what) {
     if (peek().type != TokenType::Ident) error(what + " expected tha");
     return advance().textValue;
 }
+void Parser::spend() {
+    if (++nestingUsed_ > kMaxNesting)
+        error("Query bahut gehri (nested) hai (limit " + std::to_string(kMaxNesting) + ")");
+}
+
 [[noreturn]] void Parser::error(const std::string& msg) const {
     // Python: f"{msg}, par {found} mila (line {line}, col {col})", where found
     // is "end of query" or repr(token value).
@@ -69,16 +74,23 @@ std::string Parser::expectIdent(const std::string& what) {
 
 std::unique_ptr<Expr> Parser::parseOr() {
     auto left = parseAnd();
-    while (matchKeyword("YA")) left = std::make_unique<BinaryOp>("YA", std::move(left), parseAnd());
+    while (matchKeyword("YA")) {
+        spend();
+        left = std::make_unique<BinaryOp>("YA", std::move(left), parseAnd());
+    }
     return left;
 }
 std::unique_ptr<Expr> Parser::parseAnd() {
     auto left = parseNot();
-    while (matchKeyword("AUR")) left = std::make_unique<BinaryOp>("AUR", std::move(left), parseNot());
+    while (matchKeyword("AUR")) {
+        spend();
+        left = std::make_unique<BinaryOp>("AUR", std::move(left), parseNot());
+    }
     return left;
 }
 std::unique_ptr<Expr> Parser::parseNot() {
     if (matchKeyword("NAHI")) {
+        spend();
         auto u = std::make_unique<UnaryOp>();
         u->op = "NAHI";
         u->operand = parseNot();
@@ -142,6 +154,7 @@ std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& lef
     }
     if (matchKeyword("MEIN")) {
         expectSymbol("(");
+        spend();
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
@@ -158,6 +171,7 @@ std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& lef
         auto leftCopy = cloneExpr(*left);
         std::unique_ptr<Expr> node = std::make_unique<BinaryOp>("=", std::move(leftCopy), parseOr());
         while (matchSymbol(",")) {
+            spend();  // the list becomes an OR chain: one level per item
             auto leftCopy2 = cloneExpr(*left);
             auto eq = std::make_unique<BinaryOp>("=", std::move(leftCopy2), parseOr());
             node = std::make_unique<BinaryOp>("YA", std::move(node), std::move(eq));
@@ -174,6 +188,7 @@ std::unique_ptr<Expr> Parser::parseAdditive() {
     auto left = parseTerm();
     while (checkSymbol("+") || checkSymbol("-")) {
         std::string op = advance().textValue;
+        spend();
         left = std::make_unique<BinaryOp>(op, std::move(left), parseTerm());
     }
     return left;
@@ -182,6 +197,7 @@ std::unique_ptr<Expr> Parser::parseTerm() {
     auto left = parseUnary();
     while (checkSymbol("*") || checkSymbol("/") || checkSymbol("%")) {
         std::string op = advance().textValue;
+        spend();
         left = std::make_unique<BinaryOp>(op, std::move(left), parseUnary());
     }
     return left;
@@ -189,6 +205,7 @@ std::unique_ptr<Expr> Parser::parseTerm() {
 std::unique_ptr<Expr> Parser::parseUnary() {
     if (checkSymbol("-")) {
         advance();
+        spend();
         auto operand = parseUnary();
         // Fold unary minus directly on a numeric literal at parse time
         // (matches Python's parser-time fold in _parse_unary).
@@ -219,11 +236,15 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (matchKeyword("SACH")) return std::make_unique<Literal>(Value(true));
     if (matchKeyword("JHOOTH")) return std::make_unique<Literal>(Value(false));
     if (matchKeyword("KHALI")) return std::make_unique<Literal>(Value());
-    if (matchKeyword("AGAR")) return parseCase();
+    if (matchKeyword("AGAR")) {
+        spend();
+        return parseCase();
+    }
     if (t.type == TokenType::Ident) {
         std::string name = t.textValue;
         advance();
         if (matchSymbol("(")) {
+            spend();
             // function call: aggregate (GINO/KUL/AUSAT/NYUNTAM/ADHIKTAM/...)
             // or PEHLA/COALESCE.
             std::string upper = name;
@@ -254,6 +275,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return std::make_unique<ColumnRef>(name);
     }
     if (matchSymbol("(")) {
+        spend();
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
@@ -301,7 +323,27 @@ std::vector<std::unique_ptr<Statement>> Parser::parseScript() {
     return result;
 }
 
+// Every (possibly nested) statement gets its own operator budget, and statements
+// nested inside statements (SAMJHAO ..., trigger/procedure bodies) are capped.
 std::unique_ptr<Statement> Parser::parseStatement() {
+    struct Scope {
+        Parser& parser;
+        int savedBudget;
+        explicit Scope(Parser& p) : parser(p), savedBudget(p.nestingUsed_) {
+            if (p.statementDepth_ >= kMaxStatementNesting)
+                p.error("Statements bahut gehre nested hain (limit " + std::to_string(kMaxStatementNesting) + ")");
+            ++p.statementDepth_;
+            p.nestingUsed_ = 0;
+        }
+        ~Scope() {
+            --parser.statementDepth_;
+            parser.nestingUsed_ = savedBudget;
+        }
+    } scope(*this);
+    return parseStatementBody();
+}
+
+std::unique_ptr<Statement> Parser::parseStatementBody() {
     const Token& tok = peek();
     if (tok.type != TokenType::Keyword) {
         error("Query kisi command se shuru honi chahiye (jaise DIKHAO, DAALO, BANAO)");
@@ -788,6 +830,7 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
     while (isSetOpKeyword(peek())) {
         auto op = std::make_unique<SetOp>();
         op->op = advance().textValue;
+        spend();
         expectKeyword("DIKHAO");
         op->left = std::move(result);
         op->right = parseSelectBody();

@@ -199,6 +199,8 @@ private:
     std::unique_ptr<Table> table(const std::string& name);
     // A SE/MILAO source: a real table, or a VIEW materialized fresh.
     std::unique_ptr<Table> resolveSource(const std::string& name);
+    static constexpr int kMaxViewDepth = 32;  // views defined over views (Python: none, RecursionError)
+    int viewDepth_ = 0;
     Column makeColumn(const ast::ColumnDef& def) const;
     const TableSchema& checkFkTarget(const Column& col, const TableSchema& selfSchema);
     void checkShartExpr(const Column& col, const TableSchema& schema) const;

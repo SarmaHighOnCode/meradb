@@ -1,0 +1,162 @@
+// cpp/tests/test_hardening.cpp -- hostile input must produce an error, never a crash.
+//
+// A network client can send any query it likes. Python answers absurdly deep
+// input with a RecursionError; a C++ server would overflow its thread stack
+// and die. So the parser spends one unit of a per-statement budget on every
+// operator and nesting level (limit 400), statements nest at most 32 deep and
+// views over views at most 32 deep. The work runs on a std::thread, because
+// that is where the server runs statements (a smaller stack than main's);
+// Catch2 assertions stay on the test's own thread.
+#include <catch2/catch_test_macros.hpp>
+#include "meradb/engine.h"
+#include "meradb/errors.h"
+#include "meradb/parser.h"
+#include "test_util.h"
+#include <future>
+#include <string>
+#include <vector>
+
+using namespace meradb;
+
+namespace {
+
+template <typename F>
+auto onThread(F body) {
+    return std::async(std::launch::async, body).get();
+}
+
+std::string parens(int depth, const std::string& core) {
+    return std::string(static_cast<size_t>(depth), '(') + core + std::string(static_cast<size_t>(depth), ')');
+}
+
+std::string repeated(const std::string& unit, int times, const std::string& separator) {
+    std::string out;
+    for (int i = 0; i < times; ++i) out += (i ? separator : std::string()) + unit;
+    return out;
+}
+
+// The parse error's message without its ", par ... mila (line, col)" tail; "" when it parses.
+std::string parseErrorOf(const std::string& sql) {
+    try {
+        parseScript(sql);
+    } catch (const ParseError& e) {
+        return e.message().substr(0, e.message().find(", par "));
+    }
+    return "";
+}
+
+const std::string kTooDeep = "Query bahut gehri (nested) hai (limit 400)";
+
+}  // namespace
+
+TEST_CASE("hardening the parser accepts nesting up to the budget and refuses more", "[hardening]") {
+    auto r = onThread([] {
+        return std::vector<std::string>{parseErrorOf("DIKHAO * SE t JAHAN " + parens(300, "1 = 1")),
+                                        parseErrorOf("DIKHAO * SE t JAHAN " + parens(401, "1 = 1")),
+                                        parseErrorOf("DIKHAO * SE t JAHAN " + parens(100000, "1 = 1"))};
+    });
+    CHECK(r[0].empty());
+    CHECK(r[1] == kTooDeep);
+    CHECK(r[2] == kTooDeep);
+}
+
+TEST_CASE("hardening long operator chains are bounded too", "[hardening]") {
+    auto r = onThread([] {
+        return std::vector<std::string>{
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 350, " + ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 500, " + ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 100000, " + ")),
+            parseErrorOf("DIKHAO * SE t JAHAN " + repeated("1 = 1", 500, " AUR ")),
+            parseErrorOf("DIKHAO * SE t JAHAN " + repeated("1 = 1", 500, " YA ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("2", 500, " * ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("-", 500, " ") + " 1"),
+            parseErrorOf("DIKHAO * SE t JAHAN " + repeated("NAHI", 500, " ") + " x = 1"),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("AGAR 1 = 1 TAB 1 WARNA", 500, " ") + " 0 " +
+                         repeated("KHATAM", 500, " ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x MEIN (" + repeated("1", 300, ", ") + ")"),
+            parseErrorOf("DIKHAO * SE t JAHAN x MEIN (" + repeated("1", 5000, ", ") + ")")};
+    });
+    CHECK(r[0].empty());
+    for (size_t i = 1; i <= 8; ++i) CHECK(r[i] == kTooDeep);
+    CHECK(r[9].empty());       // an IN list becomes an OR chain, one level per item ...
+    CHECK(r[10] == kTooDeep);  // ... so it is bounded like any other chain (Python fails near 450)
+}
+
+TEST_CASE("hardening set-operation chains and nested subqueries are bounded", "[hardening]") {
+    auto r = onThread([] {
+        std::string nested = "DIKHAO * SE t JAHAN x MEIN (DIKHAO x SE t)";
+        for (int i = 0; i < 500; ++i) nested = "DIKHAO * SE t JAHAN x MEIN (" + nested + ")";
+        return std::vector<std::string>{parseErrorOf("DIKHAO * SE t " + repeated("SANYUKT DIKHAO * SE t", 500, " ")),
+                                        parseErrorOf("DIKHAO * SE t " + repeated("SANYUKT DIKHAO * SE t", 50, " ")),
+                                        parseErrorOf(nested)};
+    });
+    CHECK(r[0] == kTooDeep);
+    CHECK(r[1].empty());
+    CHECK(r[2] == kTooDeep);
+}
+
+TEST_CASE("hardening each statement has its own budget", "[hardening]") {
+    auto r = onThread([] {
+        const std::string one = "DIKHAO * SE t JAHAN " + repeated("1 = 1", 200, " AUR ") + ";";
+        return parseErrorOf(repeated(one, 100, "\n"));  // 100 statements x 199 operators
+    });
+    CHECK(r.empty());
+}
+
+TEST_CASE("hardening SAMJHAO cannot be stacked without limit", "[hardening]") {
+    auto r = onThread([] {
+        return std::vector<std::string>{parseErrorOf(repeated("SAMJHAO", 20, " ") + " DIKHAO * SE t"),
+                                        parseErrorOf(repeated("SAMJHAO", 100, " ") + " DIKHAO * SE t")};
+    });
+    CHECK(r[0].empty());
+    CHECK(r[1] == "Statements bahut gehre nested hain (limit 32)");
+}
+
+TEST_CASE("hardening a million open parentheses fail fast", "[hardening]") {
+    auto r = onThread([] { return parseErrorOf("DIKHAO * SE t JAHAN " + std::string(1000000, '(')); });
+    CHECK(r == kTooDeep);
+}
+
+TEST_CASE("hardening deep-but-legal expressions evaluate without exhausting the stack", "[hardening]") {
+    meradb_test::TempDir dir;
+    auto r = onThread([&] {
+        Engine e(dir.str());
+        e.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1), (2)");
+        std::vector<Result> out;
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + parens(390, "x = 1"))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN x = " + repeated("1", 390, " * "))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + repeated("x > 0", 390, " AUR "))[0]);
+        out.push_back(e.runScript("SAMJHAO DIKHAO * SE t JAHAN " + parens(390, "x = 1"))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN x MEIN (DIKHAO x SE t JAHAN " + parens(390, "x = 2") + ")")[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + parens(500, "x = 1"))[0]);
+        return out;
+    });
+    for (size_t i = 0; i < 5; ++i) CHECK(r[i].error.empty());
+    CHECK(r[0].rows.size() == 1);
+    CHECK(r[1].rows.size() == 1);
+    CHECK(r[2].rows.size() == 2);
+    CHECK(r[4].rows.size() == 1);
+    CHECK(r[5].error.rfind("[Parser Galti] " + kTooDeep, 0) == 0);
+}
+
+TEST_CASE("hardening views over views are capped", "[hardening]") {
+    meradb_test::TempDir dir;
+    auto r = onThread([&] {
+        Engine e(dir.str());
+        e.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (7); BANAO VIEW v1 KAHO DIKHAO * SE t");
+        for (int i = 2; i <= 33; ++i)  // creating a view runs its query once to check it
+            e.execute("BANAO VIEW v" + std::to_string(i) + " KAHO DIKHAO * SE v" + std::to_string(i - 1));
+        std::vector<Result> out;
+        out.push_back(e.runScript("DIKHAO * SE v32")[0]);                     // 32 levels of views: allowed
+        out.push_back(e.runScript("DIKHAO * SE v33")[0]);                     // 33 levels: refused
+        out.push_back(e.runScript("BANAO VIEW v34 KAHO DIKHAO * SE v33")[0]);  // so v34 cannot even be created
+        out.push_back(e.runScript("DIKHAO * SE v1")[0]);                      // the depth counter unwound
+        return out;
+    });
+    CHECK(r[0].error.empty());
+    CHECK(r[0].rows.size() == 1);
+    const std::string refusal = "[Execution Galti] View 'v1' bahut gehri nested hai (limit 32 views ek ke andar ek)";
+    CHECK(r[1].error == refusal);
+    CHECK(r[2].error == refusal);
+    CHECK(r[3].error.empty());
+}
