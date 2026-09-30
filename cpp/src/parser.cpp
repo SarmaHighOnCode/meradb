@@ -327,6 +327,8 @@ std::unique_ptr<Statement> Parser::parseStatement() {
         ex->statement = parseStatement();
         return ex;
     }
+    if (kw == "ADHIKAR") { advance(); return parseAdhikar(); }
+    if (kw == "CHALAO") { advance(); return parseChalao(); }
     error("Ye command nahi pata");
 }
 
@@ -341,6 +343,15 @@ std::unique_ptr<Statement> Parser::parseBanao() {
     }
     // BANAO VIEW naam KAHO DIKHAO ...
     if (matchKeyword("VIEW")) return parseCreateView();
+
+    // BANAO USER naam GUPT 'password'
+    if (matchKeyword("USER")) {
+        auto u = std::make_unique<CreateUser>();
+        u->name = expectIdent("user ka naam");
+        expectKeyword("GUPT");
+        u->password = expectString("password");
+        return u;
+    }
 
     // BANAO TABLE name ( coldef | table-constraint, ... )
     expectKeyword("TABLE");
@@ -481,10 +492,88 @@ std::unique_ptr<Statement> Parser::parseHatao() {
         d->name = expectIdent("view ka naam");
         return d;
     }
+    if (matchKeyword("USER")) {
+        auto d = std::make_unique<DropUser>();
+        d->name = expectIdent("user ka naam");
+        return d;
+    }
+    if (matchKeyword("TRIGGER")) {
+        auto d = std::make_unique<DropTrigger>();
+        d->name = expectIdent("trigger ka naam");
+        return d;
+    }
+    if (matchKeyword("PROCEDURE")) {
+        auto d = std::make_unique<DropProcedure>();
+        d->name = expectIdent("procedure ka naam");
+        return d;
+    }
     expectKeyword("TABLE");
     auto d = std::make_unique<DropTable>();
     d->name = expectIdent("table ka naam");
     return d;
+}
+
+std::string Parser::expectString(const std::string& what) {
+    if (peek().type != TokenType::String) error(what + " (quotes ke andar ek string) expected tha");
+    return advance().textValue;
+}
+
+std::string Parser::expectPrivilege() {
+    static const char* const kPrivileges[] = {"DIKHAO", "DAALO", "BADLO", "MITAO"};
+    if (peek().type == TokenType::Keyword) {
+        for (const char* p : kPrivileges) {
+            if (peek().textValue == p) {
+                advance();
+                return p;
+            }
+        }
+    }
+    error("Adhikar ka naam expected tha (DIKHAO, DAALO, BADLO, MITAO, ya SAB)");
+}
+
+std::vector<std::string> Parser::parsePrivilegeList() {
+    if (matchKeyword("SAB")) return {"DIKHAO", "DAALO", "BADLO", "MITAO"};
+    std::vector<std::string> privileges;
+    privileges.push_back(expectPrivilege());
+    while (matchSymbol(",")) privileges.push_back(expectPrivilege());
+    return privileges;
+}
+
+std::unique_ptr<Statement> Parser::parseAdhikar() {
+    // ADHIKAR DO priv, priv PAR table KO user      -- GRANT
+    // ADHIKAR WAPAS priv, priv PAR table SE user    -- REVOKE
+    if (matchKeyword("DO")) {
+        auto g = std::make_unique<Grant>();
+        g->privileges = parsePrivilegeList();
+        expectKeyword("PAR");
+        g->table = expectIdent("table/view ka naam");
+        expectKeyword("KO");
+        g->user = expectIdent("user ka naam");
+        return g;
+    }
+    if (matchKeyword("WAPAS")) {
+        auto r = std::make_unique<Revoke>();
+        r->privileges = parsePrivilegeList();
+        expectKeyword("PAR");
+        r->table = expectIdent("table/view ka naam");
+        expectKeyword("SE");
+        r->user = expectIdent("user ka naam");
+        return r;
+    }
+    error("ADHIKAR ke baad DO (grant) ya WAPAS (revoke) expected tha");
+}
+
+std::unique_ptr<Statement> Parser::parseChalao() {
+    // CHALAO naam(expr, expr, ...)
+    auto call = std::make_unique<CallProcedure>();
+    call->name = expectIdent("procedure ka naam");
+    expectSymbol("(");
+    if (!checkSymbol(")")) {
+        call->args.push_back(parseExpressionEntry());
+        while (matchSymbol(",")) call->args.push_back(parseExpressionEntry());
+    }
+    expectSymbol(")");
+    return call;
 }
 
 std::unique_ptr<Statement> Parser::parseSudharo() {

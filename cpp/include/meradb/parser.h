@@ -56,6 +56,12 @@ private:
     std::unique_ptr<ast::Select> parseSelectBody();
     std::unique_ptr<ast::Statement> parseBanao();
     std::unique_ptr<ast::Statement> parseHatao();
+    // Phase 2: users / privileges / procedure calls
+    std::unique_ptr<ast::Statement> parseAdhikar();
+    std::unique_ptr<ast::Statement> parseChalao();
+    std::vector<std::string> parsePrivilegeList();
+    std::string expectPrivilege();
+    std::string expectString(const std::string& what);
     std::unique_ptr<ast::Statement> parseSudharo();
     std::unique_ptr<ast::Statement> parseSaaf();
     std::unique_ptr<ast::Statement> parseSikodo();
