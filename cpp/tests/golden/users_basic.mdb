@@ -1,0 +1,33 @@
+BANAO USER ravi GUPT 'pw1'
+BANAO USER ravi GUPT 'pw2'
+BANAO USER asha GUPT 'x'
+HATAO USER asha
+HATAO USER asha
+BANAO TABLE students (id INT MUKHYA KUNJI, name TEXT, cgpa FLOAT)
+DAALO MEIN students MAAN (1, 'Ravi', 8.5), (2, 'Asha', 9.1)
+@ravi: DIKHAO * SE students
+ADHIKAR DO DIKHAO PAR students KO ravi
+@ravi: DIKHAO * SE students
+@ravi: DAALO MEIN students MAAN (3, 'Meera', 7.0)
+ADHIKAR DO DAALO, BADLO PAR students KO ravi
+@ravi: DAALO MEIN students MAAN (3, 'Meera', 7.0)
+@ravi: BADLO students RAKHO cgpa = 6.5 JAHAN id = 3
+@ravi: MITAO SE students JAHAN id = 3
+ADHIKAR WAPAS BADLO PAR students SE ravi
+@ravi: BADLO students RAKHO cgpa = 6.0 JAHAN id = 3
+ADHIKAR DO SAB PAR students KO ghost
+ADHIKAR WAPAS SAB PAR nothing SE ravi
+@ravi: BANAO TABLE x (id INT)
+@ravi: HATAO TABLE students
+@ravi: SHURU
+@ravi: PAKKA
+@ravi: WAPAS
+@ravi: SAMJHAO DIKHAO * SE students
+@ravi: SAMJHAO HATAO TABLE students
+@ravi: BANAO USER z GUPT 'z'
+@ravi: ADHIKAR DO SAB PAR students KO ravi
+@ravi: ISTEMAL main
+@ravi: BANAO DATABASE d2
+@ravi: BANAO VIEW v KAHO DIKHAO * SE students
+@ravi: HATAO USER ravi
+DIKHAO * SE students

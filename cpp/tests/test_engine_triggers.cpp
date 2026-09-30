@@ -160,3 +160,7 @@ TEST_CASE("engine_triggers rollback undoes trigger side effects", "[engine][trig
     CHECK(d.audit().empty());
     CHECK(d.q("DIKHAO * SE accounts;").rows.empty());
 }
+
+TEST_CASE("engine_triggers golden scripts match the Python engine", "[engine][triggers][golden]") {
+    meradb_test::replayGolden("trigger");
+}

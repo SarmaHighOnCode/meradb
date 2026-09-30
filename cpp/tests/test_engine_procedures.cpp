@@ -95,3 +95,7 @@ TEST_CASE("engine_procedures are superuser-only for restricted sessions", "[engi
           "(bina username connect kiya session) chala sakta hai");
     CHECK(runLast(ravi, "BANAO PROCEDURE z() SHURU DIKHAO * SE t; KHATAM;").error.find("'CreateProcedure'") != std::string::npos);
 }
+
+TEST_CASE("engine_procedures golden scripts match the Python engine", "[engine][procedures][golden]") {
+    meradb_test::replayGolden("proc");
+}

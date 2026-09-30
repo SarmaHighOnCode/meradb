@@ -136,3 +136,7 @@ TEST_CASE("engine_users users survive a new Instance on the same folder", "[engi
     CHECK(again.instance().users().verify("ravi", "pw"));
     CHECK(again.instance().users().hasPrivilege("ravi", "main", "t", "DIKHAO"));
 }
+
+TEST_CASE("engine_users golden scripts match the Python engine", "[engine][users][golden]") {
+    meradb_test::replayGolden("users");
+}

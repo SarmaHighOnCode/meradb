@@ -1,0 +1,36 @@
+BANAO TABLE accounts (id INT MUKHYA KUNJI, balance INT)
+BANAO TABLE audit (id INT, note TEXT)
+BANAO TRIGGER t_ins BAAD DAALO PAR accounts SHURU DAALO MEIN audit MAAN (NAYA.id, 'inserted'); KHATAM
+BANAO TRIGGER t_ins BAAD DAALO PAR accounts SHURU DIKHAO * SE t; KHATAM
+BANAO TRIGGER t_bad BAAD DAALO PAR ghost SHURU DIKHAO * SE t; KHATAM
+BANAO VIEW av KAHO DIKHAO * SE accounts
+BANAO TRIGGER t_view BAAD DAALO PAR av SHURU DIKHAO * SE t; KHATAM
+DAALO MEIN accounts MAAN (1, 100), (2, 50)
+DIKHAO * SE audit
+BANAO TRIGGER t_upd BAAD BADLO PAR accounts SHURU DAALO MEIN audit MAAN (PURANA.balance, 'was'); DAALO MEIN audit MAAN (NAYA.balance, 'now'); KHATAM
+BADLO accounts RAKHO balance = balance + 5 JAHAN id = 1
+DIKHAO * SE audit
+BANAO TRIGGER t_del BAAD MITAO PAR accounts SHURU DAALO MEIN audit MAAN (PURANA.id, 'gone'); KHATAM
+MITAO SE accounts JAHAN id = 2
+DIKHAO * SE audit
+BANAO TRIGGER t_second BAAD DAALO PAR accounts SHURU DAALO MEIN audit MAAN (NAYA.id, 'second'); KHATAM
+DAALO MEIN accounts MAAN (3, 1)
+DIKHAO * SE audit
+HATAO TRIGGER t_second
+HATAO TRIGGER t_second
+DAALO MEIN accounts MAAN (4, 1)
+DIKHAO * SE audit
+BANAO TRIGGER t_veto PEHLE DAALO PAR accounts SHURU MITAO SE nosuch; KHATAM
+DAALO MEIN accounts MAAN (9, 9)
+DIKHAO * SE accounts
+HATAO TRIGGER t_veto
+BANAO TRIGGER t_fail BAAD DAALO PAR accounts SHURU MITAO SE nosuch; KHATAM
+DAALO MEIN accounts MAAN (10, 10), (11, 11)
+DIKHAO * SE accounts
+HATAO TRIGGER t_fail
+SHURU
+DAALO MEIN accounts MAAN (20, 1)
+DIKHAO * SE audit
+WAPAS
+DIKHAO * SE audit
+DIKHAO * SE accounts

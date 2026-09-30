@@ -2,7 +2,9 @@
 """Regenerates cpp/tests/golden_engine.h from the reference (Python) engine.
 
 Every cpp/tests/golden/<group>_<name>.mdb is a script with ONE statement per
-line. Each script is run against a fresh Engine and the outcome of every
+line. A line starting `@name:` runs on a restricted session for user `name`
+that shares the script's Instance (created on first use); every other line
+runs on the superuser session. Each script is run against a fresh Engine and the outcome of every
 statement is recorded in a canonical text form; the C++ test replays the same
 script and compares the outcome statement by statement, so the two engines are
 checked against each other on messages, error wording, columns and rows.
@@ -14,6 +16,7 @@ Run from anywhere:  python cpp/tests/golden/gen_golden.py
 """
 import glob
 import os
+import re
 import sys
 import tempfile
 
@@ -54,9 +57,18 @@ def main() -> None:
             statements = [ln.strip() for ln in f if ln.strip()]
         with tempfile.TemporaryDirectory() as data:
             engine = Engine(data)
+            sessions = {}
             out.append(f'        {{"{group}", "{name}", {{')
             for sql in statements:
-                result = engine.run_script(sql)[-1]
+                target, text = engine, sql
+                m = re.match(r"^@(\w+):\s*(.*)$", sql)
+                if m:
+                    user, text = m.group(1), m.group(2)
+                    if user not in sessions:
+                        sessions[user] = Engine(engine.instance)  # shares the Instance (and its lock)
+                        sessions[user].user = user
+                    target = sessions[user]
+                result = target.run_script(text)[-1]
                 out.append(f"            {{{raw(sql)}, {raw(canonical(result))}}},")
             out.append("        }},")
     out += ["    };", "    return all;", "}", "}  // namespace golden", ""]

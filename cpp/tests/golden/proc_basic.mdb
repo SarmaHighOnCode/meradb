@@ -1,0 +1,19 @@
+BANAO TABLE accounts (id INT MUKHYA KUNJI, balance INT)
+BANAO TABLE prices (id INT, amount FLOAT)
+BANAO PROCEDURE add_acct(pid INT, bal INT) SHURU DAALO MEIN accounts MAAN (pid, bal); BADLO accounts RAKHO balance = balance + bal JAHAN id = pid; KHATAM
+CHALAO add_acct(5, 10)
+DIKHAO * SE accounts
+BANAO PROCEDURE put(pid INT, amt FLOAT) SHURU DAALO MEIN prices MAAN (pid, amt); KHATAM
+CHALAO put(1 + 1, 3)
+DIKHAO * SE prices
+BANAO PROCEDURE note(i INT) SHURU DIKHAO i SE accounts; KHATAM
+BANAO PROCEDURE outer_p(i INT) SHURU CHALAO put(i, 2.5); KHATAM
+CHALAO outer_p(7)
+DIKHAO * SE prices
+BANAO PROCEDURE noargs() SHURU DIKHAO * SE accounts; MITAO SE accounts JAHAN id = 5; KHATAM
+CHALAO noargs()
+DIKHAO * SE accounts
+HATAO PROCEDURE noargs
+CHALAO noargs()
+BANAO PROCEDURE shadow(balance INT) SHURU DIKHAO * SE accounts JAHAN balance = balance; KHATAM
+CHALAO shadow(1)
