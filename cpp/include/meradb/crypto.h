@@ -2,8 +2,8 @@
 //
 // SHA-256, HMAC-SHA-256 and PBKDF2-HMAC-SHA-256, written out in full so the
 // password store needs no third-party library. Byte-compatible with Python's
-// hashlib (verified by known-answer tests). Educational, not hardened: no
-// constant-time guarantees beyond what a plain implementation gives.
+// hashlib (verified by known-answer tests). Educational, not hardened; only
+// constantTimeEquals() is written to be timing-safe.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -53,6 +53,10 @@ Bytes pbkdf2HmacSha256(const std::string& password, const Bytes& salt, std::uint
 
 Bytes toBytes(const std::string& text);  // the raw bytes of a std::string (UTF-8 stays UTF-8)
 std::string toHex(const Bytes& bytes);   // lowercase, like bytes.hex()
+
+// Compares two strings without stopping at the first difference (for hashes/secrets).
+// Only the lengths are allowed to influence the running time.
+bool constantTimeEquals(const std::string& a, const std::string& b);
 Bytes fromHex(const std::string& hex);   // either case; StorageError if malformed
 
 }  // namespace meradb::crypto

@@ -27,7 +27,8 @@ std::string localLogStamp();
 // is deterministic on some MinGW builds.
 std::vector<std::uint8_t> randomBytes(std::size_t count);
 
-// os.path.expanduser("~"): %USERPROFILE% on Windows, $HOME elsewhere, "." if unknown.
+// os.path.expanduser("~"): on Windows %USERPROFILE%, else %HOMEDRIVE%%HOMEPATH%, else "~";
+// elsewhere $HOME, "." if unknown.
 std::string homeDir();
 
 }  // namespace meradb::sys

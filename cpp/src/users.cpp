@@ -78,7 +78,29 @@ void UserStore::saveLocked() {
     }
     std::error_code ec;
     fs::rename(tmp, path_, ec);
-    if (ec) throw StorageError(path_ + " save nahi hua: " + ec.message());
+    if (ec) {
+        std::error_code ignored;
+        fs::remove(tmp, ignored);  // don't leave a stale .tmp behind
+        throw StorageError(path_ + " save nahi hua: " + ec.message());
+    }
+}
+
+// Runs `change` on the in-memory store, then saves. On ANY failure (a malformed hand-edited
+// users.json, or the save itself) the in-memory state is put back exactly as it was.
+template <typename Change>
+void UserStore::mutateAndSave(Change&& change) {
+    json backup = users_;
+    try {
+        try {
+            change();
+        } catch (const nlohmann::json::exception& e) {
+            throw StorageError(path_ + " corrupt hai: " + e.what());
+        }
+        saveLocked();
+    } catch (...) {
+        users_ = std::move(backup);
+        throw;
+    }
 }
 
 bool UserStore::exists(const std::string& name) const {
@@ -116,8 +138,7 @@ void UserStore::create(const std::string& name, const std::string& password) {
 void UserStore::drop(const std::string& name) {
     std::lock_guard<std::mutex> guard(mutex_);
     if (!users_.contains(name)) throw noSuchUser(name);
-    users_.erase(name);
-    saveLocked();
+    mutateAndSave([&] { users_.erase(name); });
 }
 
 bool UserStore::verify(const std::string& name, const std::string& password) const {
@@ -139,7 +160,7 @@ bool UserStore::verify(const std::string& name, const std::string& password) con
     } catch (const StorageError&) {
         return false;
     }
-    return hashHex(password, salt) == expected;
+    return crypto::constantTimeEquals(hashHex(password, salt), expected);
 }
 
 void UserStore::grant(const std::string& name, const std::string& db, const std::string& table,
@@ -148,10 +169,11 @@ void UserStore::grant(const std::string& name, const std::string& db, const std:
     auto it = users_.find(name);
     if (it == users_.end()) throw noSuchUser(name);
     std::string key = db + "." + table;
-    std::set<std::string> current = currentGrants(*it, key);
-    current.insert(privileges.begin(), privileges.end());
-    (*it)["grants"][key] = sortedPrivileges(current);
-    saveLocked();
+    mutateAndSave([&] {
+        std::set<std::string> current = currentGrants(*it, key);
+        current.insert(privileges.begin(), privileges.end());
+        (*it)["grants"][key] = sortedPrivileges(current);
+    });
 }
 
 void UserStore::revoke(const std::string& name, const std::string& db, const std::string& table,
@@ -160,11 +182,12 @@ void UserStore::revoke(const std::string& name, const std::string& db, const std
     auto it = users_.find(name);
     if (it == users_.end()) throw noSuchUser(name);
     std::string key = db + "." + table;
-    std::set<std::string> current = currentGrants(*it, key);
-    for (const auto& p : privileges) current.erase(p);
-    if (!current.empty()) (*it)["grants"][key] = sortedPrivileges(current);
-    else (*it)["grants"].erase(key);
-    saveLocked();
+    mutateAndSave([&] {
+        std::set<std::string> current = currentGrants(*it, key);
+        for (const auto& p : privileges) current.erase(p);
+        if (!current.empty()) (*it)["grants"][key] = sortedPrivileges(current);
+        else (*it)["grants"].erase(key);
+    });
 }
 
 bool UserStore::hasPrivilege(const std::string& name, const std::string& db, const std::string& table,

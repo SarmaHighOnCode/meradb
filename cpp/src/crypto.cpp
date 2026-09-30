@@ -195,4 +195,12 @@ Bytes fromHex(const std::string& hex) {
     return out;
 }
 
+bool constantTimeEquals(const std::string& a, const std::string& b) {
+    unsigned diff = a.size() == b.size() ? 0u : 1u;
+    std::size_t n = a.size() < b.size() ? a.size() : b.size();
+    for (std::size_t i = 0; i < n; ++i)
+        diff |= static_cast<unsigned>(static_cast<std::uint8_t>(a[i]) ^ static_cast<std::uint8_t>(b[i]));
+    return diff == 0;
+}
+
 }  // namespace meradb::crypto

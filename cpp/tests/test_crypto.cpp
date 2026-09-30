@@ -13,6 +13,30 @@ TEST_CASE("crypto sha256 known answers", "[crypto]") {
           "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
 }
 
+TEST_CASE("crypto sha256 padding boundaries match hashlib", "[crypto]") {
+    // sha256(b"a" * n) from Python hashlib, around the 55/56 and 119/120 padding edges
+    struct Case { size_t n; const char* hex; };
+    const Case cases[] = {
+        {55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"},
+        {56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"},
+        {63, "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34"},
+        {64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"},
+        {119, "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"},
+        {120, "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c"},
+    };
+    for (const auto& c : cases) CHECK(toHex(sha256(std::string(c.n, 'a'))) == c.hex);
+}
+
+TEST_CASE("crypto constantTimeEquals", "[crypto]") {
+    CHECK(constantTimeEquals("", ""));
+    CHECK(constantTimeEquals("abc123", "abc123"));
+    CHECK_FALSE(constantTimeEquals("abc123", "abc124"));
+    CHECK_FALSE(constantTimeEquals("Abc123", "abc123"));
+    CHECK_FALSE(constantTimeEquals("abc", "abc123"));
+    CHECK_FALSE(constantTimeEquals("abc123", "abc"));
+    CHECK_FALSE(constantTimeEquals("", "a"));
+}
+
 TEST_CASE("crypto sha256 streaming equals one-shot at every split", "[crypto]") {
     std::string data(200, 'a');
     const std::string expected = "c2a908d98f5df987ade41b5fce213067efbcc21ef2240212a41e54b5e7c28ae5";

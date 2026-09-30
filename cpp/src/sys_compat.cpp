@@ -44,12 +44,14 @@ namespace {
 std::tm localTm(std::time_t t) {
     std::tm out{};
 #if defined(_MSC_VER)
-    localtime_s(&out, &t);
+    if (localtime_s(&out, &t) != 0) throw StorageError("local time nahi mila");
 #elif defined(_WIN32)
     // MinGW: std::localtime uses a static buffer, so serialise the calls.
     static std::mutex m;
     std::lock_guard<std::mutex> guard(m);
-    out = *std::localtime(&t);
+    const std::tm* p = std::localtime(&t);
+    if (p == nullptr) throw StorageError("local time nahi mila");
+    out = *p;
 #else
     localtime_r(&t, &out);
 #endif
@@ -85,10 +87,18 @@ std::vector<std::uint8_t> randomBytes(std::size_t count) {
 
 std::string homeDir() {
 #ifdef _WIN32
-    if (auto v = getEnv("USERPROFILE"); v && !v->empty()) return *v;
-#endif
+    // Python's ntpath.expanduser("~"): USERPROFILE, else HOMEDRIVE + HOMEPATH; HOME is ignored.
+    // With neither set the "~" is left as is.
+    if (auto v = getEnv("USERPROFILE")) return *v;
+    if (auto path = getEnv("HOMEPATH")) {
+        std::string drive = getEnv("HOMEDRIVE").value_or("");
+        return drive + *path;
+    }
+    return "~";
+#else
     if (auto v = getEnv("HOME"); v && !v->empty()) return *v;
     return ".";
+#endif
 }
 
 }  // namespace meradb::sys

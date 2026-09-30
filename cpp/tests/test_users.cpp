@@ -143,3 +143,70 @@ TEST_CASE("users corrupt file is a StorageError, not a crash", "[users]") {
     writeFile(dir.path() / "users.json", "{ not json");
     REQUIRE_THROWS_AS(UserStore(dir.str()), StorageError);
 }
+
+namespace {
+// Makes every save fail: users.json becomes a non-empty directory, so renaming the temp file
+// onto it is refused.
+void blockSaves(const fs::path& dir) {
+    fs::path target = dir / "users.json";
+    fs::remove(target);
+    fs::create_directories(target / "blocker");
+}
+}  // namespace
+
+TEST_CASE("users failed save removes the leftover temp file", "[users]") {
+    TempDir dir;
+    UserStore users(dir.str());
+    blockSaves(dir.path());
+    CHECK_THROWS_AS(users.create("ravi", "pw"), StorageError);
+    CHECK_FALSE(fs::exists(dir.path() / "users.json.tmp"));
+}
+
+TEST_CASE("users create, drop, grant and revoke roll back when the save fails", "[users]") {
+    TempDir dir;
+    UserStore users(dir.str());
+    users.create("ravi", "pw");
+    users.grant("ravi", "main", "students", {"DIKHAO", "DAALO"});
+    blockSaves(dir.path());
+
+    CHECK_THROWS_AS(users.create("asha", "pw"), StorageError);
+    CHECK_FALSE(users.exists("asha"));
+
+    CHECK_THROWS_AS(users.drop("ravi"), StorageError);
+    CHECK(users.exists("ravi"));
+    CHECK(users.verify("ravi", "pw"));
+
+    CHECK_THROWS_AS(users.grant("ravi", "main", "students", {"BADLO"}), StorageError);
+    CHECK_FALSE(users.hasPrivilege("ravi", "main", "students", "BADLO"));
+    CHECK(users.hasPrivilege("ravi", "main", "students", "DIKHAO"));
+
+    CHECK_THROWS_AS(users.revoke("ravi", "main", "students", {"DIKHAO", "DAALO"}), StorageError);
+    CHECK(users.hasPrivilege("ravi", "main", "students", "DIKHAO"));
+    CHECK(users.hasPrivilege("ravi", "main", "students", "DAALO"));
+}
+
+TEST_CASE("users grant/revoke on a hand-edited malformed entry give a clean error", "[users]") {
+    for (const char* bad : {R"({"ravi": "oops"})", R"({"ravi": [1, 2]})",
+                            R"({"ravi": {"salt": "00", "hash": "00", "grants": "oops"}})",
+                            R"({"ravi": {"salt": "00", "hash": "00", "grants": [1]}})"}) {
+        TempDir dir;
+        writeFile(dir.path() / "users.json", bad);
+        UserStore users(dir.str());
+        CAPTURE(bad);
+        CHECK_THROWS_AS(users.grant("ravi", "main", "t", {"DIKHAO"}), StorageError);
+        CHECK_THROWS_AS(users.revoke("ravi", "main", "t", {"DIKHAO"}), StorageError);
+        CHECK(users.exists("ravi"));  // untouched
+        CHECK_FALSE(users.verify("ravi", "pw"));
+        CHECK_FALSE(fs::exists(dir.path() / "users.json.tmp"));
+    }
+}
+
+TEST_CASE("users verify rejects near-miss hashes and passwords", "[users]") {
+    TempDir dir;
+    UserStore users(dir.str());
+    users.create("ravi", "hunter2");
+    CHECK(users.verify("ravi", "hunter2"));
+    CHECK_FALSE(users.verify("ravi", "hunter3"));
+    CHECK_FALSE(users.verify("ravi", ""));
+    CHECK_FALSE(users.verify("nobody", "hunter2"));
+}

@@ -2,6 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/sys_compat.h"
 #include <cctype>
+#include <cstdlib>
+#include <optional>
+#include <string>
 
 using namespace meradb;
 
@@ -46,3 +49,28 @@ TEST_CASE("sys_compat randomBytes returns fresh bytes each call", "[sys_compat]"
 TEST_CASE("sys_compat homeDir is never empty", "[sys_compat]") {
     REQUIRE_FALSE(sys::homeDir().empty());
 }
+
+#ifdef _WIN32
+namespace {
+// Sets (or, for nullptr, unsets) an environment variable and restores it on scope exit.
+struct EnvGuard {
+    std::string name;
+    std::optional<std::string> old;
+    EnvGuard(const std::string& n, const char* value) : name(n), old(sys::getEnv(n)) { set(value); }
+    ~EnvGuard() { set(old ? old->c_str() : nullptr); }
+    void set(const char* value) const { _putenv_s(name.c_str(), value ? value : ""); }
+};
+}  // namespace
+
+TEST_CASE("sys_compat homeDir follows Python expanduser on Windows", "[sys_compat]") {
+    EnvGuard profile("USERPROFILE", nullptr), drive("HOMEDRIVE", nullptr), path("HOMEPATH", nullptr),
+        home("HOME", "C:\\ignored");
+    CHECK(sys::homeDir() == "~");  // nothing usable set: Python leaves "~"
+    path.set("\\Users\\dev");
+    CHECK(sys::homeDir() == "\\Users\\dev");
+    drive.set("D:");
+    CHECK(sys::homeDir() == "D:\\Users\\dev");
+    profile.set("E:\\Profile");  // USERPROFILE wins over HOMEDRIVE+HOMEPATH; HOME never used
+    CHECK(sys::homeDir() == "E:\\Profile");
+}
+#endif

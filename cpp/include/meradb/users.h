@@ -49,6 +49,8 @@ private:
 
     void load();
     void saveLocked();  // caller holds mutex_
+    template <typename Change>
+    void mutateAndSave(Change&& change);  // caller holds mutex_; rolls back on failure
 };
 
 }  // namespace meradb
