@@ -44,7 +44,7 @@ void replacePath(const fs::path& from, const fs::path& to) {
 
 }  // namespace
 
-Instance::Instance(std::string dataDir) : dataDir_(fs::absolute(fs::path(dataDir)).string()) {
+Instance::Instance(std::string dataDir) : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(dataDir_) {
     fs::create_directories(dataDir_);
     recovered_ = recover();
     fs::create_directories(dbDir(DEFAULT_DATABASE));
@@ -313,6 +313,7 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
         currentDb = DEFAULT_DATABASE;
         throw ExecutionError("Database '" + gone + "' ab exist nahi karta. Ab '" + DEFAULT_DATABASE + "' use ho raha hai.");
     }
+    checkPrivileges(stmt);
     using namespace ast;
     if (auto* s = dynamic_cast<const CreateDatabase*>(&stmt)) return execCreateDatabase(*s);
     if (auto* s = dynamic_cast<const DropDatabase*>(&stmt)) return execDropDatabase(*s);
@@ -340,6 +341,10 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const DropView*>(&stmt)) return execDropView(*s);
     if (auto* s = dynamic_cast<const ShowViews*>(&stmt)) return execShowViews(*s);
     if (auto* s = dynamic_cast<const Explain*>(&stmt)) return execExplain(*s);
+    if (auto* s = dynamic_cast<const CreateUser*>(&stmt)) return execCreateUser(*s);
+    if (auto* s = dynamic_cast<const DropUser*>(&stmt)) return execDropUser(*s);
+    if (auto* s = dynamic_cast<const Grant*>(&stmt)) return execGrant(*s);
+    if (auto* s = dynamic_cast<const Revoke*>(&stmt)) return execRevoke(*s);
     throw ExecutionError("Ye statement abhi supported nahi hai");
 }
 
@@ -350,6 +355,79 @@ void Engine::close() {
         } catch (const MeraDBError&) {
         }
     }
+}
+
+// ============================================================================
+// users & privileges (server-wide -- see users.h)
+// ============================================================================
+
+std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
+    // The FROM table plus every MILAO'd table -- NOT tables read only through a
+    // VIEW's own stored query (that runs via resolveSource, never through
+    // executeStatement, so it is never re-checked; a view is meant to be granted
+    // by its own name).
+    std::vector<std::string> tables{stmt.table};
+    for (const auto& join : stmt.joins) tables.push_back(join.table);
+    return tables;
+}
+
+void Engine::requirePrivilege(const std::string& privilege, const std::string& table) {
+    if (!instance_->users().hasPrivilege(*user, currentDb, table, privilege))
+        throw ExecutionError("'" + *user + "' ko table '" + table + "' par " + privilege + " ka adhikar nahi hai");
+}
+
+void Engine::checkPrivileges(const ast::Statement& stmt) {
+    if (!user) return;  // superuser: checking is skipped entirely
+    using namespace ast;
+    if (auto* ex = dynamic_cast<const Explain*>(&stmt)) {
+        checkPrivileges(*ex->statement);
+        return;
+    }
+    if (dynamic_cast<const SetOp*>(&stmt)) return;  // execSetOp re-enters executeStatement for each side
+    if (auto* sel = dynamic_cast<const Select*>(&stmt)) {
+        for (const auto& t : tablesRead(*sel)) requirePrivilege("DIKHAO", t);
+        return;
+    }
+    if (auto* ins = dynamic_cast<const Insert*>(&stmt)) {
+        requirePrivilege("DAALO", ins->table);
+        if (ins->select)
+            for (const auto& t : tablesRead(*ins->select)) requirePrivilege("DIKHAO", t);
+        return;
+    }
+    if (auto* upd = dynamic_cast<const Update*>(&stmt)) {
+        requirePrivilege("BADLO", upd->table);
+        return;
+    }
+    if (auto* del = dynamic_cast<const Delete*>(&stmt)) {
+        requirePrivilege("MITAO", del->table);
+        return;
+    }
+    // Everything else: DDL, VIEW/TRIGGER/PROCEDURE management, users and grants,
+    // transactions, database switching.
+    throw ExecutionError("'" + *user + "' superuser nahi hai -- '" + astClassName(stmt) +
+                         "' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai");
+}
+
+Result Engine::execCreateUser(const ast::CreateUser& stmt) {
+    instance_->users().create(stmt.name, stmt.password);
+    return messageResult("User '" + stmt.name + "' ban gaya");
+}
+
+Result Engine::execDropUser(const ast::DropUser& stmt) {
+    instance_->users().drop(stmt.name);
+    return messageResult("User '" + stmt.name + "' hata diya");
+}
+
+Result Engine::execGrant(const ast::Grant& stmt) {
+    instance_->users().grant(stmt.user, currentDb, stmt.table, stmt.privileges);
+    return messageResult("'" + stmt.user + "' ko '" + currentDb + "." + stmt.table + "' par " +
+                         joinStrs(stmt.privileges, ", ") + " ka adhikar mil gaya");
+}
+
+Result Engine::execRevoke(const ast::Revoke& stmt) {
+    instance_->users().revoke(stmt.user, currentDb, stmt.table, stmt.privileges);
+    return messageResult("'" + stmt.user + "' se '" + currentDb + "." + stmt.table + "' par " +
+                         joinStrs(stmt.privileges, ", ") + " ka adhikar wapas le liya");
 }
 
 void Engine::noTransaction(const std::string& command) const {

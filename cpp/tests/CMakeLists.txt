@@ -17,6 +17,7 @@ add_executable(meradb_tests
   test_engine_ddl.cpp
   test_engine_dml.cpp
   test_engine_select.cpp
+  test_engine_users.cpp
   test_engine_views_explain.cpp
   test_cli_output.cpp
   test_sys_compat.cpp

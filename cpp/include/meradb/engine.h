@@ -19,6 +19,7 @@
 #include "meradb/planner.h"
 #include "meradb/pyvalue.h"
 #include "meradb/table.h"
+#include "meradb/users.h"
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -44,6 +45,7 @@ public:
     double lockTimeoutSeconds = 10.0;
 
     const std::string& dataDir() const { return dataDir_; }
+    UserStore& users() { return users_; }
     std::string dbDir(const std::string& name) const;
     std::vector<std::string> databases() const;  // sorted, hidden (.wapas) excluded
     Catalog& catalog(const std::string& db);     // loaded + cached on first access
@@ -68,6 +70,7 @@ public:
 
 private:
     std::string dataDir_;
+    UserStore users_;  // declared after dataDir_: its constructor needs it
     std::unordered_map<std::string, std::unique_ptr<Catalog>> catalogs_;
     std::unordered_map<std::string, std::unordered_map<std::string, IndexCache>> indexes_;  // db -> table -> slot
     std::vector<std::string> recovered_;
@@ -94,6 +97,10 @@ public:
     Engine& operator=(const Engine&) = delete;
 
     std::string currentDb = DEFAULT_DATABASE;
+    // The session's authenticated username. nullopt = SUPERUSER (unrestricted):
+    // every embedded Engine and every server session that connected without a
+    // username. See docs/SERVER.md "no username = superuser".
+    std::optional<std::string> user;
     std::optional<std::string> txnDb;  // database of the open transaction, if any
     bool inTransaction() const { return txnDb.has_value(); }
     Catalog& catalog();
@@ -152,9 +159,16 @@ private:
     Result execDropView(const ast::DropView&);
     Result execShowViews(const ast::ShowViews&);
     Result execExplain(const ast::Explain&);
+    Result execCreateUser(const ast::CreateUser&);
+    Result execDropUser(const ast::DropUser&);
+    Result execGrant(const ast::Grant&);
+    Result execRevoke(const ast::Revoke&);
 
     // ---- helpers ----
     void noTransaction(const std::string& command) const;
+    void checkPrivileges(const ast::Statement& stmt);
+    void requirePrivilege(const std::string& privilege, const std::string& table);
+    static std::vector<std::string> tablesRead(const ast::Select& stmt);
     // A REAL table only (DAALO/BADLO/MITAO/SUDHARO/SAAF/SIKODO/HATAO TABLE targets).
     std::unique_ptr<Table> table(const std::string& name);
     // A SE/MILAO source: a real table, or a VIEW materialized fresh.
