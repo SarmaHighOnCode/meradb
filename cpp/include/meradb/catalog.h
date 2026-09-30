@@ -77,6 +77,28 @@ public:
     void addView(const std::string& name, const std::string& queryText);
     void removeView(const std::string& name);
 
+    // ---- triggers & stored procedures (Phase 2). Stored exactly as catalog.py stores them ----
+    struct TriggerInfo {
+        std::string name, timing, event, table, bodyText;
+    };
+    struct ProcedureInfo {
+        std::vector<std::pair<std::string, std::string>> params;  // (name, normalised type)
+        std::string bodyText;
+    };
+    bool hasTrigger(const std::string& name) const { return triggers.contains(name); }
+    void addTrigger(const std::string& name, const std::string& timing, const std::string& event,
+                    const std::string& table, const std::string& bodyText);
+    void removeTrigger(const std::string& name);
+    // Matching triggers in CREATION order. Copies, so the caller may run statements
+    // that change the catalog while iterating.
+    std::vector<TriggerInfo> triggersFor(const std::string& timing, const std::string& event,
+                                         const std::string& table) const;
+    bool hasProcedure(const std::string& name) const { return procedures.contains(name); }
+    void addProcedure(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
+                      const std::string& bodyText);
+    void removeProcedure(const std::string& name);
+    std::optional<ProcedureInfo> findProcedure(const std::string& name) const;
+
     const std::string& dbDir() const { return dbDir_; }
     const std::string& path() const { return path_; }
 

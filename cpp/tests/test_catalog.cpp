@@ -554,3 +554,73 @@ TEST_CASE("A value that can't be serialised raises StorageError and changes noth
     REQUIRE(meradb_test::readText(dir.file("catalog.json")) == before);
     REQUIRE_FALSE(std::filesystem::exists(dir.file("catalog.json.tmp")));
 }
+
+TEST_CASE("catalog triggers keep creation order and Python's JSON shape", "[catalog][phase2]") {
+    meradb_test::TempDir dir;
+    {
+        meradb::Catalog cat(dir.str());
+        cat.addTrigger("first", "PEHLE", "DAALO", "accounts", "DAALO MEIN log MAAN (NAYA.id);");
+        cat.addTrigger("second", "BAAD", "DAALO", "accounts", "DIKHAO * SE t;");
+        cat.addTrigger("third", "PEHLE", "DAALO", "accounts", "DIKHAO * SE t;");
+        CHECK(cat.hasTrigger("second"));
+        CHECK_FALSE(cat.hasTrigger("nope"));
+
+        auto pehle = cat.triggersFor("PEHLE", "DAALO", "accounts");
+        REQUIRE(pehle.size() == 2);
+        CHECK(pehle[0].name == "first");
+        CHECK(pehle[1].name == "third");
+        CHECK(pehle[0].bodyText == "DAALO MEIN log MAAN (NAYA.id);");
+        CHECK(cat.triggersFor("PEHLE", "MITAO", "accounts").empty());
+        CHECK(cat.triggersFor("PEHLE", "DAALO", "other").empty());
+
+        cat.removeTrigger("first");
+    }
+    // reload from disk: same content, same order
+    meradb::Catalog again(dir.str());
+    auto all = again.triggersFor("PEHLE", "DAALO", "accounts");
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].name == "third");
+
+    auto j = nlohmann::ordered_json::parse(meradb_test::readText(dir.file("catalog.json")));
+    REQUIRE(j["triggers"].is_object());
+    // Python writes the keys in this order: timing, event, table, body_text
+    std::vector<std::string> keys;
+    for (auto it = j["triggers"]["second"].begin(); it != j["triggers"]["second"].end(); ++it) keys.push_back(it.key());
+    CHECK(keys == std::vector<std::string>{"timing", "event", "table", "body_text"});
+}
+
+TEST_CASE("catalog procedures store [name, type] pairs then body_text", "[catalog][phase2]") {
+    meradb_test::TempDir dir;
+    {
+        meradb::Catalog cat(dir.str());
+        cat.addProcedure("badhao", {{"dept", "TEXT"}, {"pct", "INT"}}, "BADLO emp RAKHO s = s + pct;");
+        CHECK(cat.hasProcedure("badhao"));
+    }
+    meradb::Catalog again(dir.str());
+    auto p = again.findProcedure("badhao");
+    REQUIRE(p.has_value());
+    REQUIRE(p->params.size() == 2);
+    CHECK(p->params[0] == std::make_pair(std::string("dept"), std::string("TEXT")));
+    CHECK(p->params[1].second == "INT");
+    CHECK(p->bodyText == "BADLO emp RAKHO s = s + pct;");
+    CHECK_FALSE(again.findProcedure("ghost").has_value());
+
+    auto j = nlohmann::ordered_json::parse(meradb_test::readText(dir.file("catalog.json")));
+    CHECK(j["procedures"]["badhao"]["params"] == nlohmann::ordered_json::parse(R"([["dept","TEXT"],["pct","INT"]])"));
+    std::vector<std::string> keys;
+    for (auto it = j["procedures"]["badhao"].begin(); it != j["procedures"]["badhao"].end(); ++it) keys.push_back(it.key());
+    CHECK(keys == std::vector<std::string>{"params", "body_text"});
+
+    again.removeProcedure("badhao");
+    CHECK_FALSE(again.hasProcedure("badhao"));
+    meradb::Catalog third(dir.str());
+    CHECK_FALSE(third.hasProcedure("badhao"));
+}
+
+TEST_CASE("catalog trigger body text with unicode and newlines round-trips", "[catalog][phase2]") {
+    meradb_test::TempDir dir;
+    std::string body = "DAALO MEIN log MAAN ('caf\xC3\xA9\\n');\nDIKHAO * SE t;";
+    { meradb::Catalog cat(dir.str()); cat.addTrigger("t", "BAAD", "MITAO", "x", body); }
+    meradb::Catalog again(dir.str());
+    CHECK(again.triggersFor("BAAD", "MITAO", "x").at(0).bodyText == body);
+}

@@ -358,4 +358,78 @@ void Catalog::removeView(const std::string& name) {
     save();
 }
 
+void Catalog::addTrigger(const std::string& name, const std::string& timing, const std::string& event,
+                         const std::string& table, const std::string& bodyText) {
+    json entry = json::object();  // key order = Python's dict literal order
+    entry["timing"] = timing;
+    entry["event"] = event;
+    entry["table"] = table;
+    entry["body_text"] = bodyText;
+    renderJson(entry);  // fails early (invalid UTF-8) before memory is touched
+    std::optional<json> previous;
+    if (triggers.contains(name)) previous = triggers[name];
+    triggers[name] = entry;
+    try {
+        save();
+    } catch (...) {
+        if (previous) triggers[name] = *previous;
+        else triggers.erase(name);
+        throw;
+    }
+}
+
+void Catalog::removeTrigger(const std::string& name) {
+    triggers.erase(name);
+    save();
+}
+
+std::vector<Catalog::TriggerInfo> Catalog::triggersFor(const std::string& timing, const std::string& event,
+                                                       const std::string& table) const {
+    std::vector<TriggerInfo> out;
+    for (auto it = triggers.begin(); it != triggers.end(); ++it) {
+        const json& t = it.value();
+        if (t.value("timing", "") == timing && t.value("event", "") == event && t.value("table", "") == table)
+            out.push_back({it.key(), timing, event, table, t.value("body_text", "")});
+    }
+    return out;
+}
+
+void Catalog::addProcedure(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
+                           const std::string& bodyText) {
+    json entry = json::object();
+    json list = json::array();
+    for (const auto& [pname, ptype] : params) list.push_back(json::array({pname, ptype}));
+    entry["params"] = std::move(list);
+    entry["body_text"] = bodyText;
+    renderJson(entry);
+    std::optional<json> previous;
+    if (procedures.contains(name)) previous = procedures[name];
+    procedures[name] = entry;
+    try {
+        save();
+    } catch (...) {
+        if (previous) procedures[name] = *previous;
+        else procedures.erase(name);
+        throw;
+    }
+}
+
+void Catalog::removeProcedure(const std::string& name) {
+    procedures.erase(name);
+    save();
+}
+
+std::optional<Catalog::ProcedureInfo> Catalog::findProcedure(const std::string& name) const {
+    auto it = procedures.find(name);
+    if (it == procedures.end()) return std::nullopt;
+    ProcedureInfo info;
+    try {
+        for (const auto& p : it->at("params")) info.params.emplace_back(p.at(0).get<std::string>(), p.at(1).get<std::string>());
+        info.bodyText = it->at("body_text").get<std::string>();
+    } catch (const nlohmann::json::exception&) {
+        throw StorageError("catalog.json corrupt hai: procedure '" + name + "' samajh nahi aaya");
+    }
+    return info;
+}
+
 }  // namespace meradb
