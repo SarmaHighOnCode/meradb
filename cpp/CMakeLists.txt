@@ -46,8 +46,13 @@ add_library(meradb_core STATIC
   src/engine.cpp
   src/cli_format.cpp
   src/sys_compat.cpp
+  src/crypto.cpp
   # source files are appended here by later tasks
 )
+if(NOT MSVC)
+  # 100,000 PBKDF2 iterations = 200,000 SHA-256 compressions per login; -O0 is ~10x too slow.
+  set_source_files_properties(src/crypto.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
 target_include_directories(meradb_core PUBLIC include)
 target_link_libraries(meradb_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)
