@@ -44,6 +44,12 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli>
               ${CMAKE_CURRENT_SOURCE_DIR}/${_script}.mdb)
   endforeach()
+  # The shipped examples exactly as checked out (CRLF on Windows): exercises universal-newline reading.
+  foreach(_example demo rdbms_lab_coverage)
+    add_test(NAME cross_engine_example_${_example}
+      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli>
+              ${CMAKE_CURRENT_SOURCE_DIR}/../../examples/${_example}.mdb)
+  endforeach()
   add_test(NAME cross_engine_missing_file
     COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> no_such_script.mdb)
 else()

@@ -18,6 +18,21 @@
 
 namespace {
 
+// Python's text mode (universal newlines): "\r\n" and a lone "\r" both become "\n".
+std::string normalizeNewlines(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '\r') {
+            out += '\n';
+            if (i + 1 < in.size() && in[i + 1] == '\n') ++i;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
 bool runFile(meradb::Engine& engine, const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -38,6 +53,7 @@ bool runFile(meradb::Engine& engine, const std::string& path) {
     buffer << file.rdbuf();
     std::string text = buffer.str();
     if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // utf-8-sig, like Python
+    text = normalizeNewlines(text);
 
     bool ok = true;
     for (const auto& result : engine.runScript(text)) {
