@@ -18,6 +18,7 @@
 #include "meradb/evaluator.h"
 #include "meradb/planner.h"
 #include "meradb/pyvalue.h"
+#include "meradb/substitute.h"
 #include "meradb/table.h"
 #include "meradb/users.h"
 #include <memory>
@@ -163,6 +164,20 @@ private:
     Result execDropUser(const ast::DropUser&);
     Result execGrant(const ast::Grant&);
     Result execRevoke(const ast::Revoke&);
+    Result execCreateTrigger(const ast::CreateTrigger&);
+    Result execDropTrigger(const ast::DropTrigger&);
+
+    // Trigger / procedure bodies (Design decisions D5). `newRow`/`oldRow` are plain
+    // {column: value} dicts, independent of any Scope's "table.col" aliasing.
+    void fireTriggers(const std::string& timing, const std::string& event, const std::string& table,
+                      const Row* newRow, const Row* oldRow);
+    // Parse `bodyText` fresh, substitute, run each statement through executeStatement
+    // (so it takes the lock, re-checks privileges and can fire further triggers).
+    void runBody(const std::string& bodyText, const RefReplacer& replace, std::vector<Result>* results);
+    static Row rowDict(const TableSchema& schema, const std::vector<Value>& values);
+
+    static constexpr int kMaxBodyDepth = 32;
+    int bodyDepth_ = 0;  // trigger/procedure bodies currently executing on this session
 
     // ---- helpers ----
     void noTransaction(const std::string& command) const;

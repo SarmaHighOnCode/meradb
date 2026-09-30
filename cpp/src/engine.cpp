@@ -345,6 +345,8 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const DropUser*>(&stmt)) return execDropUser(*s);
     if (auto* s = dynamic_cast<const Grant*>(&stmt)) return execGrant(*s);
     if (auto* s = dynamic_cast<const Revoke*>(&stmt)) return execRevoke(*s);
+    if (auto* s = dynamic_cast<const CreateTrigger*>(&stmt)) return execCreateTrigger(*s);
+    if (auto* s = dynamic_cast<const DropTrigger*>(&stmt)) return execDropTrigger(*s);
     throw ExecutionError("Ye statement abhi supported nahi hai");
 }
 
@@ -428,6 +430,74 @@ Result Engine::execRevoke(const ast::Revoke& stmt) {
     instance_->users().revoke(stmt.user, currentDb, stmt.table, stmt.privileges);
     return messageResult("'" + stmt.user + "' se '" + currentDb + "." + stmt.table + "' par " +
                          joinStrs(stmt.privileges, ", ") + " ka adhikar wapas le liya");
+}
+
+// ============================================================================
+// triggers (fire once per affected row on DAALO/BADLO/MITAO)
+// ============================================================================
+
+Result Engine::execCreateTrigger(const ast::CreateTrigger& stmt) {
+    Catalog& cat = catalog();
+    if (cat.hasTrigger(stmt.name)) throw ExecutionError("Trigger '" + stmt.name + "' pehle se hai");
+    if (cat.find(stmt.table) == nullptr)
+        throw ExecutionError("Table '" + stmt.table + "' exist nahi karta -- trigger sirf ek REAL table par lag sakta hai");
+    parseScript(stmt.bodyText);  // sanity check: the body must parse cleanly
+    cat.addTrigger(stmt.name, stmt.timing, stmt.event, stmt.table, stmt.bodyText);
+    return messageResult("Trigger '" + stmt.name + "' ban gaya (" + stmt.timing + " " + stmt.event + " PAR " +
+                         stmt.table + ")");
+}
+
+Result Engine::execDropTrigger(const ast::DropTrigger& stmt) {
+    Catalog& cat = catalog();
+    if (!cat.hasTrigger(stmt.name)) throw ExecutionError("Trigger '" + stmt.name + "' exist nahi karta");
+    cat.removeTrigger(stmt.name);
+    return messageResult("Trigger '" + stmt.name + "' hata diya");
+}
+
+Row Engine::rowDict(const TableSchema& schema, const std::vector<Value>& values) {
+    Row row;
+    for (size_t i = 0; i < schema.columns.size() && i < values.size(); ++i) row[schema.columns[i].name] = values[i];
+    return row;
+}
+
+void Engine::runBody(const std::string& bodyText, const RefReplacer& replace, std::vector<Result>* results) {
+    struct DepthGuard {  // local class: same access rights as the enclosing member function
+        Engine& engine;
+        explicit DepthGuard(Engine& e) : engine(e) {
+            if (engine.bodyDepth_ >= kMaxBodyDepth)
+                throw ExecutionError(
+                    "Trigger/procedure bahut gehra chal raha hai (limit " + std::to_string(kMaxBodyDepth) +
+                    ") -- shayad koi trigger khud ko baar-baar chala raha hai");
+            ++engine.bodyDepth_;
+        }
+        ~DepthGuard() { --engine.bodyDepth_; }
+    } guard(*this);
+
+    auto statements = parseScript(bodyText);  // fresh parse every time, like Python
+    for (auto& stmt : statements) {
+        substituteStatementInPlace(*stmt, replace);
+        Result r = executeStatement(*stmt);
+        if (results) results->push_back(std::move(r));
+    }
+}
+
+void Engine::fireTriggers(const std::string& timing, const std::string& event, const std::string& table,
+                          const Row* newRow, const Row* oldRow) {
+    // Copies (Catalog::triggersFor): a body may run DDL that changes the catalog.
+    for (const auto& trigger : catalog().triggersFor(timing, event, table)) {
+        RefReplacer replace = [newRow, oldRow](const ast::ColumnRef& ref) -> std::optional<Value> {
+            if (ref.table && *ref.table == "naya" && newRow) {
+                auto it = newRow->find(ref.name);
+                if (it != newRow->end()) return it->second;
+            }
+            if (ref.table && *ref.table == "purana" && oldRow) {
+                auto it = oldRow->find(ref.name);
+                if (it != oldRow->end()) return it->second;
+            }
+            return std::nullopt;
+        };
+        runBody(trigger.bodyText, replace, nullptr);
+    }
 }
 
 void Engine::noTransaction(const std::string& command) const {
@@ -1171,7 +1241,11 @@ Result Engine::execInsert(const ast::Insert& stmt) {
     if (!stmt.onConflictUpdate.has_value()) {
         checkUnique(*t, newRows);
         checkFk(*t, newRows);
+        std::vector<Row> newDicts;
+        for (const auto& r : newRows) newDicts.push_back(rowDict(schema, r));
+        for (const auto& nr : newDicts) fireTriggers("PEHLE", "DAALO", stmt.table, &nr, nullptr);
         t->insertMany(newRows);
+        for (const auto& nr : newDicts) fireTriggers("BAAD", "DAALO", stmt.table, &nr, nullptr);
         return messageResult(std::to_string(newRows.size()) + " row(s) daal di");
     }
 
@@ -1188,6 +1262,9 @@ Result Engine::execInsert(const ast::Insert& stmt) {
     }
     checkUnique(*t, toInsert);
     checkFk(*t, toInsert);
+    std::vector<Row> insertDicts;
+    for (const auto& r : toInsert) insertDicts.push_back(rowDict(schema, r));
+    for (const auto& nr : insertDicts) fireTriggers("PEHLE", "DAALO", stmt.table, &nr, nullptr);
 
     std::vector<StoredRow> updatedTargets;
     std::vector<std::vector<Value>> updatedNewRows;
@@ -1213,10 +1290,20 @@ Result Engine::execInsert(const ast::Insert& stmt) {
         }
         checkUnique(*t, updatedNewRows, ignore);
         checkFk(*t, updatedNewRows);
+        // a TAKRAAV collision is really an UPDATE of an existing row, so it fires
+        // BADLO triggers (not DAALO) -- matches real upsert semantics
+        std::vector<Row> oldDicts, updatedDicts;
+        for (const auto& target : updatedTargets) oldDicts.push_back(rowDict(schema, target.second));
+        for (const auto& nv : updatedNewRows) updatedDicts.push_back(rowDict(schema, nv));
+        for (size_t i = 0; i < oldDicts.size(); ++i)
+            fireTriggers("PEHLE", "BADLO", stmt.table, &updatedDicts[i], &oldDicts[i]);
         t->deleteMany(updatedTargets);
         t->insertMany(updatedNewRows);
+        for (size_t i = 0; i < oldDicts.size(); ++i)
+            fireTriggers("BAAD", "BADLO", stmt.table, &updatedDicts[i], &oldDicts[i]);
     }
     t->insertMany(toInsert);
+    for (const auto& nr : insertDicts) fireTriggers("BAAD", "DAALO", stmt.table, &nr, nullptr);
     return messageResult(std::to_string(toInsert.size()) + " row(s) daali, " + std::to_string(updatedNewRows.size()) +
                          " row(s) TAKRAAV par badli");
 }
@@ -1279,8 +1366,15 @@ Result Engine::execUpdate(const ast::Update& stmt) {
     // An update = delete old versions + insert new versions. All deletes happen
     // first, so an index entry moved from one row to another (e.g. swapping two
     // ids) is never removed by mistake.
+    // Plain {column: value} dicts for trigger NAYA/PURANA substitution --
+    // independent of Scope's "table.col" aliasing, which triggers don't use.
+    std::vector<Row> oldDicts, newDicts;
+    for (const auto& target : targets) oldDicts.push_back(rowDict(schema, target.second));
+    for (const auto& nr : newRows) newDicts.push_back(rowDict(schema, nr));
+    for (size_t i = 0; i < oldDicts.size(); ++i) fireTriggers("PEHLE", "BADLO", stmt.table, &newDicts[i], &oldDicts[i]);
     t->deleteMany(targets);
     t->insertMany(newRows);
+    for (size_t i = 0; i < oldDicts.size(); ++i) fireTriggers("BAAD", "BADLO", stmt.table, &newDicts[i], &oldDicts[i]);
     return messageResult(std::to_string(newRows.size()) + " row(s) badal di");
 }
 
@@ -1312,7 +1406,11 @@ Result Engine::execDelete(const ast::Delete& stmt) {
     }
     if (!deletedByColumn.empty()) checkNoChildren(schema, deletedByColumn, exempt);
 
+    std::vector<Row> oldDicts;
+    for (const auto& d : doomed) oldDicts.push_back(rowDict(schema, d.second));
+    for (const auto& od : oldDicts) fireTriggers("PEHLE", "MITAO", stmt.table, nullptr, &od);
     t->deleteMany(doomed);
+    for (const auto& od : oldDicts) fireTriggers("BAAD", "MITAO", stmt.table, nullptr, &od);
     return messageResult(std::to_string(doomed.size()) + " row(s) mita di");
 }
 
