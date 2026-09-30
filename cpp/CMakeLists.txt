@@ -48,6 +48,7 @@ add_library(meradb_core STATIC
   src/sys_compat.cpp
   src/crypto.cpp
   src/users.cpp
+  src/substitute.cpp
   # source files are appended here by later tasks
 )
 if(NOT MSVC)
