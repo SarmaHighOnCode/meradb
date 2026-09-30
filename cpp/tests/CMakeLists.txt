@@ -32,6 +32,7 @@ add_executable(meradb_tests
   test_protocol.cpp
   test_engine_server_support.cpp
   test_server.cpp
+  test_client.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

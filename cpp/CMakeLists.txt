@@ -53,6 +53,7 @@ add_library(meradb_core STATIC
   src/pyjson.cpp
   src/protocol.cpp
   src/server.cpp
+  src/client.cpp
   # source files are appended here by later tasks
 )
 if(NOT MSVC)
