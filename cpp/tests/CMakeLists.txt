@@ -28,6 +28,8 @@ add_executable(meradb_tests
   test_crypto.cpp
   test_users.cpp
   test_net_compat.cpp
+  test_pyjson.cpp
+  test_protocol.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
