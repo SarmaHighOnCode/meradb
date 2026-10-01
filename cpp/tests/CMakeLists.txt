@@ -56,11 +56,21 @@ if(Python3_Interpreter_FOUND)
               ${CMAKE_CURRENT_SOURCE_DIR}/${_script}.mdb)
   endforeach()
   # The shipped examples exactly as checked out (CRLF on Windows): exercises universal-newline reading.
-  foreach(_example demo rdbms_lab_coverage)
-    add_test(NAME cross_engine_example_${_example}
-      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli>
-              ${CMAKE_CURRENT_SOURCE_DIR}/../../examples/${_example}.mdb)
+  set(_examples ${CMAKE_CURRENT_SOURCE_DIR}/../../examples)
+  foreach(_script demo rdbms_lab_coverage)
+    add_test(NAME cross_engine_full_${_script}
+      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> ${_examples}/${_script}.mdb)
+    add_test(NAME cross_engine_server_${_script}
+      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> --via-server ${_examples}/${_script}.mdb)
   endforeach()
+  foreach(_script demo_phase1 rdbms_lab_coverage_phase1)
+    add_test(NAME cross_engine_server_${_script}
+      COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> --via-server
+              ${CMAKE_CURRENT_SOURCE_DIR}/${_script}.mdb)
+  endforeach()
+  set_tests_properties(cross_engine_server_demo cross_engine_server_rdbms_lab_coverage
+                       cross_engine_server_demo_phase1 cross_engine_server_rdbms_lab_coverage_phase1
+                       PROPERTIES TIMEOUT 240)
   add_test(NAME cross_engine_missing_file
     COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> no_such_script.mdb)
   add_test(NAME cli_lifecycle
