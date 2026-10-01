@@ -3,7 +3,9 @@
 // A network client can send any query it likes. Python answers absurdly deep
 // input with a RecursionError; a C++ server would overflow its thread stack
 // and die. So the parser spends one unit of a per-statement budget on every
-// operator and nesting level (limit 400), statements nest at most 32 deep and
+// operator and nesting level (limit 400) and every recursive function checks
+// the stack bytes used (stack_guard.h, budget 512 KB; test_stack_guard.cpp
+// runs the deep shapes on a small stack), statements nest at most 32 deep and
 // views over views at most 32 deep. The work runs on a std::thread, because
 // that is where the server runs statements (a smaller stack than main's);
 // Catch2 assertions stay on the test's own thread.
@@ -45,25 +47,28 @@ std::string parseErrorOf(const std::string& sql) {
     return "";
 }
 
-const std::string kTooDeep = "Query bahut gehri (nested) hai (limit 400)";
+// Either bound may trip first, depending on the shape: the operator budget
+// ("limit 400") or the stack budget ("stack limit 512 KB").
+const std::string kTooDeepPrefix = "Query bahut gehri (nested) hai (";
+bool tooDeep(const std::string& message) { return message.rfind(kTooDeepPrefix, 0) == 0; }
 
 }  // namespace
 
 TEST_CASE("hardening the parser accepts nesting up to the budget and refuses more", "[hardening]") {
     auto r = onThread([] {
-        return std::vector<std::string>{parseErrorOf("DIKHAO * SE t JAHAN " + parens(300, "1 = 1")),
+        return std::vector<std::string>{parseErrorOf("DIKHAO * SE t JAHAN " + parens(100, "1 = 1")),
                                         parseErrorOf("DIKHAO * SE t JAHAN " + parens(401, "1 = 1")),
                                         parseErrorOf("DIKHAO * SE t JAHAN " + parens(100000, "1 = 1"))};
     });
     CHECK(r[0].empty());
-    CHECK(r[1] == kTooDeep);
-    CHECK(r[2] == kTooDeep);
+    CHECK(tooDeep(r[1]));
+    CHECK(tooDeep(r[2]));
 }
 
 TEST_CASE("hardening long operator chains are bounded too", "[hardening]") {
     auto r = onThread([] {
         return std::vector<std::string>{
-            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 350, " + ")),
+            parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 300, " + ")),
             parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 500, " + ")),
             parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("1", 100000, " + ")),
             parseErrorOf("DIKHAO * SE t JAHAN " + repeated("1 = 1", 500, " AUR ")),
@@ -73,13 +78,13 @@ TEST_CASE("hardening long operator chains are bounded too", "[hardening]") {
             parseErrorOf("DIKHAO * SE t JAHAN " + repeated("NAHI", 500, " ") + " x = 1"),
             parseErrorOf("DIKHAO * SE t JAHAN x = " + repeated("AGAR 1 = 1 TAB 1 WARNA", 500, " ") + " 0 " +
                          repeated("KHATAM", 500, " ")),
-            parseErrorOf("DIKHAO * SE t JAHAN x MEIN (" + repeated("1", 300, ", ") + ")"),
+            parseErrorOf("DIKHAO * SE t JAHAN x MEIN (" + repeated("1", 200, ", ") + ")"),
             parseErrorOf("DIKHAO * SE t JAHAN x MEIN (" + repeated("1", 5000, ", ") + ")")};
     });
     CHECK(r[0].empty());
-    for (size_t i = 1; i <= 8; ++i) CHECK(r[i] == kTooDeep);
+    for (size_t i = 1; i <= 8; ++i) CHECK(tooDeep(r[i]));
     CHECK(r[9].empty());       // an IN list becomes an OR chain, one level per item ...
-    CHECK(r[10] == kTooDeep);  // ... so it is bounded like any other chain (Python fails near 450)
+    CHECK(tooDeep(r[10]));  // ... so it is bounded like any other chain (Python fails near 450)
 }
 
 TEST_CASE("hardening set-operation chains and nested subqueries are bounded", "[hardening]") {
@@ -90,9 +95,9 @@ TEST_CASE("hardening set-operation chains and nested subqueries are bounded", "[
                                         parseErrorOf("DIKHAO * SE t " + repeated("SANYUKT DIKHAO * SE t", 50, " ")),
                                         parseErrorOf(nested)};
     });
-    CHECK(r[0] == kTooDeep);
+    CHECK(tooDeep(r[0]));
     CHECK(r[1].empty());
-    CHECK(r[2] == kTooDeep);
+    CHECK(tooDeep(r[2]));
 }
 
 TEST_CASE("hardening each statement has its own budget", "[hardening]") {
@@ -114,7 +119,7 @@ TEST_CASE("hardening SAMJHAO cannot be stacked without limit", "[hardening]") {
 
 TEST_CASE("hardening a million open parentheses fail fast", "[hardening]") {
     auto r = onThread([] { return parseErrorOf("DIKHAO * SE t JAHAN " + std::string(1000000, '(')); });
-    CHECK(r == kTooDeep);
+    CHECK(tooDeep(r));
 }
 
 TEST_CASE("hardening deep-but-legal expressions evaluate without exhausting the stack", "[hardening]") {
@@ -123,11 +128,11 @@ TEST_CASE("hardening deep-but-legal expressions evaluate without exhausting the 
         Engine e(dir.str());
         e.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1), (2)");
         std::vector<Result> out;
-        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + parens(390, "x = 1"))[0]);
-        out.push_back(e.runScript("DIKHAO * SE t JAHAN x = " + repeated("1", 390, " * "))[0]);
-        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + repeated("x > 0", 390, " AUR "))[0]);
-        out.push_back(e.runScript("SAMJHAO DIKHAO * SE t JAHAN " + parens(390, "x = 1"))[0]);
-        out.push_back(e.runScript("DIKHAO * SE t JAHAN x MEIN (DIKHAO x SE t JAHAN " + parens(390, "x = 2") + ")")[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + parens(80, "x = 1"))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN x = " + repeated("1", 200, " * "))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN " + repeated("x > 0", 200, " AUR "))[0]);
+        out.push_back(e.runScript("SAMJHAO DIKHAO * SE t JAHAN " + parens(80, "x = 1"))[0]);
+        out.push_back(e.runScript("DIKHAO * SE t JAHAN x MEIN (DIKHAO x SE t JAHAN " + parens(80, "x = 2") + ")")[0]);
         out.push_back(e.runScript("DIKHAO * SE t JAHAN " + parens(500, "x = 1"))[0]);
         return out;
     });
@@ -136,7 +141,7 @@ TEST_CASE("hardening deep-but-legal expressions evaluate without exhausting the 
     CHECK(r[1].rows.size() == 1);
     CHECK(r[2].rows.size() == 2);
     CHECK(r[4].rows.size() == 1);
-    CHECK(r[5].error.rfind("[Parser Galti] " + kTooDeep, 0) == 0);
+    CHECK(r[5].error.rfind("[Parser Galti] " + kTooDeepPrefix, 0) == 0);
 }
 
 TEST_CASE("hardening views over views are capped", "[hardening]") {

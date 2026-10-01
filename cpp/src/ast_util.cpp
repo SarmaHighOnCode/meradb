@@ -1,12 +1,14 @@
 // cpp/src/ast_util.cpp
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
+#include "meradb/stack_guard.h"
 
 namespace meradb {
 
 using namespace ast;
 
 std::unique_ptr<Expr> cloneExpr(const Expr& e) {
+    requireStack();
     if (const auto* lit = dynamic_cast<const Literal*>(&e)) {
         return std::make_unique<Literal>(lit->value);
     }
@@ -72,6 +74,7 @@ std::unique_ptr<Expr> cloneExpr(const Expr& e) {
 }
 
 std::unique_ptr<Select> cloneSelect(const Select& s) {
+    requireStack();
     auto out = std::make_unique<Select>();
     for (const auto& c : s.columns) out->columns.push_back(cloneExpr(*c));
     out->table = s.table;

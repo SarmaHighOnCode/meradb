@@ -1,6 +1,7 @@
 // cpp/src/evaluator.cpp -- mirrors meradb/evaluator.py
 #include "meradb/evaluator.h"
 #include "meradb/errors.h"
+#include "meradb/stack_guard.h"
 #include "meradb/pyvalue.h"
 #include <algorithm>
 #include <cmath>
@@ -304,6 +305,7 @@ Value evalOr(const BinaryOp& expr, const Row& row, const SubqueryResults* subque
 
 void columnRefsImpl(const Expr* expr, std::vector<const ColumnRef*>& out, bool skipAggregates) {
     if (expr == nullptr) return;
+    requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(expr)) {
         out.push_back(ref);
     } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
@@ -330,6 +332,7 @@ void columnRefsImpl(const Expr* expr, std::vector<const ColumnRef*>& out, bool s
 
 void columnRefNodesImpl(const Expr* expr, std::vector<const ColumnRef*>& out) {
     if (expr == nullptr) return;
+    requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(expr)) {
         out.push_back(ref);
     } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
@@ -346,6 +349,7 @@ void columnRefNodesImpl(const Expr* expr, std::vector<const ColumnRef*>& out) {
 
 void findAggregatesImpl(const Expr* expr, std::vector<const FuncCall*>& out) {
     if (expr == nullptr) return;
+    requireStack();
     if (auto* f = dynamic_cast<const FuncCall*>(expr)) {
         out.push_back(f);  // don't look inside: aggregates can't be nested
     } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
@@ -368,6 +372,7 @@ void findAggregatesImpl(const Expr* expr, std::vector<const FuncCall*>& out) {
 
 void findSubqueriesImpl(const Expr* expr, std::vector<const Expr*>& out) {
     if (expr == nullptr) return;
+    requireStack();
     if (dynamic_cast<const Subquery*>(expr)) {
         out.push_back(expr);
     } else if (auto* in = dynamic_cast<const InSubquery*>(expr)) {
@@ -402,6 +407,7 @@ void findSubqueriesImpl(const Expr* expr, std::vector<const Expr*>& out) {
 bool isTrue(const Value& v) { return isBool(v, true); }
 
 Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueries) {
+    requireStack();
     if (auto* lit = dynamic_cast<const Literal*>(&expr)) return lit->value;
 
     if (dynamic_cast<const Subquery*>(&expr) || dynamic_cast<const InSubquery*>(&expr)) {
@@ -528,6 +534,7 @@ std::string aggKey(const FuncCall& func) {
 }
 
 std::string exprLabel(const Expr& expr) {
+    requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) return ref->table ? *ref->table + "." + ref->name : ref->name;
     if (auto* lit = dynamic_cast<const Literal*>(&expr))
         return isText(lit->value) ? pyRepr(std::get<std::string>(lit->value.data)) : formatValue(lit->value);

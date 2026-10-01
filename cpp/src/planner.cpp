@@ -2,6 +2,7 @@
 #include "meradb/planner.h"
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
+#include "meradb/stack_guard.h"
 #include "meradb/evaluator.h"
 
 namespace meradb {
@@ -116,6 +117,7 @@ std::unique_ptr<Expr> bind(const Expr* expr, const Scope& scope) {
 }
 
 std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
+    requireStack();
     if (dynamic_cast<const Literal*>(&expr) || dynamic_cast<const Star*>(&expr)) return cloneExpr(expr);
     if (auto* c = dynamic_cast<const ColumnRef*>(&expr)) return boundRef(scope.resolve(*c));
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {

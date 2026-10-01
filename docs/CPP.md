@@ -180,9 +180,13 @@ These are deliberate and small.
 - **Parse-depth caps (hostile input)**: Python dies with `RecursionError` on a deeply nested
   query (about 110 nested parentheses). C++ limits ONE statement to 400 operator/nesting
   units (`Query bahut gehri (nested) hai (limit 400)`), statements nested inside statements
-  (trigger and procedure bodies, `SAMJHAO`) to 32, and views defined over views to 32. The
-  caps exist so that a network client cannot crash the server; ordinary scripts never come
-  near them.
+  (trigger and procedure bodies, `SAMJHAO`) to 32, and views defined over views to 32. On top
+  of those counts every recursive function (parser, evaluator, planner, subquery execution,
+  tree copies, JSON decoding) measures the stack bytes used since the entry point and refuses
+  past 512 KB (`Query bahut gehri (nested) hai (stack limit 512 KB)`); that is what keeps a
+  small thread stack (1 MB MSVC, 2 MB MinGW) safe, and it trips first for most shapes (about
+  150 nested parentheses, 95 nested subqueries). The caps exist so that a network client
+  cannot crash the server; ordinary scripts never come near them.
 - **Trigger/procedure recursion cap**: a trigger that (directly or indirectly) fires itself
   endlessly makes Python raise `RecursionError`; C++ stops at 32 levels with
   `Trigger/procedure bahut gehra chal raha hai (limit 32) -- shayad koi trigger khud ko

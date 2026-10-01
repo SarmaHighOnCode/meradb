@@ -28,11 +28,14 @@ private:
     // dies with RecursionError): every operator and every nesting level of ONE
     // statement spends one unit of a shared budget; a statement inside a
     // TRIGGER/PROCEDURE body gets a fresh budget, and statements nest 32 deep.
+    // Independently, guardStack() refuses once the stack bytes used pass the
+    // budget of stack_guard.h (the count alone does not bound stack use).
     static constexpr int kMaxNesting = 400;
     static constexpr int kMaxStatementNesting = 32;
     int nestingUsed_ = 0;
     int statementDepth_ = 0;
     void spend();
+    void guardStack();  // byte-based bound on recursion depth: see stack_guard.h
 
     const Token& peek(int offset = 0) const;
     const Token& advance();

@@ -35,6 +35,7 @@ add_executable(meradb_tests
   test_client.cpp
   test_client_server.cpp
   test_hardening.cpp
+  test_stack_guard.cpp
   test_server_hardening.cpp
   test_server_control.cpp
   test_cli.cpp

@@ -6,6 +6,7 @@
 #include "meradb/parser.h"
 #include "meradb/protocol.h"
 #include "meradb/pyvalue.h"
+#include "meradb/stack_guard.h"
 #include "meradb/storage.h"
 #include <algorithm>
 #include <chrono>
@@ -291,6 +292,7 @@ Result Engine::guarded(const ast::Statement& stmt) {
 }
 
 std::vector<Result> Engine::execute(const std::string& text) {
+    StackBase base;
     auto statements = parseScript(text);
     std::vector<Result> results;
     for (const auto& stmt : statements) results.push_back(guarded(*stmt));
@@ -298,6 +300,7 @@ std::vector<Result> Engine::execute(const std::string& text) {
 }
 
 std::vector<Result> Engine::runScript(const std::string& text) {
+    StackBase base;
     std::vector<std::unique_ptr<ast::Statement>> statements;
     try {
         statements = parseScript(text);
@@ -320,6 +323,8 @@ std::vector<Result> Engine::runScript(const std::string& text) {
 }
 
 Result Engine::executeStatement(const ast::Statement& stmt) {
+    StackBase base;
+    requireStack();
     // Hold the instance lock for the statement (waiting at most lockTimeoutSeconds).
     auto guard = acquireLock(instance_->lockTimeoutSeconds);
     if (!fs::is_directory(instance_->dbDir(currentDb))) {
@@ -524,6 +529,7 @@ void Engine::runBody(const std::string& bodyText, const RefReplacer& replace, st
         }
         ~DepthGuard() { --engine.bodyDepth_; }
     } guard(*this);
+    requireStack();
 
     auto statements = parseScript(bodyText);  // fresh parse every time, like Python
     for (auto& stmt : statements) {
@@ -1666,6 +1672,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
 std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub, const Row& outerRow,
                                          const std::vector<std::string>& outerKeys, bool& fired) {
     using namespace ast;
+    requireStack();
     auto rec = [&](const Expr* e) -> std::unique_ptr<Expr> {
         return e ? correlateExpr(*e, sub, outerRow, outerKeys, fired) : nullptr;
     };
@@ -1774,6 +1781,7 @@ std::unique_ptr<Table> Engine::resolveSource(const std::string& name) {
             }
             ~ViewDepth() { --engine.viewDepth_; }
         } viewDepth(*this, name);
+        requireStack();
         auto parsed = parseScript(cat.views.at(name));
         auto* viewStmt = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
         if (viewStmt == nullptr) throw ExecutionError("View '" + name + "' ki definition DIKHAO nahi hai");
@@ -2030,6 +2038,7 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
 }
 
 Result Engine::execSelect(const ast::Select& stmt) {
+    requireStack();
     auto planPtr = planSelect(stmt);
     SelectPlan& plan = *planPtr;
     const Scope& scope = *plan.scope;
@@ -2240,6 +2249,7 @@ Result Engine::execExplain(const ast::Explain& stmt) {
 
 // One side of a SetOp -- itself a Select or (recursively) a SetOp.
 std::vector<std::string> Engine::explainOne(const ast::Statement& stmt) {
+    requireStack();
     if (auto* setOp = dynamic_cast<const ast::SetOp*>(&stmt)) {
         std::vector<std::string> lines{setOp->op + " (" + setOpName(setOp->op) + ") of:"};
         for (const ast::Statement* side : {setOp->left.get(), setOp->right.get()})

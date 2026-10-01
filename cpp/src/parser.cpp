@@ -3,6 +3,7 @@
 #include "meradb/ast_util.h"
 #include "meradb/datatypes.h"
 #include "meradb/errors.h"
+#include "meradb/stack_guard.h"
 #include <cctype>
 
 namespace meradb {
@@ -51,6 +52,10 @@ void Parser::spend() {
         error("Query bahut gehri (nested) hai (limit " + std::to_string(kMaxNesting) + ")");
 }
 
+void Parser::guardStack() {
+    if (stackExhausted()) error(stackLimitMessage());
+}
+
 [[noreturn]] void Parser::error(const std::string& msg) const {
     // Python: f"{msg}, par {found} mila (line {line}, col {col})", where found
     // is "end of query" or repr(token value).
@@ -89,6 +94,7 @@ std::unique_ptr<Expr> Parser::parseAnd() {
     return left;
 }
 std::unique_ptr<Expr> Parser::parseNot() {
+    guardStack();
     if (matchKeyword("NAHI")) {
         spend();
         auto u = std::make_unique<UnaryOp>();
@@ -203,6 +209,7 @@ std::unique_ptr<Expr> Parser::parseTerm() {
     return left;
 }
 std::unique_ptr<Expr> Parser::parseUnary() {
+    guardStack();
     if (checkSymbol("-")) {
         advance();
         spend();
@@ -224,6 +231,7 @@ std::unique_ptr<Expr> Parser::parseUnary() {
 }
 
 std::unique_ptr<Expr> Parser::parsePrimary() {
+    guardStack();
     const Token& t = peek();
     if (t.type == TokenType::Number) {
         advance();
@@ -306,7 +314,10 @@ std::unique_ptr<CaseWhen> Parser::parseCase() {
     return cw;
 }
 
-std::unique_ptr<Expr> Parser::parseExpressionEntry() { return parseOr(); }
+std::unique_ptr<Expr> Parser::parseExpressionEntry() {
+    StackBase base;
+    return parseOr();
+}
 
 // ---------------------------------------------------------------------
 // Statement-level parsing (Task 7: DDL/database statements; Task 8: DML,
@@ -314,6 +325,7 @@ std::unique_ptr<Expr> Parser::parseExpressionEntry() { return parseOr(); }
 // _parse_statement and its per-keyword handlers.
 // ---------------------------------------------------------------------
 std::vector<std::unique_ptr<Statement>> Parser::parseScript() {
+    StackBase base;
     std::vector<std::unique_ptr<Statement>> result;
     while (peek().type != TokenType::Eof) {
         if (matchSymbol(";")) continue;  // allow empty statements like ';;'
@@ -340,6 +352,7 @@ std::unique_ptr<Statement> Parser::parseStatement() {
             parser.nestingUsed_ = savedBudget;
         }
     } scope(*this);
+    guardStack();
     return parseStatementBody();
 }
 

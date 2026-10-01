@@ -1,6 +1,7 @@
 // cpp/src/substitute.cpp
 #include "meradb/substitute.h"
 #include "meradb/errors.h"
+#include "meradb/stack_guard.h"
 
 namespace meradb {
 
@@ -8,6 +9,7 @@ using namespace ast;
 
 void substituteInPlace(std::unique_ptr<Expr>& expr, const RefReplacer& replace) {
     if (!expr) return;
+    requireStack();
     Expr* node = expr.get();
     if (dynamic_cast<Literal*>(node) || dynamic_cast<Star*>(node)) return;
     if (auto* ref = dynamic_cast<ColumnRef*>(node)) {

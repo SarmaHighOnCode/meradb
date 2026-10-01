@@ -1,6 +1,7 @@
 // cpp/src/pyjson.cpp
 #include "meradb/pyjson.h"
 #include "meradb/datatypes.h"
+#include "meradb/stack_guard.h"
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -173,6 +174,7 @@ std::string markBareConstants(const std::string& text) {
 }
 
 void restoreConstants(Json& j) {
+    if (stackExhausted()) throw ParseFailure("nesting bahut gehri hai");
     if (j.is_object()) {
         if (j.size() == 1 && j.begin().key() == "$float" && j.begin().value().is_string()) {
             const std::string word = j.begin().value().get<std::string>();
@@ -195,6 +197,7 @@ std::string dump(const Json& value) {
 }
 
 Json parse(const std::string& text) {
+    StackBase base;
     // json.loads: a leading BOM is an error, and a NUL byte is never valid JSON
     // (nlohmann's lexer would treat it as the end of the input and ignore the rest).
     if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) throw ParseFailure("Unexpected UTF-8 BOM (decode using utf-8-sig)");
