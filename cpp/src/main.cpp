@@ -1,10 +1,5 @@
 // meradb_cli: the `meradb` command (see cli.h).
 #include "meradb/cli.h"
-#include <string>
-#include <vector>
+#include "meradb/sys_compat.h"
 
-int main(int argc, char** argv) {
-    std::vector<std::string> args;
-    for (int i = 1; i < argc; ++i) args.push_back(argv[i]);
-    return meradb::cliMain(std::move(args));
-}
+int main(int argc, char** argv) { return meradb::cliMain(meradb::sys::commandLineArgs(argc, argv)); }

@@ -1,4 +1,5 @@
 // cpp/src/engine.cpp -- mirrors meradb/engine.py
+#include "meradb/fs_util.h"
 #include "meradb/engine.h"
 #include "meradb/aggregates.h"
 #include "meradb/ast_util.h"
@@ -41,19 +42,19 @@ void removeTreeQuietly(const fs::path& path) {
 void replacePath(const fs::path& from, const fs::path& to) {
     std::error_code ec;
     fs::rename(from, to, ec);
-    if (ec) throw StorageError("'" + from.string() + "' ko '" + to.string() + "' nahi bana paaye: " + ec.message());
+    if (ec) throw StorageError("'" + from.u8string() + "' ko '" + to.u8string() + "' nahi bana paaye: " + ec.message());
 }
 
 // The data folder must exist before anything (UserStore) is built on top of it.
 const std::string& ensureDir(const std::string& dir) {
-    fs::create_directories(dir);
+    fs::create_directories(pathOf(dir));
     return dir;
 }
 
 }  // namespace
 
 Instance::Instance(std::string dataDir, bool served)
-    : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(ensureDir(dataDir_)) {
+    : dataDir_(fs::absolute(pathOf(dataDir)).u8string()), users_(ensureDir(dataDir_)) {
     if (!served) {
         // Two processes must never write the same files: refuse a folder a server is serving.
         if (auto info = protocol::runningServer(dataDir_)) {
@@ -63,18 +64,18 @@ Instance::Instance(std::string dataDir, bool served)
         }
     }
     recovered_ = recover();
-    fs::create_directories(dbDir(DEFAULT_DATABASE));
+    fs::create_directories(pathOf(dbDir(DEFAULT_DATABASE)));
 }
 
-std::string Instance::dbDir(const std::string& name) const { return (fs::path(dataDir_) / name).string(); }
+std::string Instance::dbDir(const std::string& name) const { return (pathOf(dataDir_) / pathOf(name)).u8string(); }
 
 std::vector<std::string> Instance::databases() const {
     std::vector<std::string> names;
     // Error-code overloads: a concurrent DROP DATABASE may remove an entry mid-listing.
     std::error_code ec;
-    for (fs::directory_iterator it(dataDir_, ec), end; !ec && it != end; it.increment(ec)) {
+    for (fs::directory_iterator it(pathOf(dataDir_), ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
-        std::string name = it->path().filename().string();
+        std::string name = it->path().filename().u8string();
         if (!name.empty() && name[0] != '.' && it->is_directory(entryEc) && !entryEc) names.push_back(name);
     }
     std::sort(names.begin(), names.end());
@@ -108,28 +109,28 @@ void Instance::dropIndexCache(const std::string& db, const std::string& table) {
 }
 
 std::string Instance::snapshotPath(const std::string& db, const std::string& suffix) const {
-    return (fs::path(dataDir_) / SNAPSHOT_DIR / (db + suffix)).string();
+    return (pathOf(dataDir_) / SNAPSHOT_DIR / pathOf(db + suffix)).u8string();
 }
 
 void Instance::takeSnapshot(const std::string& db) {
-    fs::path tmp = snapshotPath(db, ".tmp");
+    fs::path tmp = pathOf(snapshotPath(db, ".tmp"));
     removeTreeQuietly(tmp);
     fs::create_directories(tmp.parent_path());
     std::error_code ec;
-    fs::copy(dbDir(db), tmp, fs::copy_options::recursive, ec);
+    fs::copy(pathOf(dbDir(db)), tmp, fs::copy_options::recursive, ec);
     if (ec) throw StorageError("Database '" + db + "' ki copy nahi ban paayi: " + ec.message());
-    replacePath(tmp, snapshotPath(db));  // only a COMPLETE copy ever gets the real name
+    replacePath(tmp, pathOf(snapshotPath(db)));  // only a COMPLETE copy ever gets the real name
 }
 
 void Instance::discardSnapshot(const std::string& db) {
-    fs::path done = snapshotPath(db, ".done");
-    replacePath(snapshotPath(db), done);  // <- the COMMIT POINT: after this, no rollback
+    fs::path done = pathOf(snapshotPath(db, ".done"));
+    replacePath(pathOf(snapshotPath(db)), done);  // <- the COMMIT POINT: after this, no rollback
     removeTreeQuietly(done);
 }
 
 void Instance::restoreSnapshot(const std::string& db) {
-    removeTreeQuietly(dbDir(db));
-    replacePath(snapshotPath(db), dbDir(db));
+    removeTreeQuietly(pathOf(dbDir(db)));
+    replacePath(pathOf(snapshotPath(db)), pathOf(dbDir(db)));
     forget(db);
 }
 
@@ -138,15 +139,15 @@ std::vector<std::string> Instance::recover() {
     // process died in the middle of a transaction that never reached PAKKA,
     // so it is rolled back. `.tmp` = SHURU never finished; `.done` = PAKKA
     // already happened -- both are just deleted.
-    fs::path root = fs::path(dataDir_) / SNAPSHOT_DIR;
+    fs::path root = pathOf(dataDir_) / SNAPSHOT_DIR;
     std::vector<std::string> recovered;
     if (!fs::is_directory(root)) return recovered;
     std::vector<std::string> names;
-    for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().string());
+    for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().u8string());
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
         if (endsWith(name, ".tmp") || endsWith(name, ".done")) {
-            removeTreeQuietly(root / name);
+            removeTreeQuietly(root / pathOf(name));
         } else {
             restoreSnapshot(name);
             recovered.push_back(name);
@@ -327,7 +328,7 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     requireStack();
     // Hold the instance lock for the statement (waiting at most lockTimeoutSeconds).
     auto guard = acquireLock(instance_->lockTimeoutSeconds);
-    if (!fs::is_directory(instance_->dbDir(currentDb))) {
+    if (!fs::is_directory(pathOf(instance_->dbDir(currentDb)))) {
         std::string gone = currentDb;
         currentDb = DEFAULT_DATABASE;
         throw ExecutionError("Database '" + gone + "' ab exist nahi karta. Ab '" + DEFAULT_DATABASE + "' use ho raha hai.");
@@ -639,7 +640,7 @@ void Engine::noTransaction(const std::string& command) const {
 
 Result Engine::execCreateDatabase(const ast::CreateDatabase& stmt) {
     noTransaction("BANAO DATABASE");
-    fs::path path = instance_->dbDir(stmt.name);
+    fs::path path = pathOf(instance_->dbDir(stmt.name));
     if (fs::is_directory(path)) throw ExecutionError("Database '" + stmt.name + "' pehle se hai");
     fs::create_directories(path);
     return messageResult("Database '" + stmt.name + "' ban gaya");
@@ -649,7 +650,7 @@ Result Engine::execDropDatabase(const ast::DropDatabase& stmt) {
     noTransaction("HATAO DATABASE");
     if (stmt.name == DEFAULT_DATABASE)
         throw ExecutionError(std::string("'") + DEFAULT_DATABASE + "' default database hai, use hata nahi sakte");
-    fs::path path = instance_->dbDir(stmt.name);
+    fs::path path = pathOf(instance_->dbDir(stmt.name));
     if (!fs::is_directory(path)) throw ExecutionError("Database '" + stmt.name + "' exist nahi karta");
     std::error_code ec;
     fs::remove_all(path, ec);
@@ -661,7 +662,7 @@ Result Engine::execDropDatabase(const ast::DropDatabase& stmt) {
 
 Result Engine::execUseDatabase(const ast::UseDatabase& stmt) {
     noTransaction("ISTEMAL");
-    if (!fs::is_directory(instance_->dbDir(stmt.name)))
+    if (!fs::is_directory(pathOf(instance_->dbDir(stmt.name))))
         throw ExecutionError("Database '" + stmt.name + "' exist nahi karta");
     currentDb = stmt.name;
     return messageResult("Ab database '" + stmt.name + "' istemal ho raha hai");
@@ -916,10 +917,10 @@ Result Engine::execTruncateTable(const ast::TruncateTable& stmt) {
 
 Result Engine::execCompactTable(const ast::CompactTable& stmt) {
     auto t = table(stmt.name);
-    auto before = static_cast<int64_t>(fs::file_size(t->heap().path()));
+    auto before = static_cast<int64_t>(fs::file_size(pathOf(t->heap().path())));
     t->heap().compact();
     t->invalidateIndexes();  // compaction moves rows, so every row id changed
-    auto after = static_cast<int64_t>(fs::file_size(t->heap().path()));
+    auto after = static_cast<int64_t>(fs::file_size(pathOf(t->heap().path())));
     return messageResult("Table '" + stmt.name + "' sikod diya: " + std::to_string(before) + " -> " +
                          std::to_string(after) + " bytes (" + std::to_string(before - after) + " bytes bache)");
 }
@@ -1101,7 +1102,7 @@ Result Engine::execRenameTable(const ast::RenameTable& stmt) {
 
     // the row DATA doesn't change, only the file's name -- a rename is atomic
     std::error_code ec;
-    fs::rename(cat.tablePath(stmt.table), cat.tablePath(stmt.newName), ec);
+    fs::rename(pathOf(cat.tablePath(stmt.table)), pathOf(cat.tablePath(stmt.newName)), ec);
     if (ec) throw StorageError("Table file ka naam badal nahi paaye: " + ec.message());
     cat.tables.erase(stmt.table);
     schema.name = stmt.newName;

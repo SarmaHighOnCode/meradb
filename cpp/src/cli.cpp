@@ -108,6 +108,68 @@ std::string subcommandUsage(const std::string& command) {
 
 const char* kTopUsage = "usage: meradb [-h] [--version] COMMAND ...\n";
 
+// argparse lays option help out in a column starting at 24, wrapped to the terminal width (80) minus
+// 2, i.e. 54 characters of help text per line. Like textwrap it breaks at spaces and chops a word
+// that is longer than a whole line. (Python also breaks after a hyphen inside a word; not reproduced.)
+std::string wrapHelp(const std::string& text, std::size_t width) {
+    std::vector<std::string> lines(1);
+    std::istringstream words(text);
+    std::string word;
+    while (words >> word) {
+        std::string& line = lines.back();
+        if (!line.empty() && line.size() + 1 + word.size() <= width) {
+            line += " " + word;
+            continue;
+        }
+        if (!line.empty()) lines.emplace_back();
+        while (word.size() > width) {
+            lines.back() = word.substr(0, width);
+            lines.emplace_back();
+            word.erase(0, width);
+        }
+        lines.back() = word;
+    }
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        out += (i == 0 ? "  -D DATA, --data DATA  " : std::string(24, ' ')) + lines[i] + "\n";
+    }
+    return out;
+}
+
+// What `python -m meradb COMMAND --help` prints at 80 columns (COLUMNS is not consulted): the usage
+// lines, then argparse's option list. The data folder's default is the one this process would use.
+std::string subcommandHelp(const std::string& command, const std::string& dataDir) {
+    const bool server = command == "server" || command == "start";
+    const bool client = command == "shell" || command == "workbench" || command == "run";
+    std::string out = subcommandUsage(command) + "\n";
+    if (command == "run") out += "positional arguments:\n  files                 script files\n\n";
+    out += "options:\n";
+    out += "  -h, --help            show this help message and exit\n";
+    out += wrapHelp("data folder (default: " + dataDir + ", ya MERADB_DATA)", 54);
+    if (server) {
+        out += "  --host HOST           kis address par suno (default 127.0.0.1; LAN ke liye\n"
+               "                        0.0.0.0)\n"
+               "  --port PORT           TCP port (default 6372, ya MERADB_PORT)\n"
+               "  --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)\n"
+               "  -v, --verbose         har query log karo\n";
+    } else {
+        if (client) {
+            out += "  -H HOST, --host HOST  server ka address (default 127.0.0.1, ya MERADB_HOST)\n"
+                   "  -p PORT, --port PORT  server ka port (default 6372, ya MERADB_PORT)\n"
+                   "  -d DATABASE, --database DATABASE\n"
+                   "                        shuru mein ye database istemal karo\n";
+        }
+        out += "  -W, --password        password poocho (ya MERADB_PASSWORD)\n";
+        if (command == "stop") out += "  --force               agar normal shutdown na ho to process kill karo\n";
+        if (client) {
+            out += "  -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --\n"
+                   "                        privileges ke saath, server-wide password ki jagah\n"
+                   "  --local               server ke bina, seedha data folder kholo\n";
+        }
+    }
+    return out;
+}
+
 // "-p/--port" style name argparse puts into "argument ...: ..." messages.
 std::string optionDisplayName(const std::string& name, bool isServer) {
     if (name == "-D" || name == "--data") return "-D/--data";
@@ -365,7 +427,7 @@ int cliMain(std::vector<std::string> argv) {
     CliArgs args = parseCliArgs(std::move(argv));
     if (args.showHelp) {
         if (args.command.empty()) std::cout << kUsage;
-        else std::cout << subcommandUsage(args.command);  // the full per-command option list is Python's argparse text
+        else std::cout << subcommandHelp(args.command, protocol::defaultDataDir());
         return 0;
     }
     if (args.showVersion) {

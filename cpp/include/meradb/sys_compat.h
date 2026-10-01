@@ -36,6 +36,11 @@ std::string homeDir();
 // value removes it on Windows and leaves it empty elsewhere; getEnv callers treat both alike.
 void setEnv(const std::string& name, const std::string& value);
 
+// The command-line arguments after the program name, as UTF-8. On Windows they come from the
+// wide command line (the narrow argv is in the ANSI code page and loses non-ASCII text);
+// elsewhere argv is used as it is.
+std::vector<std::string> commandLineArgs(int argc, char** argv);
+
 // Reads one line from the terminal WITHOUT echoing it (a password prompt, like
 // getpass). The prompt goes to stderr. When stdin is not a terminal the line is
 // simply read.

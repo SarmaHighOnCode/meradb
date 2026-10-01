@@ -1,4 +1,5 @@
 // cpp/src/protocol.cpp
+#include "meradb/fs_util.h"
 #include "meradb/protocol.h"
 #include "meradb/errors.h"
 #include "meradb/sys_compat.h"
@@ -170,8 +171,8 @@ std::string defaultDataDirFrom(const std::optional<std::string>& meradbData,
     if (meradbData && !meradbData->empty()) return *meradbData;
     std::string base;
     if (windows && localAppData && !localAppData->empty()) base = *localAppData;
-    if (base.empty()) base = (fs::path(home) / ".local" / "share").string();
-    return (fs::path(base) / "MeraDB" / "data").string();
+    if (base.empty()) base = (pathOf(home) / ".local" / "share").u8string();
+    return (pathOf(base) / "MeraDB" / "data").u8string();
 }
 
 std::string defaultDataDir() {
@@ -183,10 +184,10 @@ std::string defaultDataDir() {
     return defaultDataDirFrom(sys::getEnv("MERADB_DATA"), sys::getEnv("LOCALAPPDATA"), sys::homeDir(), windows);
 }
 
-std::string pidFilePath(const std::string& dataDir) { return (fs::path(dataDir) / kPidFile).string(); }
+std::string pidFilePath(const std::string& dataDir) { return (pathOf(dataDir) / kPidFile).u8string(); }
 
 std::optional<Json> readPidFile(const std::string& dataDir) {
-    std::ifstream file(pidFilePath(dataDir), std::ios::binary);
+    std::ifstream file(pathOf(pidFilePath(dataDir)), std::ios::binary);
     if (!file) return std::nullopt;
     std::ostringstream text;
     text << file.rdbuf();
@@ -201,7 +202,7 @@ std::optional<Json> readPidFile(const std::string& dataDir) {
 }
 
 void writePidFile(const std::string& dataDir, const Json& info) {
-    std::ofstream file(pidFilePath(dataDir), std::ios::binary | std::ios::trunc);
+    std::ofstream file(pathOf(pidFilePath(dataDir)), std::ios::binary | std::ios::trunc);
     if (!file) throw StorageError("meradb.pid likh nahi paaye: " + pidFilePath(dataDir));
     file << info.dump(2, ' ', true);  // json.dump(info, f, indent=2): no trailing newline
     if (!file) throw StorageError("meradb.pid likh nahi paaye: " + pidFilePath(dataDir));
@@ -212,7 +213,7 @@ void removePidFile(const std::string& dataDir, std::int64_t pid) {
     if (info && info->contains("pid") && info->at("pid").is_number_integer() &&
         info->at("pid").get<std::int64_t>() == pid) {
         std::error_code ec;
-        fs::remove(pidFilePath(dataDir), ec);
+        fs::remove(pathOf(pidFilePath(dataDir)), ec);
     }
 }
 

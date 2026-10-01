@@ -4,6 +4,7 @@
 #include "meradb/errors.h"
 #include "meradb/protocol.h"
 #include "meradb/sys_compat.h"
+#include "golden_help.h"
 #include "server_fixture.h"
 #include <filesystem>
 #include <fstream>
@@ -258,4 +259,25 @@ TEST_CASE("cli shell and workbench say they are not here yet", "[cli]") {
     CHECK(cliMain({"shell"}) == 1);
     CHECK(cliMain({"workbench"}) == 1);
     CHECK(capture.err().find("abhi C++ version mein nahi hai") != std::string::npos);
+}
+
+TEST_CASE("cli each subcommand's --help matches argparse's text", "[cli]") {
+    // golden_help.h holds `python -m meradb COMMAND --help` at COLUMNS=80 (gen_help_golden.py); the
+    // data folder's default comes from MERADB_DATA, a short one and a long one that wraps.
+    CleanEnv env;
+    int count = 0;
+    const golden_help::Case* cases = golden_help::cases(count);
+    REQUIRE(count == 14);
+    for (int i = 0; i < count; ++i) {
+        INFO(cases[i].command << " with data folder " << cases[i].dataDir);
+        sys::setEnv("MERADB_DATA", cases[i].dataDir);
+        Capture capture;
+        CHECK(cliMain({cases[i].command, "--help"}) == 0);
+        CHECK(capture.out() == cases[i].text);
+        CHECK(capture.err().empty());
+    }
+    sys::setEnv("MERADB_DATA", "/srv/mdb");
+    Capture capture;
+    CHECK(cliMain({"tui", "-h"}) == 0);  // the alias prints as the workbench, like Python
+    CHECK(capture.out().rfind("usage: meradb workbench [-h]", 0) == 0);
 }

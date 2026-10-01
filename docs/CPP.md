@@ -200,6 +200,15 @@ These are deliberate and small.
   Arithmetic that overflows 64 bits is reported as an error instead of producing a big number.
 - **Command-line abbreviations**: Python's `argparse` accepts unambiguous abbreviations of long
   options (`--dat` for `--data`); the C++ command line requires the full option name.
+- **`--help` layout**: each subcommand prints argparse's text (usage, options with their help
+  texts and defaults) laid out for an 80-column terminal. Python re-wraps to `COLUMNS`; C++
+  always uses 80, and does not break a long data-folder name after a hyphen the way
+  `textwrap` does.
+- **Non-ASCII arguments and environment (Windows)**: the command line and environment values
+  are read through the wide Windows API and handled as UTF-8, so `--data` folders, script
+  names and `MERADB_*` values with accented letters work as in Python. Unlike a MinGW
+  program's usual behaviour, `*.mdb` on the command line is not expanded by the program
+  (neither does Python); the shell does it, if at all.
 - **Server shutdown**: stopping the server rolls back every open transaction cleanly; Python's
   daemon threads die with the process and rely on crash recovery at the next start. The data
   folder ends up the same. A session blocked sending a reply to a client that has stopped

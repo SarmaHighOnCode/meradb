@@ -1,4 +1,5 @@
 // cpp/src/server.cpp
+#include "meradb/fs_util.h"
 #include "meradb/server.h"
 #include "meradb/ast.h"
 #include "meradb/datatypes.h"
@@ -395,9 +396,9 @@ std::string plainText(const Json& j) { return j.is_string() ? j.get<std::string>
 
 int serve(ServerOptions options) {
     namespace fs = std::filesystem;
-    options.dataDir = fs::absolute(fs::path(options.dataDir)).string();
+    options.dataDir = fs::absolute(pathOf(options.dataDir)).u8string();
     std::error_code ec;
-    if (fs::is_directory(options.dataDir, ec)) {
+    if (fs::is_directory(pathOf(options.dataDir), ec)) {
         if (auto existing = protocol::runningServer(options.dataDir)) {
             std::cerr << "Is data folder ka server pehle se chal raha hai: "
                       << plainText(existing->value("host", Json(protocol::kDefaultHost))) << ":"

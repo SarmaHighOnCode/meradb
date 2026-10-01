@@ -67,7 +67,7 @@ target_include_directories(meradb_core PUBLIC include)
 target_link_libraries(meradb_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)
   # Winsock + the OS random generator; keep windows.h lean and min/max macros away.
-  target_link_libraries(meradb_core PUBLIC ws2_32 bcrypt)
+  target_link_libraries(meradb_core PUBLIC ws2_32 bcrypt shell32)
   target_compile_definitions(meradb_core PUBLIC _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 

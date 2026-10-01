@@ -1,4 +1,5 @@
 // cpp/src/server_control.cpp -- see server_control.h.
+#include "meradb/fs_util.h"
 #include "meradb/server_control.h"
 #include "meradb/client.h"
 #include "meradb/errors.h"
@@ -28,7 +29,7 @@ std::string absolutePath(const std::string& path) {
 bool isWildcardHost(const std::string& host) { return host == "0.0.0.0" || host == "::" || host.empty(); }
 
 std::string tailOf(const std::string& path, std::size_t lines = 15) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(pathOf(path), std::ios::binary);
     if (!in) return "(log nahi mila)";
     std::vector<std::string> all;
     std::string line;

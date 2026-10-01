@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
+#include <shellapi.h>
 #else
 #include <fcntl.h>
 #include <signal.h>
@@ -29,14 +30,39 @@
 
 namespace meradb::sys {
 
+#ifdef _WIN32
+namespace {
+
+std::wstring widen(const std::string& text) {
+    if (text.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &out[0], n);
+    return out;
+}
+
+std::string narrow(const std::wstring& text) {
+    if (text.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<std::size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &out[0], n, nullptr, nullptr);
+    return out;
+}
+
+}  // namespace
+#endif
+
 std::optional<std::string> getEnv(const std::string& name) {
-#if defined(_MSC_VER)
-    char* buffer = nullptr;
-    std::size_t length = 0;
-    if (_dupenv_s(&buffer, &length, name.c_str()) != 0 || buffer == nullptr) return std::nullopt;
-    std::string value(buffer);
-    std::free(buffer);
-    return value;
+#ifdef _WIN32
+    // The wide API: the narrow one hands back the ANSI code page, not UTF-8.
+    const std::wstring wideName = widen(name);
+    SetLastError(0);
+    DWORD size = GetEnvironmentVariableW(wideName.c_str(), nullptr, 0);
+    if (size == 0) return GetLastError() == ERROR_ENVVAR_NOT_FOUND ? std::nullopt : std::optional<std::string>("");
+    std::wstring value(size, L'\0');
+    DWORD length = GetEnvironmentVariableW(wideName.c_str(), &value[0], size);
+    value.resize(length);
+    return narrow(value);
 #else
     const char* value = std::getenv(name.c_str());
     if (value == nullptr) return std::nullopt;
@@ -120,10 +146,27 @@ std::string homeDir() {
 
 void setEnv(const std::string& name, const std::string& value) {
 #ifdef _WIN32
-    _putenv_s(name.c_str(), value.c_str());
+    SetEnvironmentVariableW(widen(name).c_str(), value.empty() ? nullptr : widen(value).c_str());
 #else
     ::setenv(name.c_str(), value.c_str(), 1);
 #endif
+}
+
+std::vector<std::string> commandLineArgs(int argc, char** argv) {
+    std::vector<std::string> args;
+#ifdef _WIN32
+    // argv is in the ANSI code page; the wide command line is lossless.
+    (void)argc;
+    (void)argv;
+    int count = 0;
+    if (LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count)) {
+        for (int i = 1; i < count; ++i) args.push_back(narrow(wide[i]));
+        LocalFree(wide);
+        return args;
+    }
+#endif
+    for (int i = 1; i < argc; ++i) args.push_back(argv[i]);
+    return args;
 }
 
 std::string readHidden(const std::string& prompt) {
@@ -159,22 +202,6 @@ std::string readHidden(const std::string& prompt) {
 
 #ifdef _WIN32
 namespace {
-
-std::wstring widen(const std::string& text) {
-    if (text.empty()) return std::wstring();
-    int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    std::wstring out(static_cast<std::size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &out[0], n);
-    return out;
-}
-
-std::string narrow(const std::wstring& text) {
-    if (text.empty()) return std::string();
-    int n = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<std::size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &out[0], n, nullptr, nullptr);
-    return out;
-}
 
 // The rules of CommandLineToArgvW, run backwards.
 std::wstring quoteArgument(const std::wstring& arg) {

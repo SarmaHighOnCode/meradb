@@ -1,4 +1,5 @@
 // cpp/src/catalog.cpp
+#include "meradb/fs_util.h"
 #include "meradb/catalog.h"
 #include "meradb/errors.h"
 #include <cmath>
@@ -215,7 +216,7 @@ TableSchema TableSchema::fromJson(const json& j) {
 // ---------------------------------------------------------------- Catalog
 
 Catalog::Catalog(std::string dbDir) : dbDir_(std::move(dbDir)) {
-    path_ = (fs::path(dbDir_) / kFileName).string();
+    path_ = (pathOf(dbDir_) / kFileName).u8string();
     load();
 }
 
@@ -224,9 +225,9 @@ void Catalog::load() {
     views.clear();
     triggers = json::object();
     procedures = json::object();
-    if (!fs::exists(path_)) return;  // fresh database: empty catalog
+    if (!fs::exists(pathOf(path_))) return;  // fresh database: empty catalog
 
-    std::ifstream in(path_);
+    std::ifstream in(pathOf(path_));
     if (!in) throw StorageError(path_ + " khul nahi paayi");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     json data;
@@ -289,19 +290,19 @@ void Catalog::save() {
     }
     std::string tmp = path_ + ".tmp";
     {
-        std::ofstream out(tmp);
+        std::ofstream out(pathOf(tmp));
         if (!out) throw StorageError(tmp + " likh nahi paaye");
         out << text;
         out.flush();
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
     std::error_code ec;
-    fs::rename(tmp, path_, ec);
+    fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " save nahi hua: " + ec.message());
 }
 
 std::string Catalog::tablePath(const std::string& table) const {
-    return (fs::path(dbDir_) / (table + ".tbl")).string();
+    return (pathOf(dbDir_) / pathOf(table + ".tbl")).u8string();
 }
 
 TableSchema& Catalog::get(const std::string& table) {

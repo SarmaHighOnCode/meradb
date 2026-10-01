@@ -1,4 +1,5 @@
 // cpp/src/storage.cpp
+#include "meradb/fs_util.h"
 #include "meradb/storage.h"
 #include "meradb/errors.h"
 #include <algorithm>
@@ -60,7 +61,7 @@ void appendRecord(std::vector<uint8_t>& out, const std::vector<uint8_t>& payload
 }
 
 std::vector<uint8_t> readWholeFile(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(pathOf(path), std::ios::binary);
     if (!in) throw StorageError(path + " khul nahi paayi");
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
@@ -170,7 +171,7 @@ std::vector<Value> decodeRow(const std::vector<uint8_t>& payload, const std::vec
 HeapFile::HeapFile(std::string path) : path_(std::move(path)) {}
 
 void HeapFile::create() {
-    std::ofstream out(path_, std::ios::binary | std::ios::trunc);
+    std::ofstream out(pathOf(path_), std::ios::binary | std::ios::trunc);
     if (!out) throw StorageError(path_ + " ban nahi paayi");
     out.write(kMagic, static_cast<std::streamsize>(kMagicLen));
     if (!out) throw StorageError(path_ + " likh nahi paaye");
@@ -178,7 +179,7 @@ void HeapFile::create() {
 
 void HeapFile::destroy() {
     std::error_code ec;
-    fs::remove(path_, ec);
+    fs::remove(pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " hata nahi paaye: " + ec.message());
 }
 
@@ -189,7 +190,7 @@ int64_t HeapFile::insert(const std::vector<uint8_t>& payload) { return insertMan
 std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>>& payloads) {
     // One open + one write for the whole batch (Python's insert_many does the same).
     std::error_code ec;
-    auto size = fs::file_size(path_, ec);
+    auto size = fs::file_size(pathOf(path_), ec);
     int64_t offset = ec ? 0 : static_cast<int64_t>(size);  // "ab" creates a missing file
 
     std::vector<int64_t> offsets;
@@ -199,7 +200,7 @@ std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>
         offsets.push_back(offset + static_cast<int64_t>(buffer.size()));
         appendRecord(buffer, payload);
     }
-    std::ofstream out(path_, std::ios::binary | std::ios::app);
+    std::ofstream out(pathOf(path_), std::ios::binary | std::ios::app);
     if (!out) throw StorageError(path_ + " khul nahi paayi");
     writeBytes(out, buffer);
     out.flush();
@@ -210,7 +211,7 @@ std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>
 void HeapFile::deleteOne(int64_t offset) { deleteMany({offset}); }
 
 void HeapFile::deleteMany(const std::vector<int64_t>& offsets) {
-    std::fstream f(path_, std::ios::binary | std::ios::in | std::ios::out);
+    std::fstream f(pathOf(path_), std::ios::binary | std::ios::in | std::ios::out);
     if (!f) throw StorageError(path_ + " khul nahi paayi");
     const char tombstone = static_cast<char>(kStatusDeleted);
     for (auto offset : offsets) {
@@ -222,7 +223,7 @@ void HeapFile::deleteMany(const std::vector<int64_t>& offsets) {
 }
 
 std::optional<std::vector<uint8_t>> HeapFile::read(int64_t offset) const {
-    std::ifstream f(path_, std::ios::binary);
+    std::ifstream f(pathOf(path_), std::ios::binary);
     if (!f) throw StorageError(path_ + " khul nahi paayi");
     uint8_t header[kRecordHeader];
     if (offset >= 0) {
@@ -277,14 +278,14 @@ void HeapFile::rewrite(const std::vector<std::vector<uint8_t>>& payloads) {
 
     std::string tmp = path_ + ".tmp";
     {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        std::ofstream out(pathOf(tmp), std::ios::binary | std::ios::trunc);
         if (!out) throw StorageError(tmp + " ban nahi paayi");
         writeBytes(out, buffer);
         out.flush();
         if (!out) throw StorageError(tmp + " mein likh nahi paaye");
     }
     std::error_code ec;
-    fs::rename(tmp, path_, ec);
+    fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " rewrite nahi hua: " + ec.message());
 }
 

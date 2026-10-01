@@ -1,4 +1,5 @@
 // cpp/src/users.cpp
+#include "meradb/fs_util.h"
 #include "meradb/users.h"
 #include "meradb/crypto.h"
 #include "meradb/errors.h"
@@ -46,11 +47,11 @@ ExecutionError noSuchUser(const std::string& name) { return ExecutionError("User
 
 }  // namespace
 
-UserStore::UserStore(std::string dataDir) : path_((fs::path(dataDir) / kFileName).string()) { load(); }
+UserStore::UserStore(std::string dataDir) : path_((pathOf(dataDir) / kFileName).u8string()) { load(); }
 
 void UserStore::load() {
-    if (!fs::exists(path_)) return;
-    std::ifstream in(path_, std::ios::binary);
+    if (!fs::exists(pathOf(path_))) return;
+    std::ifstream in(pathOf(path_), std::ios::binary);
     if (!in) throw StorageError(path_ + " khul nahi paayi");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     try {
@@ -70,17 +71,17 @@ void UserStore::saveLocked() {
     }
     std::string tmp = path_ + ".tmp";
     {
-        std::ofstream out(tmp);  // text mode on purpose: same line endings Python's open(..., "w") writes
+        std::ofstream out(pathOf(tmp));  // text mode on purpose: same line endings Python's open(..., "w") writes
         if (!out) throw StorageError(tmp + " likh nahi paaye");
         out << text;
         out.flush();
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
     std::error_code ec;
-    fs::rename(tmp, path_, ec);
+    fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) {
         std::error_code ignored;
-        fs::remove(tmp, ignored);  // don't leave a stale .tmp behind
+        fs::remove(pathOf(tmp), ignored);  // don't leave a stale .tmp behind
         throw StorageError(path_ + " save nahi hua: " + ec.message());
     }
 }
