@@ -1,5 +1,7 @@
 // cpp/src/net_compat.cpp
 #include "meradb/net_compat.h"
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstring>
@@ -14,7 +16,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -34,7 +36,7 @@ constexpr Native kBadNative = INVALID_SOCKET;
 int lastError() { return WSAGetLastError(); }
 void closeNative(Native s) { ::closesocket(s); }
 bool isTimeout(int e) { return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK; }
-bool isInterrupted(int) { return false; }
+bool isInterrupted(int e) { return e == WSAEINTR; }
 #else
 using Native = int;
 using SockLen = socklen_t;
@@ -68,6 +70,7 @@ void ensureInit() {
 }
 
 sockaddr_in resolveV4(const std::string& host, int port, bool passive) {
+    if (port < 0 || port > 65535) throw NetError("port 0-65535 ke beech hona chahiye");  // Python: "port must be 0-65535."
     addrinfo hints{};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -93,6 +96,16 @@ void setNonBlocking(Native s, bool on) {
 #endif
 }
 
+// A child process must not inherit sockets (no-op on Windows, where handles are not inherited by default).
+void setCloseOnExec(Native s) {
+#ifndef _WIN32
+    int flags = ::fcntl(s, F_GETFD, 0);
+    if (flags >= 0) ::fcntl(s, F_SETFD, flags | FD_CLOEXEC);
+#else
+    (void)s;
+#endif
+}
+
 void setNoDelay(Native s) {
     int one = 1;
     ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
@@ -106,26 +119,39 @@ timeval toTimeval(double seconds) {
     return tv;
 }
 
-// select() until the socket is readable (or, with `forWrite`, writable).
-// Failed connects show up in the "exceptional" set on Windows, so that set is
-// always watched and counts as "ready" (the caller then reads SO_ERROR).
+// Waits until the socket is readable (or, with `forWrite`, writable) or the
+// timeout passes. A failed connect shows up as an error/hangup condition and
+// counts as "ready" (the caller then reads SO_ERROR). A signal (EINTR) restarts
+// the wait with the time that is left. POSIX uses poll(), so a descriptor
+// number above FD_SETSIZE is fine; Windows uses select().
 bool waitReady(Native s, bool forWrite, double timeoutSeconds) {
-#ifndef _WIN32
-    if (s >= FD_SETSIZE) throw NetError("bahut zyada connections khule hain");
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::duration_cast<clock::duration>(
+                                             std::chrono::duration<double>(timeoutSeconds < 0 ? 0 : timeoutSeconds));
+    for (;;) {
+        double left = std::chrono::duration<double>(deadline - clock::now()).count();
+        if (left < 0) left = 0;
+#ifdef _WIN32
+        fd_set set;
+        fd_set except;
+        FD_ZERO(&set);
+        FD_ZERO(&except);
+        FD_SET(s, &set);
+        FD_SET(s, &except);
+        timeval tv = toTimeval(left);
+        int rc = ::select(0, forWrite ? nullptr : &set, forWrite ? &set : nullptr, &except, &tv);
+#else
+        pollfd pfd{};
+        pfd.fd = s;
+        pfd.events = forWrite ? POLLOUT : POLLIN;
+        int rc = ::poll(&pfd, 1, static_cast<int>(std::ceil(left * 1000.0)));
 #endif
-    fd_set set;
-    fd_set except;
-    FD_ZERO(&set);
-    FD_ZERO(&except);
-    FD_SET(s, &set);
-    FD_SET(s, &except);
-    timeval tv = toTimeval(timeoutSeconds < 0 ? 0 : timeoutSeconds);
-    int rc = ::select(static_cast<int>(s) + 1, forWrite ? nullptr : &set, forWrite ? &set : nullptr, &except, &tv);
-    if (rc < 0) {
-        if (isInterrupted(lastError())) return false;
-        throw NetError(errorText(lastError()));
+        if (rc < 0) {
+            if (isInterrupted(lastError())) continue;
+            throw NetError(errorText(lastError()));
+        }
+        return rc > 0;
     }
-    return rc > 0;
 }
 
 }  // namespace
@@ -185,7 +211,7 @@ std::size_t Socket::recvSome(char* buffer, std::size_t capacity) {
 void Socket::setReceiveTimeout(double seconds) {
     if (handle_ == kInvalid) return;
 #ifdef _WIN32
-    DWORD ms = seconds <= 0 ? 0 : static_cast<DWORD>(seconds * 1000.0);
+    DWORD ms = seconds <= 0 ? 0 : static_cast<DWORD>(std::max(1.0, seconds * 1000.0));  // 0 would mean "wait forever"
     ::setsockopt(toNative(handle_), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof ms);
 #else
     timeval tv = toTimeval(seconds <= 0 ? 0 : seconds);
@@ -229,6 +255,7 @@ Socket connectTo(const std::string& host, int port, double timeoutSeconds) {
     Native s = ::socket(AF_INET, SOCK_STREAM, 0);
     if (s == kBadNative) throw NetError(errorText(lastError()));
     Socket sock(static_cast<std::intptr_t>(s));  // owned (and closed on any throw) from here on
+    setCloseOnExec(s);
 
     setNonBlocking(s, true);
     if (::connect(s, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
@@ -256,6 +283,7 @@ Socket listenOn(const std::string& host, int port, int backlog) {
     Native s = ::socket(AF_INET, SOCK_STREAM, 0);
     if (s == kBadNative) throw NetError(errorText(lastError()));
     Socket sock(static_cast<std::intptr_t>(s));
+    setCloseOnExec(s);
 
     int one = 1;
 #ifdef _WIN32
@@ -265,6 +293,10 @@ Socket listenOn(const std::string& host, int port, int backlog) {
 #endif
     if (::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) throw NetError(errorText(lastError()));
     if (::listen(s, backlog) != 0) throw NetError(errorText(lastError()));
+    // Non-blocking, so accept() after a ready select/poll can never hang if the
+    // pending connection was aborted in between (acceptWithTimeout treats
+    // EWOULDBLOCK as "nothing yet").
+    setNonBlocking(s, true);
     return sock;
 }
 
@@ -282,6 +314,8 @@ Socket acceptWithTimeout(Socket& listener, double timeoutSeconds) {
         throw NetError(errorText(e));
     }
     Socket accepted(static_cast<std::intptr_t>(c));
+    setNonBlocking(c, false);  // Windows hands the listener's non-blocking mode on to accepted sockets
+    setCloseOnExec(c);
     setNoDelay(c);
     return accepted;
 }

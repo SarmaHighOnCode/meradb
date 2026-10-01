@@ -143,3 +143,15 @@ TEST_CASE("net_compat Socket is move-only and closes exactly once", "[net]") {
     CHECK_FALSE(b.valid());
     b.close();  // harmless
 }
+
+TEST_CASE("net listenOn and connectTo reject ports outside 0-65535", "[net]") {
+    CHECK_THROWS_AS(listenOn("127.0.0.1", 70000), NetError);
+    CHECK_THROWS_AS(listenOn("127.0.0.1", -1), NetError);
+    CHECK_THROWS_AS(connectTo("127.0.0.1", 65536, 0.5), NetError);
+    CHECK_THROWS_AS(connectTo("127.0.0.1", -5, 0.5), NetError);
+}
+
+TEST_CASE("net accept on an idle listener returns an invalid socket without blocking", "[net]") {
+    Socket listener = listenOn("127.0.0.1", 0);
+    for (int i = 0; i < 3; ++i) CHECK_FALSE(acceptWithTimeout(listener, 0.05).valid());
+}

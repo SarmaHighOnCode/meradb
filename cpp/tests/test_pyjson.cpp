@@ -83,6 +83,16 @@ TEST_CASE("pyjson rejects malformed and over-nested text", "[pyjson]") {
     CHECK_NOTHROW(parse(fine));
 }
 
+TEST_CASE("pyjson rejects a BOM and NUL bytes like json.loads", "[pyjson]") {
+    CHECK_THROWS_AS(parse("\xEF\xBB\xBF{\"a\":1}"), ParseFailure);
+    CHECK_THROWS_AS(parse("{\"a\":1}\xEF\xBB\xBF"), ParseFailure);
+    CHECK_THROWS_AS(parse(std::string("{\"a\":1}\0garbage", 15)), ParseFailure);
+    CHECK_THROWS_AS(parse(std::string("{\"a\":1}\0", 8)), ParseFailure);
+    CHECK_THROWS_AS(parse(std::string("\0{}", 3)), ParseFailure);
+    CHECK_THROWS_AS(parse(std::string("{\"a\":\"x\0y\"}", 11)), ParseFailure);
+    CHECK_NOTHROW(parse("{\"a\":\"\xEF\xBB\xBF\"}"));  // a BOM inside a string is fine
+}
+
 TEST_CASE("pyjson isValidUtf8 is strict", "[pyjson]") {
     CHECK(isValidUtf8(""));
     CHECK(isValidUtf8("h\xC3\xA9llo \xE4\xB8\x96 \xF0\x9F\x98\x80"));

@@ -195,6 +195,10 @@ std::string dump(const Json& value) {
 }
 
 Json parse(const std::string& text) {
+    // json.loads: a leading BOM is an error, and a NUL byte is never valid JSON
+    // (nlohmann's lexer would treat it as the end of the input and ignore the rest).
+    if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) throw ParseFailure("Unexpected UTF-8 BOM (decode using utf-8-sig)");
+    if (text.find('\0') != std::string::npos) throw ParseFailure("NUL byte JSON mein valid nahi hai");
     std::string marked = markBareConstants(text);
     Json result;
     try {

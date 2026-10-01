@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <vector>
 
 using namespace meradb;
 using namespace meradb::protocol;
@@ -183,6 +184,60 @@ TEST_CASE("protocol result decoding tolerates missing keys and rejects garbage",
     CHECK_THROWS_AS(resultFromJson(pyjson::parse("{\"message\": 5}")), ProtocolError);
 }
 
+TEST_CASE("protocol reader scans a huge unterminated line in linear time", "[protocol]") {
+    // The test build is unoptimised, so the JSON parse of a huge valid line is slow on its own; an
+    // oversize line exercises only the framing (chunk accumulation + newline search), which used to
+    // be quadratic (every 64 KB chunk re-scanned the whole buffer).
+    std::string blob(65u * 1024u * 1024u, 'a');
+    // Baseline: the bare cost of moving the same bytes through a plain recv loop.
+    double baseline = 0;
+    {
+        Pair q;
+        std::thread w([&] {
+            try {
+                q.client.sendAll(blob);
+            } catch (const net::NetError&) {
+            }
+            q.client.close();
+        });
+        std::vector<char> sink(65536);
+        auto t0 = std::chrono::steady_clock::now();
+        while (q.server.recvSome(sink.data(), sink.size()) > 0) {
+        }
+        baseline = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        w.join();
+    }
+    Pair p;
+    std::thread writer([&] {
+        try {
+            p.client.sendAll(blob);
+            p.client.sendAll("\n{\"ok\": true}\n");
+        } catch (const net::NetError&) {
+        }
+    });
+    MessageReader reader(p.server);
+    auto start = std::chrono::steady_clock::now();
+    CHECK_THROWS_AS(reader.receive(), ProtocolError);
+    double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    CHECK(seconds < baseline * 2 + 0.3);  // a quadratic rescan costs several times the transfer itself
+    auto next = reader.receive();  // the rest of the oversize line is dropped, the next message is fine
+    writer.join();
+    REQUIRE(next.has_value());
+    CHECK(next->at("ok") == true);
+}
+
+TEST_CASE("protocol reader reads a large valid message", "[protocol]") {
+    Pair p;
+    const std::size_t payload = 8u * 1024u * 1024u;
+    std::string line = "{\"x\": \"" + std::string(payload, 'a') + "\"}\n";
+    std::thread writer([&] { p.client.sendAll(line); });
+    MessageReader reader(p.server);
+    auto got = reader.receive();
+    writer.join();
+    REQUIRE(got.has_value());
+    CHECK(got->at("x").get<std::string>().size() == payload);
+}
+
 // ---- data folder and pid file ----
 
 TEST_CASE("protocol defaultDataDirFrom follows Python's default_data_dir", "[protocol]") {
@@ -231,6 +286,27 @@ TEST_CASE("protocol readPidFile ignores junk", "[protocol]") {
     CHECK_FALSE(readPidFile(dir.str()).has_value());
     std::ofstream(pidFilePath(dir.str())) << "[1, 2]";
     CHECK_FALSE(readPidFile(dir.str()).has_value());
+    std::ofstream(pidFilePath(dir.str())) << "";
+    CHECK_FALSE(readPidFile(dir.str()).has_value());
+    std::ofstream(pidFilePath(dir.str())) << "{}";  // Python: `if not info` -> no server
+    CHECK_FALSE(readPidFile(dir.str()).has_value());
+}
+
+TEST_CASE("protocol runningServer ignores empty and out-of-range pid files", "[protocol]") {
+    meradb_test::TempDir dir;
+    net::Socket listener;  // ideally something listens on the default port; if it is taken already, that serves too
+    try {
+        listener = net::listenOn("127.0.0.1", protocol::kDefaultPort);
+    } catch (const net::NetError&) {
+    }
+    std::ofstream(pidFilePath(dir.str())) << "{}";
+    CHECK_FALSE(runningServer(dir.str()).has_value());  // must not probe the default port
+    std::ofstream(pidFilePath(dir.str())) << "";
+    CHECK_FALSE(runningServer(dir.str()).has_value());
+    std::ofstream(pidFilePath(dir.str())) << "{\"pid\": 1, \"port\": 70000}";
+    CHECK_FALSE(runningServer(dir.str()).has_value());
+    std::ofstream(pidFilePath(dir.str())) << "{\"pid\": 1, \"port\": -1}";
+    CHECK_FALSE(runningServer(dir.str()).has_value());
 }
 
 TEST_CASE("protocol runningServer needs a live listener behind the pid file", "[protocol]") {

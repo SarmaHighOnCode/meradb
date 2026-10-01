@@ -58,6 +58,7 @@ private:
     std::size_t maxBytes_;
     const std::atomic<bool>* stop_;
     std::string buffer_;
+    std::size_t scanned_ = 0;  // bytes of buffer_ already searched for a newline
     bool discarding_ = false;  // skipping the rest of an oversize line
 };
 

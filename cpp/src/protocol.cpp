@@ -44,22 +44,27 @@ std::optional<Json> MessageReader::receive() {
             auto newline = buffer_.find('\n');
             if (newline != std::string::npos) {
                 buffer_.erase(0, newline + 1);
+                scanned_ = 0;
                 discarding_ = false;
             } else {
                 buffer_.clear();
+                scanned_ = 0;
                 if (fill() != Fill::Data) return std::nullopt;
                 continue;
             }
         }
-        auto newline = buffer_.find('\n');
+        auto newline = buffer_.find('\n', scanned_);  // earlier bytes were already searched: stays linear
         if (newline != std::string::npos) {
             std::string line = buffer_.substr(0, newline);
             buffer_.erase(0, newline + 1);
+            scanned_ = 0;
             if (line.size() + 1 > maxBytes_) throw ProtocolError("Message bahut bada hai");  // Python counts the "\n"
             return parseLine(line);
         }
+        scanned_ = buffer_.size();
         if (buffer_.size() >= maxBytes_) {
             buffer_.clear();
+            scanned_ = 0;
             discarding_ = true;
             throw ProtocolError("Message bahut bada hai");
         }
@@ -69,6 +74,7 @@ std::optional<Json> MessageReader::receive() {
             if (buffer_.empty()) return std::nullopt;
             std::string tail = std::move(buffer_);  // Python's readline() hands back an unterminated tail too
             buffer_.clear();
+            scanned_ = 0;
             return parseLine(tail);
         }
     }
@@ -184,6 +190,7 @@ std::optional<Json> readPidFile(const std::string& dataDir) {
     try {
         Json info = pyjson::parse(text.str());
         if (!info.is_object()) return std::nullopt;
+        if (info.empty()) return std::nullopt;  // Python: `if not info` -- an empty {} means "no server"
         return info;
     } catch (const pyjson::ParseFailure&) {
         return std::nullopt;
@@ -213,7 +220,11 @@ std::optional<Json> runningServer(const std::string& dataDir) {
     if (info->contains("host") && info->at("host").is_string()) host = info->at("host").get<std::string>();
     if (host == "0.0.0.0" || host.empty() || host == "::") host = kDefaultHost;
     int port = kDefaultPort;
-    if (info->contains("port") && info->at("port").is_number_integer()) port = info->at("port").get<int>();
+    if (info->contains("port") && info->at("port").is_number_integer()) {
+        std::int64_t wide = info->at("port").get<std::int64_t>();
+        if (wide < 0 || wide > 65535) return std::nullopt;  // no such port can be listening
+        port = static_cast<int>(wide);
+    }
     if (net::portOpen(host, port)) return info;
     return std::nullopt;  // stale pid file left behind by a crashed server
 }
