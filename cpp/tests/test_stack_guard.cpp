@@ -95,13 +95,12 @@ bool cleanOutcome(const std::string& error) {
     return error.empty() || error.find("bahut gehri") != std::string::npos;
 }
 
-struct BudgetGuard {  // restores the process-wide budget even when an assertion fails
-    std::size_t saved = stackBudget();
-    ~BudgetGuard() { setStackBudget(saved); }
+struct BudgetGuard {  // removes the process-wide override even when an assertion fails
+    ~BudgetGuard() { setStackBudget(0); }
 };
 
-// Runs every shape at every depth on a `stackBytes` thread under `budget`; returns the first
-// complaint ("" when all fine).
+// Runs every shape at every depth on a `stackBytes` thread under `budget` (0 = the budget the guard
+// derives from the thread's real stack); returns the first complaint ("" when all fine).
 std::string sweep(std::size_t stackBytes, std::size_t budget, const std::vector<int>& depths, bool alsoParseOnly) {
     BudgetGuard restore;
     setStackBudget(budget);
@@ -150,6 +149,27 @@ TEST_CASE("stack_guard every deep shape is a clean error on a 1 MB stack", "[sta
 TEST_CASE("stack_guard the same shapes on a quarter-size stack and budget", "[stack_guard]") {
     std::string complaint = sweep(256 * 1024, 128 * 1024, {20, 150, 399}, true);
     CHECK(complaint == "");
+}
+
+// No override here: the budget must follow the thread's real (256 KB) stack, which is
+// what keeps small-stack platforms (macOS secondary threads, musl) from overflowing first.
+TEST_CASE("stack_guard the budget follows the real stack of a 256 KB thread", "[stack_guard]") {
+    std::size_t derived = 0;
+    REQUIRE(meradb_test::runOnStack(256 * 1024, [&] {
+        StackBase base;
+        derived = stackBudget();
+    }));
+    CHECK(derived > 0);
+    CHECK(derived <= 128 * 1024);  // at most half of the stack
+    std::size_t onMain = 0;
+    {
+        StackBase base;
+        onMain = stackBudget();
+    }
+    CHECK(onMain > derived);
+
+    CHECK(sweep(256 * 1024, 0, {20, 150, 399, 5000}, true) == "");
+    CHECK(sweep(1024 * 1024, 0, {399, 5000}, true) == "");  // 1 MB: the derived budget is just under 512 KB
 }
 
 TEST_CASE("stack_guard 390 nested scalar subqueries on a default thread give an error, not a crash", "[stack_guard]") {

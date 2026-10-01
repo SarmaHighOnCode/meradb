@@ -14,10 +14,14 @@
 
 namespace meradb {
 
-// Default budget, measured from the outermost StackBase on the thread. The
-// smallest default thread stack we run on is 1 MB (MSVC); half of it is the
-// budget, the other half is slack for the frames below the entry point and
-// for the (non-recursive) work between two checks.
+// Upper limit of the budget, measured from the outermost StackBase on the
+// thread. The budget actually used is min(this, half of the stack the thread
+// really has left below that entry point), asked from the OS once per thread
+// (Windows GetCurrentThreadStackLimits, Linux pthread_getattr_np, macOS
+// pthread_get_stack*_np); it is this value itself when the OS cannot say. The
+// other half is slack for the frames above the entry point and for the
+// (non-recursive) work between two checks. So a 512 KB macOS thread or a
+// 128 KB musl thread gets a smaller budget instead of overflowing first.
 constexpr std::size_t kDefaultStackBudget = 512u * 1024u;
 
 // Put one at the top of every entry point (parse, execute, protocol decode).
@@ -35,8 +39,9 @@ private:
 
 std::size_t stackUsedBytes();  // since the outermost StackBase on this thread (0 if none)
 bool stackExhausted();         // stackUsedBytes() > budget
-std::size_t stackBudget();
-void setStackBudget(std::size_t bytes);  // process wide; tests lower it to measure frame costs
+std::size_t stackBudget();  // the override if set, else this thread's derived budget
+// Process wide override; tests lower it to measure frame costs. 0 removes the override.
+void setStackBudget(std::size_t bytes);
 std::string stackLimitMessage();         // "Query bahut gehri (nested) hai (stack limit 512 KB)"
 
 // Throws Err (a MeraDBError subclass taking a message) when the budget is spent.

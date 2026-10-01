@@ -182,11 +182,22 @@ These are deliberate and small.
   units (`Query bahut gehri (nested) hai (limit 400)`), statements nested inside statements
   (trigger and procedure bodies, `SAMJHAO`) to 32, and views defined over views to 32. On top
   of those counts every recursive function (parser, evaluator, planner, subquery execution,
-  tree copies, JSON decoding) measures the stack bytes used since the entry point and refuses
-  past 512 KB (`Query bahut gehri (nested) hai (stack limit 512 KB)`); that is what keeps a
-  small thread stack (1 MB MSVC, 2 MB MinGW) safe, and it trips first for most shapes (about
-  150 nested parentheses, 95 nested subqueries). The caps exist so that a network client
-  cannot crash the server; ordinary scripts never come near them.
+  tree copies, restoring constants) measures the stack bytes used since the entry point and
+  refuses past a budget (`Query bahut gehri (nested) hai (stack limit 512 KB)`). The budget is
+  the smaller of 512 KB and half of the stack the current thread really has left below its
+  entry point, asked from the OS once per thread (Windows `GetCurrentThreadStackLimits`, Linux
+  `pthread_getattr_np`, macOS `pthread_get_stackaddr_np`/`pthread_get_stacksize_np`; 512 KB
+  where the OS cannot say). So a 2 MB MinGW thread uses 512 KB, a 1 MB MSVC thread a little under that, while a
+  512 KB macOS thread or a 128 KB musl thread gets a proportionally smaller budget (and the
+  message names that smaller number). It trips first for most shapes (about 150 nested
+  parentheses, 95 nested subqueries on a 1 MB stack). JSON decoding is a separate, fixed
+  cap: more than 512 nested arrays/objects in one protocol frame are refused (Python's `json`
+  accepts over 1,000 levels), and it is a level count, not a byte guard. The caps exist so
+  that a network client cannot crash the server; ordinary scripts never come near them.
+- **Very wide natural joins**: `a SAMAAN MILAO b` over thousands of common columns builds one
+  `=` per column. Python raises `RecursionError` at about 3,000 common columns; C++ combines
+  them in a balanced tree (same evaluation order and results) and keeps working, so a 20,000
+  column join runs.
 - **Trigger/procedure recursion cap**: a trigger that (directly or indirectly) fires itself
   endlessly makes Python raise `RecursionError`; C++ stops at 32 levels with
   `Trigger/procedure bahut gehra chal raha hai (limit 32) -- shayad koi trigger khud ko
