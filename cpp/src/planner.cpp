@@ -179,6 +179,17 @@ std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
     throw ExecutionError("Unknown expression");
 }
 
+namespace {
+// Builds AND over conds[lo, hi) as a balanced tree, keeping the in-order leaf sequence.
+std::unique_ptr<Expr> balancedAnd(std::vector<std::unique_ptr<Expr>>& conds, size_t lo, size_t hi) {
+    if (hi - lo == 1) return std::move(conds[lo]);
+    size_t mid = lo + (hi - lo) / 2;
+    auto left = balancedAnd(conds, lo, mid);
+    auto right = balancedAnd(conds, mid, hi);
+    return std::make_unique<BinaryOp>("AUR", std::move(left), std::move(right));
+}
+}  // namespace
+
 std::unique_ptr<Expr> naturalJoinCondition(const Scope& scope, size_t rightIndex) {
     const auto& sources = scope.sources();
     const auto& [rightAlias, rightSchema] = sources.at(rightIndex);
@@ -189,13 +200,18 @@ std::unique_ptr<Expr> naturalJoinCondition(const Scope& scope, size_t rightIndex
         for (const auto& c : schema.columns) firstMatch.emplace(c.name, alias + "." + c.name);
     }
 
-    std::unique_ptr<Expr> result;
+    // One `=` per shared column, left to right. They are joined into a
+    // BALANCED AND tree (in-order the leaves keep their column order, so
+    // evaluation order, short-circuiting and the EXPLAIN label are exactly
+    // those of a left-deep chain). Depth is O(log n): the schema width, which a
+    // client controls, must never become the depth of a recursive structure.
+    std::vector<std::unique_ptr<Expr>> conds;
     for (const auto& c : rightSchema.columns) {
         auto it = firstMatch.find(c.name);
         if (it == firstMatch.end()) continue;
-        auto cond = std::make_unique<BinaryOp>("=", boundRef(it->second), boundRef(rightAlias + "." + c.name));
-        result = result ? std::make_unique<BinaryOp>("AUR", std::move(result), std::move(cond)) : std::move(cond);
+        conds.push_back(std::make_unique<BinaryOp>("=", boundRef(it->second), boundRef(rightAlias + "." + c.name)));
     }
+    std::unique_ptr<Expr> result = conds.empty() ? nullptr : balancedAnd(conds, 0, conds.size());
     if (!result) {
         std::string other = rightIndex > 0 ? sources[0].first : "";
         throw ExecutionError("'" + rightAlias + "' ka SAMAAN MILAO fail hua -- '" + other +
@@ -210,6 +226,7 @@ std::vector<const Expr*> conjuncts(const Expr* expr) {
 }
 
 std::vector<const Expr*> conjuncts(const Expr& expr) {
+    requireStack();
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr); b && b->op == "AUR") {
         auto left = conjuncts(*b->left);
         auto right = conjuncts(*b->right);

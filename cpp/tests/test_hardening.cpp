@@ -165,3 +165,59 @@ TEST_CASE("hardening views over views are capped", "[hardening]") {
     CHECK(r[2].error == refusal);
     CHECK(r[3].error.empty());
 }
+
+namespace {
+// Creates tables a and b with `n` shared INT columns through the engine API (no SQL text to parse).
+void createWideTables(Engine& e, int n) {
+    for (const char* name : {"a", "b"}) {
+        ast::CreateTable ct;
+        ct.name = name;
+        for (int i = 0; i < n; ++i) {
+            ast::ColumnDef c;
+            c.name = "c" + std::to_string(i);
+            c.typeName = "INT";
+            ct.columns.push_back(std::move(c));
+        }
+        e.executeStatement(ct);
+    }
+}
+
+std::string firstError(const std::vector<Result>& rs) { return rs[0].error.empty() ? "ok" : rs[0].error; }
+}  // namespace
+
+// The AND chain behind a natural join is as wide as the schema, which a client
+// controls: it is built balanced, so a 20,000-column join works (Python itself
+// stops with a RecursionError near 3,000 columns; we chose to work correctly).
+// Creating the two tables is the slow part (~15 s at -O0), so they are made
+// once and joined from the test's own thread and from a std::thread.
+TEST_CASE("hardening natural join of very wide tables does not overflow the stack", "[hardening]") {
+    meradb_test::TempDir dir;
+    Engine e(dir.str());
+    createWideTables(e, 20000);
+    const std::string count = "DIKHAO GINO(*) SE a SAMAAN MILAO b";
+    Result plain = e.runScript(count)[0];
+    REQUIRE(plain.error.empty());
+    CHECK(std::get<int64_t>(plain.rows[0][0].data) == 0);
+    CHECK(onThread([&] { return firstError(e.runScript(count)); }) == "ok");
+    CHECK(onThread([&] { return firstError(e.runScript("SAMJHAO " + count)); }) == "ok");
+}
+
+// Same data as the Python run that produced the expected count (1).
+TEST_CASE("hardening natural join conjunction keeps its column order and NULL logic", "[hardening]") {
+    meradb_test::TempDir dir;
+    auto r = onThread([&] {
+        Engine e(dir.str());
+        createWideTables(e, 50);
+        std::string vals1, vals2, vals3;
+        for (int i = 0; i < 50; ++i) {
+            vals1 += (i ? "," : "") + std::string("1");
+            vals2 += (i ? "," : "") + std::string(i == 37 ? "KHALI" : "1");
+            vals3 += (i ? "," : "") + std::string(i == 12 ? "2" : "1");
+        }
+        e.execute("DAALO MEIN a MAAN (" + vals1 + "), (" + vals2 + "), (" + vals3 + ")");
+        e.execute("DAALO MEIN b MAAN (" + vals1 + "), (" + vals2 + ")");
+        return e.runScript("DIKHAO GINO(*) SE a SAMAAN MILAO b")[0];
+    });
+    REQUIRE(r.error.empty());
+    CHECK(std::get<int64_t>(r.rows[0][0].data) == 1);  // only the all-ones rows match; NULL and 2 never do
+}
