@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace meradb;
 
@@ -80,4 +83,19 @@ TEST_CASE("sys killProcess refuses pids that would signal a whole group or every
     // kill(0, ...) and kill(-1, ...) must never be reachable from a damaged pid file.
     for (std::int64_t pid : {std::int64_t(0), std::int64_t(-1), std::int64_t(1)})
         CHECK(meradb::sys::killProcess(pid) == "pid galat hai: " + std::to_string(pid));
+}
+
+TEST_CASE("sys Utf8Console leaves redirected streams and their code pages alone", "[sys]") {
+    // Under ctest the streams are pipes or files, so nothing changes; on a real console the
+    // previous code pages must come back when the scope ends. Either way: same before and after.
+#ifdef _WIN32
+    const unsigned before = GetConsoleOutputCP();
+    const unsigned beforeInput = GetConsoleCP();
+#endif
+    { meradb::sys::Utf8Console console; }
+#ifdef _WIN32
+    CHECK(GetConsoleOutputCP() == before);
+    CHECK(GetConsoleCP() == beforeInput);
+#endif
+    SUCCEED();
 }

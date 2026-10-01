@@ -25,13 +25,30 @@ const std::set<std::string> kCommands = {"server", "start", "stop", "status", "s
 
 void note(const std::string& message) { std::cerr << message << "\n"; }
 
-std::optional<int> parseInt(const std::string& text) {
-    if (text.empty()) return std::nullopt;
-    std::size_t used = 0;
+// Python's int(): surrounding ASCII whitespace, an optional sign, ASCII digits with single
+// underscores between them ("1_0"). (Unicode digits and values beyond int are not accepted.)
+std::optional<int> parseInt(const std::string& raw) {
+    const char* space = " \t\n\r\f\v";
+    std::size_t first = raw.find_first_not_of(space);
+    if (first == std::string::npos) return std::nullopt;
+    std::string text = raw.substr(first, raw.find_last_not_of(space) - first + 1);
+    std::size_t at = (text[0] == '+' || text[0] == '-') ? 1 : 0;
+    std::string digits;
+    bool lastWasDigit = false;
+    for (std::size_t i = at; i < text.size(); ++i) {
+        char c = text[i];
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits += c;
+            lastWasDigit = true;
+        } else if (c == '_' && lastWasDigit && i + 1 < text.size()) {
+            lastWasDigit = false;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!lastWasDigit) return std::nullopt;
     try {
-        int value = std::stoi(text, &used);
-        if (used != text.size()) return std::nullopt;
-        return value;
+        return std::stoi((text[0] == '-' ? "-" : "") + digits);
     } catch (const std::exception&) {
         return std::nullopt;
     }
@@ -110,26 +127,61 @@ std::string subcommandUsage(const std::string& command) {
 const char* kTopUsage = "usage: meradb [-h] [--version] COMMAND ...\n";
 
 // argparse lays option help out in a column starting at 24, wrapped to the terminal width (80) minus
-// 2, i.e. 54 characters of help text per line. Like textwrap it breaks at spaces and chops a word
-// that is longer than a whole line. (Python also breaks after a hyphen inside a word; not reproduced.)
-std::string wrapHelp(const std::string& text, std::size_t width) {
-    std::vector<std::string> lines(1);
-    std::istringstream words(text);
-    std::string word;
-    while (words >> word) {
-        std::string& line = lines.back();
-        if (!line.empty() && line.size() + 1 + word.size() <= width) {
-            line += " " + word;
-            continue;
+// 2, i.e. 54 characters of help text per line. A port of textwrap's line filling: lengths count
+// characters (UTF-8 code points), a word longer than a whole line is chopped, and the first piece
+// fills what is left of the current line. (Python also breaks after a hyphen inside a word; not
+// reproduced.)
+std::size_t charCount(const std::string& s) {
+    std::size_t n = 0;
+    for (unsigned char c : s)
+        if ((c & 0xC0) != 0x80) ++n;
+    return n;
+}
+
+// Byte offset of the `chars`-th character of `s` (s.size() when it has fewer).
+std::size_t charOffset(const std::string& s, std::size_t chars) {
+    std::size_t seen = 0, i = 0;
+    for (; i < s.size(); ++i) {
+        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) {
+            if (seen == chars) return i;
+            ++seen;
         }
-        if (!line.empty()) lines.emplace_back();
-        while (word.size() > width) {
-            lines.back() = word.substr(0, width);
-            lines.emplace_back();
-            word.erase(0, width);
-        }
-        lines.back() = word;
     }
+    return s.size();
+}
+
+std::string wrapHelp(const std::string& text, std::size_t width) {
+    std::vector<std::string> chunks;  // words and single spaces, in order
+    {
+        std::istringstream words(text);
+        std::string word;
+        while (words >> word) {
+            if (!chunks.empty()) chunks.push_back(" ");
+            chunks.push_back(word);
+        }
+    }
+    std::vector<std::string> lines;
+    std::size_t next = 0;
+    while (next < chunks.size()) {
+        std::vector<std::string> current;
+        std::size_t currentLen = 0;
+        if (!lines.empty() && chunks[next] == " ") ++next;  // no leading space on a continuation line
+        while (next < chunks.size() && currentLen + charCount(chunks[next]) <= width) {
+            currentLen += charCount(chunks[next]);
+            current.push_back(chunks[next++]);
+        }
+        if (next < chunks.size() && charCount(chunks[next]) > width) {
+            std::size_t room = width > currentLen ? width - currentLen : 0;
+            std::size_t cut = charOffset(chunks[next], room);
+            current.push_back(chunks[next].substr(0, cut));
+            chunks[next].erase(0, cut);
+        }
+        if (!current.empty() && current.back().find_first_not_of(' ') == std::string::npos) current.pop_back();
+        std::string line;
+        for (const auto& c : current) line += c;
+        if (!current.empty()) lines.push_back(line);
+    }
+    if (lines.empty()) lines.emplace_back();
     std::string out;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         out += (i == 0 ? "  -D DATA, --data DATA  " : std::string(24, ' ')) + lines[i] + "\n";
@@ -178,6 +230,9 @@ std::string optionDisplayName(const std::string& name, bool isServer) {
     if (name == "-p" || name == "--port") return isServer ? "--port" : "-p/--port";
     if (name == "-d" || name == "--database") return "-d/--database";
     if (name == "-U" || name == "--user") return "-U/--user";
+    if (name == "-h" || name == "--help") return "-h/--help";
+    if (name == "-W" || name == "--password") return "-W/--password";
+    if (name == "-v" || name == "--verbose") return "-v/--verbose";
     return name;
 }
 
@@ -222,6 +277,16 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
         if (auto user = sys::getEnv("MERADB_USER"); user && !user->empty()) args.user = *user;
     }
 
+    // The single-letter options of this command: 0 = none, 1 = flag, 2 = takes a value.
+    auto shortKind = [&](const std::string& opt) -> int {
+        if (opt == "-h") return 1;
+        if (opt == "-D") return 2;
+        if (isClient && (opt == "-H" || opt == "-p" || opt == "-d" || opt == "-U")) return 2;
+        if ((isClient || isControl) && opt == "-W") return 1;
+        if (isServer && opt == "-v") return 1;
+        return 0;
+    };
+
     std::vector<std::string> unrecognized;
     // argparse takes the files as ONE run of words: an option after the first file ends it, and a
     // later bare word is "unrecognized". The first "--" is dropped and makes every word after it a
@@ -246,72 +311,116 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
             continue;
         }
         if (!args.files.empty() && looksLikeOption(arg)) filesClosed = true;
-        // "--name=value" is accepted like argparse does
-        std::string name = arg, inlineValue;
-        bool hasInline = false;
-        if (arg.rfind("--", 0) == 0 && arg.find('=') != std::string::npos) {
-            name = arg.substr(0, arg.find('='));
-            inlineValue = arg.substr(arg.find('=') + 1);
-            hasInline = true;
-        }
-        auto value = [&](std::string& out) -> bool {
-            if (hasInline) {
-                out = inlineValue;
-                return true;
-            }
-            if (i + 1 >= argv.size() || looksLikeOption(argv[i + 1])) {
-                args.error = "argument " + optionDisplayName(name, isServer) + ": expected one argument";
-                args.errorInSubcommand = true;
-                args.errorCommand = args.command;
-                return false;
-            }
-            out = argv[++i];
-            return true;
+        // One word can carry several options, like argparse: "--name=value", "-DDIR", "-D=DIR",
+        // "-p7" and bundles such as "-WD DIR" or "-WDDIR" (a flag, then the next option letter).
+        struct Piece {
+            std::string name;
+            bool hasInline;
+            std::string inlineValue;
         };
-        std::string text;
-        if (name == "-h" || name == "--help") {
-            args.showHelp = true;
-            return args;
-        } else if (name == "-D" || name == "--data") {
-            if (!value(text)) return args;
-            args.dataDir = text;
-        } else if (isServer && name == "--host") {
-            if (!value(text)) return args;
-            args.host = text;
-        } else if (isClient && (name == "-H" || name == "--host")) {
-            if (!value(text)) return args;
-            args.host = text;
-        } else if ((isServer && name == "--port") || (isClient && (name == "-p" || name == "--port"))) {
-            if (!value(text)) return args;
-            auto number = parseInt(text);
-            if (!number) {
-                args.error = "argument " + optionDisplayName(name, isServer) + ": invalid int value: '" + text + "'";
+        std::vector<Piece> pieces;
+        if (arg.rfind("--", 0) == 0 && arg.find('=') != std::string::npos) {
+            pieces.push_back({arg.substr(0, arg.find('=')), true, arg.substr(arg.find('=') + 1)});
+        } else if (arg.size() > 2 && arg[1] != '-' && shortKind("-" + arg.substr(1, 1)) != 0) {
+            std::string rest = arg.substr(1);  // option letters still to read
+            while (!rest.empty()) {
+                std::string opt = "-" + rest.substr(0, 1);
+                std::string tail = rest.substr(1);
+                int kind = shortKind(opt);
+                if (kind == 0) {  // not an option of this command: argparse leaves the remainder over
+                    unrecognized.push_back("-" + rest);
+                    break;
+                }
+                if (kind == 2) {  // takes a value: the rest of the word, minus one leading "="
+                    if (tail.empty()) {
+                        pieces.push_back({opt, false, ""});
+                    } else {
+                        pieces.push_back({opt, true, tail[0] == '=' ? tail.substr(1) : tail});
+                    }
+                    break;
+                }
+                if (!tail.empty() && tail[0] == '=') {  // a flag cannot take "=value"
+                    pieces.push_back({opt, true, tail.substr(1)});
+                    break;
+                }
+                pieces.push_back({opt, false, ""});
+                rest = tail;
+            }
+        } else {
+            pieces.push_back({arg, false, ""});
+        }
+        for (const Piece& piece : pieces) {
+            const std::string& name = piece.name;
+            const bool hasInline = piece.hasInline;
+            const std::string& inlineValue = piece.inlineValue;
+            const bool isFlag = name == "-h" || name == "--help" || ((isClient || isControl) && (name == "-W" || name == "--password")) ||
+                                (isServer && (name == "-v" || name == "--verbose")) || (args.command == "stop" && name == "--force") ||
+                                (isClient && name == "--local");
+            if (isFlag && hasInline) {
+                args.error = "argument " + optionDisplayName(name, isServer) + ": ignored explicit argument '" + inlineValue + "'";
                 args.errorInSubcommand = true;
                 args.errorCommand = args.command;
                 return args;
             }
-            args.port = *number;
-        } else if (isServer && name == "--password") {
-            if (!value(text)) return args;
-            args.password = text;
-        } else if ((isClient || isControl) && (name == "-W" || name == "--password")) {
-            args.askPassword = true;
-        } else if (isServer && (name == "-v" || name == "--verbose")) {
-            args.verbose = true;
-        } else if (args.command == "stop" && name == "--force") {
-            args.force = true;
-        } else if (isClient && (name == "-d" || name == "--database")) {
-            if (!value(text)) return args;
-            args.database = text;
-        } else if (isClient && (name == "-U" || name == "--user")) {
-            if (!value(text)) return args;
-            args.user = text;
-        } else if (isClient && name == "--local") {
-            args.local = true;
-        } else if (args.command == "run" && !filesClosed && (arg.empty() || arg[0] != '-' || arg == "-")) {
-            args.files.push_back(arg);
-        } else {
-            unrecognized.push_back(arg);  // argparse collects them all and reports once, after the required check
+            auto value = [&](std::string& out) -> bool {
+                if (hasInline) {
+                    out = inlineValue;
+                    return true;
+                }
+                if (i + 1 >= argv.size() || looksLikeOption(argv[i + 1])) {
+                    args.error = "argument " + optionDisplayName(name, isServer) + ": expected one argument";
+                    args.errorInSubcommand = true;
+                    args.errorCommand = args.command;
+                    return false;
+                }
+                out = argv[++i];
+                return true;
+            };
+            std::string text;
+            if (name == "-h" || name == "--help") {
+                args.showHelp = true;
+                return args;
+            } else if (name == "-D" || name == "--data") {
+                if (!value(text)) return args;
+                args.dataDir = text;
+            } else if (isServer && name == "--host") {
+                if (!value(text)) return args;
+                args.host = text;
+            } else if (isClient && (name == "-H" || name == "--host")) {
+                if (!value(text)) return args;
+                args.host = text;
+            } else if ((isServer && name == "--port") || (isClient && (name == "-p" || name == "--port"))) {
+                if (!value(text)) return args;
+                auto number = parseInt(text);
+                if (!number) {
+                    args.error = "argument " + optionDisplayName(name, isServer) + ": invalid int value: '" + text + "'";
+                    args.errorInSubcommand = true;
+                    args.errorCommand = args.command;
+                    return args;
+                }
+                args.port = *number;
+            } else if (isServer && name == "--password") {
+                if (!value(text)) return args;
+                args.password = text;
+            } else if ((isClient || isControl) && (name == "-W" || name == "--password")) {
+                args.askPassword = true;
+            } else if (isServer && (name == "-v" || name == "--verbose")) {
+                args.verbose = true;
+            } else if (args.command == "stop" && name == "--force") {
+                args.force = true;
+            } else if (isClient && (name == "-d" || name == "--database")) {
+                if (!value(text)) return args;
+                args.database = text;
+            } else if (isClient && (name == "-U" || name == "--user")) {
+                if (!value(text)) return args;
+                args.user = text;
+            } else if (isClient && name == "--local") {
+                args.local = true;
+            } else if (args.command == "run" && !filesClosed && (arg.empty() || arg[0] != '-' || arg == "-")) {
+                args.files.push_back(arg);
+            } else {
+                unrecognized.push_back(arg);  // argparse collects them all and reports once, after the required check
+            }
         }
     }
     if (args.command == "run" && args.files.empty()) {
@@ -319,8 +428,9 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
         args.errorInSubcommand = true;
         args.errorCommand = args.command;
     } else if (!unrecognized.empty()) {
-        for (const auto& word : unrecognized) args.error += (args.error.empty() ? "" : " ") + word;
-        args.error = "unrecognized arguments: " + args.error;
+        std::string joined;  // ' '.join(extras): an empty word still gets its separator
+        for (std::size_t k = 0; k < unrecognized.size(); ++k) joined += (k ? " " : "") + unrecognized[k];
+        args.error = "unrecognized arguments: " + joined;
     }
     return args;
 }
@@ -385,7 +495,7 @@ std::unique_ptr<Backend> openLocal(const CliArgs& args) {
 std::unique_ptr<Backend> openBackend(const CliArgs& args) {
     std::optional<std::string> password = clientPassword(args);
     if (args.local) {
-        if (args.user)
+        if (args.user && !args.user->empty())  // Python tests truthiness: -U "" says nothing
             note("(--local mode mein -U/--user '" + *args.user +
                  "' ka koi matlab nahi -- ignore kiya, superuser ki tarah chal raha hai)");
         return openLocal(args);

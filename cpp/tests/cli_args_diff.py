@@ -82,12 +82,37 @@ def main():
             ["status", "--data", os.path.join(root, "sub", "..", "sub")],
             ["run", "--local", "--data", "", a],
             ["run", "--local", "--data", data + sep, a],
+            # glued short options, bundles and explicit values on flags
+            ["status", "-D" + data],
+            ["status", "-D=" + data],
+            ["status", "-D", data, "-v"],
+            ["run", "--local", "-D" + data, "-p7", "-d=main", a],
+            ["run", "--local=1", a],
+            ["stop", "--force=1"],
+            ["status", "-W=x"],
+            ["status", "-WX"],
+            ["status", "-h=1"],
+            ["run", "--local", "--data", data, "-p", " 7 ", a],
+            ["run", "--local", "--data", data, "-p", "1_0", a],
+            ["run", "--local", "--data", data, "-p", "7_", a],
+            ["run", "--local", "--data", data, "-U", "", a],
+            ["status", "", "x"],
         ]
         for args in cases:
             mine = run([CLI, *args], env, root)
             theirs = run([sys.executable, "-m", "meradb", *args], py_env, root)
             label = " ".join(x.replace(root, "<tmp>") for x in args)
             check("same as Python: " + label, mine == theirs, "C++:    %r\nPython: %r" % (mine, theirs))
+
+        # help text wrapping counts characters, and a word longer than a line fills the current line first
+        for folder in ("D:/ünï/😀 dir with spaces/and more words to wrap around the column",
+                       "D:/" + "x" * 80, "D:/ab cd " + "y" * 70 + " tail words", "D:/" + "é" * 70,
+                       "d" * 52 + " e " + "f" * 60, "/tmp/" + "ü" * 55 + " x"):
+            help_env = dict(env, MERADB_DATA=folder)
+            help_py_env = dict(py_env, MERADB_DATA=folder, PYTHONIOENCODING="utf-8")
+            mine = run([CLI, "stop", "--help"], help_env, root)
+            theirs = run([sys.executable, "-m", "meradb", "stop", "--help"], help_py_env, root)
+            check("same help wrapping as Python: " + ascii(folder)[:40], mine == theirs, "C++:    %r\nPython: %r" % (mine, theirs))
 
         # a pid file without a pid (a crash leftover): stop says so and removes it, like Python
         for name, runner in (("C++", lambda: run([CLI, "stop", "--data", data], env, root)),

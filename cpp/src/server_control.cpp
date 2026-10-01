@@ -137,7 +137,10 @@ int serverStop(const ControlOptions& options) {
     std::string host = info->value("host", std::string(protocol::kDefaultHost));
     if (isWildcardHost(host)) host = protocol::kDefaultHost;
     const int port = static_cast<int>((*info)["port"].get<std::int64_t>());
-    const std::int64_t pid = info->value("pid", static_cast<std::int64_t>(0));
+    // A hand-edited pid such as 3.5 is unusable (Python's os.kill raises TypeError on it): 0 is never killed.
+    const std::int64_t pid = (info->contains("pid") && info->at("pid").is_number_integer())
+                                 ? info->at("pid").get<std::int64_t>()
+                                 : static_cast<std::int64_t>(0);
     try {
         Connection connection(connectOptionsFor(options, host, port));
         connection.shutdown();

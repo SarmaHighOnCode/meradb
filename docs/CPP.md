@@ -210,11 +210,25 @@ These are deliberate and small.
 - **INT overflow family**: Python integers are unbounded, C++ `INT` values are 64-bit.
   Arithmetic that overflows 64 bits is reported as an error instead of producing a big number.
 - **Command-line abbreviations**: Python's `argparse` accepts unambiguous abbreviations of long
-  options (`--dat` for `--data`); the C++ command line requires the full option name.
+  options (`--dat` for `--data`); the C++ command line requires the full option name. Glued
+  short options (`-DDIR`, `-D=DIR`, `-p7`) and bundles (`-WD DIR`), and the error for a value
+  given to a flag (`--local=1`), do match Python.
+- **Command-line integers**: `-p` / `--port` read the text like Python's `int()` for ASCII
+  input (surrounding blanks, a sign, `1_0`); Unicode digits (`-p ٣`) and numbers beyond a
+  32-bit `int` are rejected as `invalid int value`, where Python converts them and fails
+  later. A port outside 0-65535 or an unresolvable host is reported in the program's own words
+  rather than the operating system's.
+- **`stop` / `status` with `-W`** ask for the password before looking for a server; Python
+  only asks once it has found one.
 - **`--help` layout**: each subcommand prints argparse's text (usage, options with their help
   texts and defaults) laid out for an 80-column terminal. Python re-wraps to `COLUMNS`; C++
-  always uses 80, and does not break a long data-folder name after a hyphen the way
-  `textwrap` does.
+  always uses 80. Lines are filled by characters (not bytes) and an over-long word is chopped
+  like `textwrap` does; only the break after a hyphen inside a long data-folder name is not
+  reproduced.
+- **Windows console**: when stdout/stderr (or stdin) is a console, the program switches its
+  code page to UTF-8 for the run and restores it afterwards, so non-ASCII result text prints
+  correctly; redirected output is plain UTF-8 either way. Not verifiable without an
+  interactive console here.
 - **Non-ASCII arguments and environment (Windows)**: the command line and environment values
   are read through the wide Windows API and handled as UTF-8, so `--data` folders, script
   names and `MERADB_*` values with accented letters work as in Python. Unlike a MinGW

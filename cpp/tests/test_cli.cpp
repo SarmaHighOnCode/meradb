@@ -281,3 +281,54 @@ TEST_CASE("cli each subcommand's --help matches argparse's text", "[cli]") {
     CHECK(cliMain({"tui", "-h"}) == 0);  // the alias prints as the workbench, like Python
     CHECK(capture.out().rfind("usage: meradb workbench [-h]", 0) == 0);
 }
+
+// Every expectation below was taken from `python -m meradb` (argparse, Python 3.12).
+TEST_CASE("cli glued short options, bundles and explicit values follow argparse", "[cli]") {
+    CleanEnv env;
+    CHECK(parseCliArgs({"status", "-DX"}).dataDir == "X");
+    CHECK(parseCliArgs({"status", "-D=X"}).dataDir == "X");
+    CHECK(parseCliArgs({"status", "-D==X"}).dataDir == "=X");
+    CHECK(parseCliArgs({"status", "-D="}).dataDir.empty());
+    CHECK(parseCliArgs({"status", "-Dx=y"}).dataDir == "x=y");
+    auto bundle = parseCliArgs({"status", "-WD", "dir"});
+    CHECK(bundle.askPassword);
+    CHECK(bundle.dataDir == "dir");
+    CHECK(parseCliArgs({"status", "-WDdir"}).dataDir == "dir");
+    CHECK(parseCliArgs({"status", "-WD=dir"}).dataDir == "dir");
+    auto run = parseCliArgs({"run", "-Hlocalhost", "-p7", "-d=db", "--local", "x.mdb"});
+    CHECK(run.error.empty());
+    CHECK(run.host == "localhost");
+    CHECK(run.port == 7);
+    CHECK(run.database == "db");
+    CHECK(parseCliArgs({"run", "-p-1", "--local", "x.mdb"}).port == -1);
+    CHECK(parseCliArgs({"server", "-vv"}).verbose);
+
+    // a flag takes no value
+    auto flag = parseCliArgs({"run", "--local=1", "a.mdb"});
+    CHECK(flag.error == "argument --local: ignored explicit argument '1'");
+    CHECK(flag.errorInSubcommand);
+    CHECK(parseCliArgs({"stop", "--force="}).error == "argument --force: ignored explicit argument ''");
+    CHECK(parseCliArgs({"status", "-W=x"}).error == "argument -W/--password: ignored explicit argument 'x'");
+    CHECK(parseCliArgs({"status", "--password=x"}).error == "argument -W/--password: ignored explicit argument 'x'");
+    CHECK(parseCliArgs({"server", "-v=1"}).error == "argument -v/--verbose: ignored explicit argument '1'");
+    CHECK(parseCliArgs({"status", "--help=1"}).error == "argument -h/--help: ignored explicit argument '1'");
+
+    // the part of a bundle that is not an option is left over
+    CHECK(parseCliArgs({"status", "-WX"}).error == "unrecognized arguments: -X");
+    CHECK(parseCliArgs({"stop", "--force", "-Wx"}).error == "unrecognized arguments: -x");
+    CHECK(parseCliArgs({"status", "-Q"}).error == "unrecognized arguments: -Q");
+}
+
+TEST_CASE("cli integers are read like Python's int()", "[cli]") {
+    CleanEnv env;
+    CHECK(parseCliArgs({"run", "-p", " 7 ", "--local", "x"}).port == 7);
+    CHECK(parseCliArgs({"run", "-p", "1_0", "--local", "x"}).port == 10);
+    CHECK(parseCliArgs({"run", "-p", "+7", "--local", "x"}).port == 7);
+    for (const char* bad : {"7_", "_7", "1__0", "", " ", "-", "7x", "0x10", "1.5"})
+        CHECK(parseCliArgs({"run", "-p", bad, "--local", "x"}).error.rfind("argument -p/--port: invalid int value", 0) == 0);
+}
+
+TEST_CASE("cli an empty unrecognized word keeps its separator", "[cli]") {
+    CleanEnv env;
+    CHECK(parseCliArgs({"status", "", "a"}).error == "unrecognized arguments:  a");
+}

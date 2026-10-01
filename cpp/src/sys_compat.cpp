@@ -152,6 +152,35 @@ void setEnv(const std::string& name, const std::string& value) {
 #endif
 }
 
+#ifdef _WIN32
+namespace {
+bool isConsole(DWORD standardHandle) {
+    HANDLE handle = GetStdHandle(standardHandle);
+    DWORD mode = 0;
+    return handle != nullptr && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode) != 0;
+}
+}  // namespace
+
+Utf8Console::Utf8Console() {
+    if (isConsole(STD_OUTPUT_HANDLE) || isConsole(STD_ERROR_HANDLE)) {
+        const UINT before = GetConsoleOutputCP();
+        if (before != CP_UTF8 && SetConsoleOutputCP(CP_UTF8)) savedOutput_ = before;
+    }
+    if (isConsole(STD_INPUT_HANDLE)) {
+        const UINT before = GetConsoleCP();
+        if (before != CP_UTF8 && SetConsoleCP(CP_UTF8)) savedInput_ = before;
+    }
+}
+
+Utf8Console::~Utf8Console() {
+    if (savedOutput_ != 0) SetConsoleOutputCP(savedOutput_);
+    if (savedInput_ != 0) SetConsoleCP(savedInput_);
+}
+#else
+Utf8Console::Utf8Console() {}
+Utf8Console::~Utf8Console() {}
+#endif
+
 std::vector<std::string> commandLineArgs(int argc, char** argv) {
     std::vector<std::string> args;
 #ifdef _WIN32

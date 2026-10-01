@@ -193,6 +193,22 @@ TEST_CASE("control stop: without the password fails and points at --force", "[co
     CHECK_FALSE(s.stopped());
 }
 
+TEST_CASE("control stop --force: a hand-edited fractional pid is never used to kill anything", "[control]") {
+    RunningServer s("sekrit");
+    protocol::Json info = protocol::Json::object();
+    info["pid"] = 3.5;
+    info["host"] = "127.0.0.1";
+    info["port"] = s.port();
+    protocol::writePidFile(s.dataDir(), info);
+    ControlOptions options;
+    options.dataDir = s.dataDir();
+    options.force = true;
+    Capture capture;
+    CHECK(serverStop(options) == 1);
+    CHECK(capture.err().find("Kill fail: pid galat hai: 0") != std::string::npos);
+    CHECK_FALSE(s.stopped());
+}
+
 TEST_CASE("control start: refuses when a server already runs for the folder", "[control]") {
     RunningServer s;
     writeFakePidFile(s);

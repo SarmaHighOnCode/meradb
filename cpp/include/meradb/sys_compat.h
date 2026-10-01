@@ -41,6 +41,23 @@ void setEnv(const std::string& name, const std::string& value);
 // elsewhere argv is used as it is.
 std::vector<std::string> commandLineArgs(int argc, char** argv);
 
+// While alive, on Windows, a console used for output (stdout or stderr) gets the UTF-8 output code
+// page, and a console used for input (stdin) the UTF-8 input code page, so UTF-8 text prints
+// correctly and typed non-ASCII text arrives as UTF-8 (Python reaches the same result with its own
+// console handling). Redirected or piped streams are not touched; the previous code pages are put
+// back at the end. Does nothing on other platforms.
+class Utf8Console {
+public:
+    Utf8Console();
+    ~Utf8Console();
+    Utf8Console(const Utf8Console&) = delete;
+    Utf8Console& operator=(const Utf8Console&) = delete;
+
+private:
+    unsigned savedOutput_ = 0;  // 0 = left alone
+    unsigned savedInput_ = 0;
+};
+
 // Reads one line from the terminal WITHOUT echoing it (a password prompt, like
 // getpass). The prompt goes to stderr. When stdin is not a terminal the line is
 // simply read.
