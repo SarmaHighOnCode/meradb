@@ -317,8 +317,8 @@ TableSchema* Catalog::find(const std::string& table) {
 
 // add/addView: check the new entry serialises BEFORE touching memory, and
 // undo the change if writing the file fails, so memory and catalog.json
-// never disagree. (remove/removeView can only fail on I/O; like Python,
-// the entry is then already gone from memory.)
+// never disagree. removeTrigger/removeProcedure do the same on an I/O failure;
+// remove/removeView can only fail on I/O and (like Python) leave the entry gone.
 void Catalog::add(const TableSchema& schema) {
     renderJson(schema.toJson());
     std::optional<TableSchema> previous;
@@ -379,8 +379,15 @@ void Catalog::addTrigger(const std::string& name, const std::string& timing, con
 }
 
 void Catalog::removeTrigger(const std::string& name) {
+    std::optional<json> previous;
+    if (triggers.contains(name)) previous = triggers[name];
     triggers.erase(name);
-    save();
+    try {
+        save();
+    } catch (...) {
+        if (previous) triggers[name] = *previous;  // a failed save leaves memory as it was
+        throw;
+    }
 }
 
 std::vector<Catalog::TriggerInfo> Catalog::triggersFor(const std::string& timing, const std::string& event,
@@ -415,8 +422,15 @@ void Catalog::addProcedure(const std::string& name, const std::vector<std::pair<
 }
 
 void Catalog::removeProcedure(const std::string& name) {
+    std::optional<json> previous;
+    if (procedures.contains(name)) previous = procedures[name];
     procedures.erase(name);
-    save();
+    try {
+        save();
+    } catch (...) {
+        if (previous) procedures[name] = *previous;  // a failed save leaves memory as it was
+        throw;
+    }
 }
 
 std::optional<Catalog::ProcedureInfo> Catalog::findProcedure(const std::string& name) const {

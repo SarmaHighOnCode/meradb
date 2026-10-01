@@ -178,7 +178,7 @@ private:
     Result execDropProcedure(const ast::DropProcedure&);
     Result execCallProcedure(const ast::CallProcedure&);
 
-    // Trigger / procedure bodies (Design decisions D5). `newRow`/`oldRow` are plain
+    // Trigger / procedure bodies (each firing parses the body fresh and substitutes NAYA/PURANA before running it). `newRow`/`oldRow` are plain
     // {column: value} dicts, independent of any Scope's "table.col" aliasing.
     void fireTriggers(const std::string& timing, const std::string& event, const std::string& table,
                       const Row* newRow, const Row* oldRow);

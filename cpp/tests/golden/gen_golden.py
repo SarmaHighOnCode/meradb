@@ -4,10 +4,11 @@
 Every cpp/tests/golden/<group>_<name>.mdb is a script with ONE statement per
 line. A line starting `@name:` runs on a restricted session for user `name`
 that shares the script's Instance (created on first use); every other line
-runs on the superuser session. Each script is run against a fresh Engine and the outcome of every
-statement is recorded in a canonical text form; the C++ test replays the same
-script and compares the outcome statement by statement, so the two engines are
-checked against each other on messages, error wording, columns and rows.
+runs on the superuser session. Each script is run against a fresh Engine and
+the outcome of every statement is recorded in a canonical text form; the C++
+test replays the same script and compares the outcome statement by statement,
+so the two engines are checked against each other on messages, error wording,
+columns and rows.
 
 Canonical form of one outcome:   C:<columns> R:<rows> M:<message> E:<error>
   columns joined by ',', rows by ';', cells by '|' (Python's format_value).
@@ -71,6 +72,8 @@ def main() -> None:
                 result = target.run_script(text)[-1]
                 out.append(f"            {{{raw(sql)}, {raw(canonical(result))}}},")
             out.append("        }},")
+            for session in (*sessions.values(), engine):
+                session.close()  # roll back anything left open before the folder goes away
     out += ["    };", "    return all;", "}", "}  // namespace golden", ""]
     target = os.path.join(HERE, "..", "golden_engine.h")
     with open(target, "w", encoding="utf-8", newline="\n") as f:

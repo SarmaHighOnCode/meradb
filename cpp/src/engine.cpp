@@ -43,11 +43,16 @@ void replacePath(const fs::path& from, const fs::path& to) {
     if (ec) throw StorageError("'" + from.string() + "' ko '" + to.string() + "' nahi bana paaye: " + ec.message());
 }
 
+// The data folder must exist before anything (UserStore) is built on top of it.
+const std::string& ensureDir(const std::string& dir) {
+    fs::create_directories(dir);
+    return dir;
+}
+
 }  // namespace
 
 Instance::Instance(std::string dataDir, bool served)
-    : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(dataDir_) {
-    fs::create_directories(dataDir_);
+    : dataDir_(fs::absolute(fs::path(dataDir)).string()), users_(ensureDir(dataDir_)) {
     if (!served) {
         // Two processes must never write the same files: refuse a folder a server is serving.
         if (auto info = protocol::runningServer(dataDir_)) {

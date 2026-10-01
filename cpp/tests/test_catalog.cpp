@@ -624,3 +624,25 @@ TEST_CASE("catalog trigger body text with unicode and newlines round-trips", "[c
     meradb::Catalog again(dir.str());
     CHECK(again.triggersFor("BAAD", "MITAO", "x").at(0).bodyText == body);
 }
+
+TEST_CASE("catalog removeTrigger and removeProcedure roll back when the save fails", "[catalog][phase2]") {
+    meradb_test::TempDir dir;
+    meradb::Catalog cat(dir.str());
+    cat.addTrigger("t1", "PEHLE", "DAALO", "accounts", "DIKHAO * SE t;");
+    cat.addProcedure("p1", {{"x", "INT"}}, "DIKHAO * SE t;");
+    const std::string before = meradb_test::readText(dir.file("catalog.json"));
+
+    // a directory squatting on the temp file's name makes every save fail
+    std::filesystem::create_directory(dir.file("catalog.json.tmp"));
+    CHECK_THROWS_AS(cat.removeTrigger("t1"), meradb::StorageError);
+    CHECK(cat.hasTrigger("t1"));
+    CHECK_THROWS_AS(cat.removeProcedure("p1"), meradb::StorageError);
+    CHECK(cat.findProcedure("p1").has_value());
+    std::filesystem::remove(dir.file("catalog.json.tmp"));
+    CHECK(meradb_test::readText(dir.file("catalog.json")) == before);
+
+    cat.removeTrigger("t1");  // and with the obstacle gone it works
+    cat.removeProcedure("p1");
+    CHECK_FALSE(cat.hasTrigger("t1"));
+    CHECK_FALSE(cat.findProcedure("p1").has_value());
+}
