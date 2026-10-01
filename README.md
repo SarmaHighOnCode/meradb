@@ -634,10 +634,12 @@ docs/            documentation
 
 ### C++ implementation
 
-A C++17 port of the core engine lives in `cpp/`. It shares the Python engine's grammar,
-output and on-disk formats, and is checked against it on the example scripts. Phase 1
-covers the core engine and a local script runner only (no server, shell or workbench
-yet). See [docs/CPP.md](docs/CPP.md) for build instructions and status.
+A C++17 port lives in `cpp/`. It shares the Python engine's grammar, output, on-disk formats
+and wire protocol, and is checked against it (example scripts, a client/server interop matrix,
+data folders passed between the engines, a trigger/procedure fuzz). It has the full engine,
+users and privileges, triggers, stored procedures, the TCP server and the `run` / `start` /
+`stop` / `status` commands; the interactive shell and the workbench are Python-only for now.
+See [docs/CPP.md](docs/CPP.md) for build instructions and status.
 
 ### Use from Python
 
@@ -662,4 +664,4 @@ engine.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1);")
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it works inside: storage format byte by byte, planner, indexes, joins, transactions, concurrency
 - [docs/ROADMAP.md](docs/ROADMAP.md): how the project was built, week by week
 - [docs/REPORT.md](docs/REPORT.md): project report
-- [docs/CPP.md](docs/CPP.md): the C++ port (build instructions, layout, status)
+- [docs/CPP.md](docs/CPP.md): the C++ port (build instructions, layout, verification, status)
