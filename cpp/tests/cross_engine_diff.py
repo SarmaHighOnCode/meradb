@@ -42,7 +42,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as py_dir, tempfile.TemporaryDirectory() as cpp_dir:
         py_out, py_code = run([sys.executable, "-m", "meradb", "run", "--local", "--data", py_dir, args.script])
-        cpp_out, cpp_code = run([str(args.cli), "run", args.script, "--data", cpp_dir])
+        cpp_out, cpp_code = run([str(args.cli), "run", args.script, "--local", "--data", cpp_dir])
 
     # Compare raw text (CRLF already normalised) so trailing-newline differences are not hidden.
     if py_out == cpp_out and py_code == cpp_code:

@@ -1,0 +1,53 @@
+// cpp/include/meradb/cli.h
+//
+// The `meradb` command line (mirrors meradb/cli.py):
+//
+//   meradb start | stop | status | server | run FILE... | shell | workbench
+//
+// `meradb x.mdb` means `run`, `meradb --tui` means `workbench`, and no command
+// means `shell`. shell and workbench arrive in a later phase; here they say so.
+#pragma once
+#include "meradb/backend.h"
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace meradb {
+
+struct CliArgs {
+    std::string command;  // server start stop status shell workbench run
+    std::string dataDir;
+    // Server commands: where to listen. Client commands: where to connect; unset = not given.
+    std::optional<std::string> host;
+    std::optional<int> port;
+    std::optional<std::string> password;  // server / start: --password VALUE
+    bool askPassword = false;             // client commands and stop / status: -W
+    bool verbose = false;
+    bool force = false;
+    bool local = false;
+    std::optional<std::string> database;
+    std::optional<std::string> user;
+    std::vector<std::string> files;
+    bool showHelp = false;
+    bool showVersion = false;
+    std::string error;  // non-empty: the arguments were bad (exit code 2, like argparse)
+    // argparse reports errors found while parsing a subcommand's options with that subcommand's
+    // usage ("meradb run: error: ..."); unrecognized arguments are reported by the top-level parser.
+    bool errorInSubcommand = false;
+    std::string errorCommand;  // the subcommand when errorInSubcommand
+};
+
+CliArgs parseCliArgs(std::vector<std::string> argv);
+
+// Opens the backend a client command talks to. Prints side notes on stderr,
+// exactly as Python does. Throws MeraDBError.
+std::unique_ptr<Backend> openBackend(const CliArgs& args);
+
+// Runs one script file against `backend`, printing each result followed by a
+// blank line. Returns false if the file could not be read or any statement failed.
+bool runFile(Backend& backend, const std::string& path);
+
+int cliMain(std::vector<std::string> argv);
+
+}  // namespace meradb

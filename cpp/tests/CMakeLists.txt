@@ -37,6 +37,7 @@ add_executable(meradb_tests
   test_hardening.cpp
   test_server_hardening.cpp
   test_server_control.cpp
+  test_cli.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
@@ -62,6 +63,9 @@ if(Python3_Interpreter_FOUND)
   endforeach()
   add_test(NAME cross_engine_missing_file
     COMMAND ${Python3_EXECUTABLE} ${_diff} --cli $<TARGET_FILE:meradb_cli> no_such_script.mdb)
+  add_test(NAME cli_lifecycle
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_lifecycle.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(cli_lifecycle PROPERTIES TIMEOUT 240)
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
 endif()

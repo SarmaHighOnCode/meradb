@@ -55,6 +55,7 @@ add_library(meradb_core STATIC
   src/server.cpp
   src/client.cpp
   src/server_control.cpp
+  src/cli.cpp
   # source files are appended here by later tasks
 )
 if(NOT MSVC)
