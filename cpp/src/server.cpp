@@ -396,7 +396,7 @@ std::string plainText(const Json& j) { return j.is_string() ? j.get<std::string>
 
 int serve(ServerOptions options) {
     namespace fs = std::filesystem;
-    options.dataDir = fs::absolute(pathOf(options.dataDir)).u8string();
+    options.dataDir = absolutePathOf(options.dataDir);
     std::error_code ec;
     if (fs::is_directory(pathOf(options.dataDir), ec)) {
         if (auto existing = protocol::runningServer(options.dataDir)) {

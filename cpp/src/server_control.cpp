@@ -20,11 +20,7 @@ using protocol::Json;
 
 void note(const std::string& message) { std::cerr << message << "\n"; }
 
-std::string absolutePath(const std::string& path) {
-    std::error_code ec;
-    auto absolute = std::filesystem::absolute(std::filesystem::u8path(path), ec);
-    return ec ? path : absolute.lexically_normal().u8string();
-}
+std::string absolutePath(const std::string& path) { return absolutePathOf(path); }
 
 bool isWildcardHost(const std::string& host) { return host == "0.0.0.0" || host == "::" || host.empty(); }
 
@@ -33,7 +29,10 @@ std::string tailOf(const std::string& path, std::size_t lines = 15) {
     if (!in) return "(log nahi mila)";
     std::vector<std::string> all;
     std::string line;
-    while (std::getline(in, line)) all.push_back(line + "\n");
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // text mode, like Python: no "\r\r\n" on Windows
+        all.push_back(line + "\n");
+    }
     std::string out;
     for (std::size_t i = all.size() > lines ? all.size() - lines : 0; i < all.size(); ++i) out += all[i];
     return out;
@@ -123,8 +122,15 @@ int serverStop(const ControlOptions& options) {
     const std::string data = absolutePath(options.dataDir);
     auto info = protocol::runningServer(data);
     if (!info) {
-        if (auto stale = protocol::readPidFile(data))
-            protocol::removePidFile(data, stale->value("pid", static_cast<std::int64_t>(-1)));  // left by a crash
+        if (auto stale = protocol::readPidFile(data)) {  // left behind by a crash
+            auto pid = stale->find("pid");
+            if (pid == stale->end() || pid->is_null()) {  // Python: None == None, so a pid-less file goes too
+                std::error_code ec;
+                std::filesystem::remove(pathOf(protocol::pidFilePath(data)), ec);
+            } else if (pid->is_number_integer()) {
+                protocol::removePidFile(data, pid->get<std::int64_t>());
+            }
+        }
         std::cout << "Server nahi chal raha.\n";
         return 0;
     }

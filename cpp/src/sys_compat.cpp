@@ -348,6 +348,8 @@ std::unique_ptr<DetachedProcess> spawnDetached(const std::string& exePath, const
     int logFd = ::open(logPath.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
     if (logFd < 0) throw StorageError("Log file nahi khuli: " + logPath + " (" + std::system_category().message(errno) + ")");
     int nullFd = ::open("/dev/null", O_RDONLY);
+    long openMax = ::sysconf(_SC_OPEN_MAX);  // looked up before fork(): the child may only call async-signal-safe functions
+    const int closeUpTo = static_cast<int>(openMax > 0 && openMax < 65536 ? openMax : 65536);
 
     pid_t child = ::fork();
     if (child < 0) {
@@ -361,6 +363,7 @@ std::unique_ptr<DetachedProcess> spawnDetached(const std::string& exePath, const
         if (nullFd >= 0) ::dup2(nullFd, STDIN_FILENO);
         ::dup2(logFd, STDOUT_FILENO);
         ::dup2(logFd, STDERR_FILENO);
+        for (int fd = STDERR_FILENO + 1; fd < closeUpTo; ++fd) ::close(fd);  // like Python's close_fds: nothing else leaks in
         ::execv(exePath.c_str(), argv.data());
         ::_exit(127);  // exec failed
     }
@@ -372,6 +375,9 @@ std::unique_ptr<DetachedProcess> spawnDetached(const std::string& exePath, const
 }
 
 std::string killProcess(std::int64_t pid) {
+    // kill(0, ...) signals our own process group and kill(-1, ...) everything we may signal: a
+    // damaged pid file must never get that far.
+    if (pid <= 1) return "pid galat hai: " + std::to_string(pid);
 #ifdef _WIN32
     HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
     if (process == nullptr) return std::system_category().message(static_cast<int>(GetLastError()));

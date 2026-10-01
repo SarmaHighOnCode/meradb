@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/sys_compat.h"
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -74,3 +75,9 @@ TEST_CASE("sys_compat homeDir follows Python expanduser on Windows", "[sys_compa
     CHECK(sys::homeDir() == "E:\\Profile");
 }
 #endif
+
+TEST_CASE("sys killProcess refuses pids that would signal a whole group or everything", "[sys]") {
+    // kill(0, ...) and kill(-1, ...) must never be reachable from a damaged pid file.
+    for (std::int64_t pid : {std::int64_t(0), std::int64_t(-1), std::int64_t(1)})
+        CHECK(meradb::sys::killProcess(pid) == "pid galat hai: " + std::to_string(pid));
+}

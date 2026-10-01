@@ -54,7 +54,7 @@ const std::string& ensureDir(const std::string& dir) {
 }  // namespace
 
 Instance::Instance(std::string dataDir, bool served)
-    : dataDir_(fs::absolute(pathOf(dataDir)).u8string()), users_(ensureDir(dataDir_)) {
+    : dataDir_(absolutePathOf(dataDir)), users_(ensureDir(dataDir_)) {
     if (!served) {
         // Two processes must never write the same files: refuse a folder a server is serving.
         if (auto info = protocol::runningServer(dataDir_)) {

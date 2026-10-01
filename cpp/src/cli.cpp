@@ -4,6 +4,7 @@
 #include "meradb/cli_format.h"
 #include "meradb/client.h"
 #include "meradb/errors.h"
+#include "meradb/fs_util.h"
 #include "meradb/protocol.h"
 #include "meradb/server.h"
 #include "meradb/server_control.h"
@@ -222,8 +223,29 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
     }
 
     std::vector<std::string> unrecognized;
+    // argparse takes the files as ONE run of words: an option after the first file ends it, and a
+    // later bare word is "unrecognized". The first "--" is dropped and makes every word after it a
+    // positional, even one that looks like an option; any other command has no positionals.
+    bool optionsEnded = false;
+    bool filesClosed = false;
     for (std::size_t i = 1; i < argv.size(); ++i) {
         const std::string& arg = argv[i];
+        if (optionsEnded || (arg == "--" && args.command == "run" && !filesClosed)) {
+            if (!optionsEnded) {
+                optionsEnded = true;  // the "--" itself
+            } else if (args.command == "run" && !filesClosed) {
+                args.files.push_back(arg);
+            } else {
+                unrecognized.push_back(arg);
+            }
+            continue;
+        }
+        if (arg == "--") {
+            optionsEnded = true;
+            unrecognized.push_back(arg);
+            continue;
+        }
+        if (!args.files.empty() && looksLikeOption(arg)) filesClosed = true;
         // "--name=value" is accepted like argparse does
         std::string name = arg, inlineValue;
         bool hasInline = false;
@@ -286,7 +308,7 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
             args.user = text;
         } else if (isClient && name == "--local") {
             args.local = true;
-        } else if (args.command == "run" && (arg.empty() || arg[0] != '-' || arg == "-")) {
+        } else if (args.command == "run" && !filesClosed && (arg.empty() || arg[0] != '-' || arg == "-")) {
             args.files.push_back(arg);
         } else {
             unrecognized.push_back(arg);  // argparse collects them all and reports once, after the required check
@@ -344,11 +366,7 @@ std::optional<std::string> clientPassword(const CliArgs& args) {
     return std::nullopt;
 }
 
-std::string absolute(const std::string& path) {
-    std::error_code ec;
-    auto result = std::filesystem::absolute(std::filesystem::u8path(path), ec);
-    return ec ? path : result.lexically_normal().u8string();
-}
+std::string absolute(const std::string& path) { return absolutePathOf(path); }
 
 std::unique_ptr<Backend> openLocal(const CliArgs& args) {
     auto backend = std::make_unique<LocalBackend>(args.dataDir);
