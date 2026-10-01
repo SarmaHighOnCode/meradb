@@ -35,6 +35,8 @@ bool pyTruthy(const Json* j) {
     return !j->empty();
 }
 
+std::string pyReprJson(const Json& j);
+
 // Python's str() of a JSON value.
 std::string pyStr(const Json& j) {
     if (j.is_string()) return j.get<std::string>();
@@ -43,11 +45,34 @@ std::string pyStr(const Json& j) {
     if (j.is_number_float()) return pyReprFloat(j.get<double>());
     if (j.is_number_unsigned()) return std::to_string(j.get<std::uint64_t>());
     if (j.is_number_integer()) return std::to_string(j.get<std::int64_t>());
-    return pyjson::dump(j);
+    return pyReprJson(j);  // str() of a list or dict is its repr
 }
 
-// Python's repr() of a JSON value, for `{kind!r}`.
-std::string pyReprJson(const Json& j) { return j.is_string() ? pyRepr(j.get<std::string>()) : pyStr(j); }
+// Python's repr() of a JSON value, for `{kind!r}`: ['a'], {'a': 1}, None, True, 'text'.
+std::string pyReprJson(const Json& j) {
+    if (j.is_string()) return pyRepr(j.get<std::string>());
+    if (j.is_array()) {
+        std::string out = "[";
+        bool first = true;
+        for (const auto& item : j) {
+            if (!first) out += ", ";
+            first = false;
+            out += pyReprJson(item);
+        }
+        return out + "]";
+    }
+    if (j.is_object()) {
+        std::string out = "{";
+        bool first = true;
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (!first) out += ", ";
+            first = false;
+            out += pyRepr(it.key()) + ": " + pyReprJson(it.value());
+        }
+        return out + "}";
+    }
+    return pyStr(j);
+}
 
 // hmac.compare_digest: the running time does not depend on where the strings differ.
 bool constantTimeEquals(const std::string& a, const std::string& b) {
@@ -132,13 +157,28 @@ void Server::reap(bool everything) {
 }
 
 void Server::serveForever() {
+    // A persistent accept error (out of descriptors, ...) must not flood the log or spin: the same
+    // message is logged at most every 10 s, and the pause between attempts grows from 50 ms to 1 s.
+    using clock = std::chrono::steady_clock;
+    int failures = 0;
+    std::string lastFailure;
+    clock::time_point lastLogged;
     while (!stop_) {
         net::Socket accepted;
         try {
             accepted = net::acceptWithTimeout(listener_, 0.1);
+            failures = 0;
         } catch (const net::NetError& e) {
-            log(std::string("accept fail: ") + e.what());
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            ++failures;
+            const auto now = clock::now();
+            if (failures == 1 || lastFailure != e.what() || now - lastLogged >= std::chrono::seconds(10)) {
+                log(std::string("accept fail: ") + e.what());
+                lastFailure = e.what();
+                lastLogged = now;
+            }
+            const int pauseMs = std::min(1000, 50 * failures);
+            for (int waited = 0; waited < pauseMs && !stop_; waited += 50)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
         reap(false);
@@ -190,12 +230,12 @@ void Server::serveConnection(Connection& connection) {
             // A per-user login SUPERSEDES the shared server password entirely.
             // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
             if (!instance_->users().verify(user, password)) {
-                protocol::send(socket, failure("User ya password galat hai"));
+                protocol::send(socket, failure("User ya password galat hai"), &stop_);
                 log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
                 return;
             }
         } else if (!options_.password.empty() && !constantTimeEquals(password, options_.password)) {
-            protocol::send(socket, failure("Password galat hai"));
+            protocol::send(socket, failure("Password galat hai"), &stop_);
             log(peer + "  login fail (galat password)");
             return;
         }
@@ -228,7 +268,7 @@ void Server::serveConnection(Connection& connection) {
                 session.executeStatement(use);
             } catch (const MeraDBError& e) {
                 // .message(), not what(): the client wraps this in ConnectionFailed (see above)
-                protocol::send(socket, failure(e.message()));
+                protocol::send(socket, failure(e.message()), &stop_);
                 return;
             }
         }
@@ -237,7 +277,7 @@ void Server::serveConnection(Connection& connection) {
         ready["server"] = protocol::kServerName;
         ready["protocol"] = protocol::kVersion;
         ready["database"] = session.currentDb;
-        protocol::send(socket, ready);
+        protocol::send(socket, ready, &stop_);
 
         // ---- 2. request loop ----
         for (;;) {
@@ -245,7 +285,7 @@ void Server::serveConnection(Connection& connection) {
             try {
                 request = reader.receive();
             } catch (const protocol::ProtocolError& e) {
-                protocol::send(socket, failure(std::string("[Protocol Galti] ") + e.what()));
+                protocol::send(socket, failure(std::string("[Protocol Galti] ") + e.what()), &stop_);
                 continue;
             }
             if (!request) break;  // client closed the connection (or the server is stopping)
@@ -257,7 +297,7 @@ void Server::serveConnection(Connection& connection) {
                 log(peer + "  INTERNAL ERROR\n" + e.what());
                 reply = failure(std::string("[Internal Galti] ") + e.what());
             }
-            protocol::send(socket, reply);
+            protocol::send(socket, reply, &stop_);
             if (stopConnection) break;
         }
     } catch (const net::NetError&) {
@@ -375,6 +415,9 @@ int serve(ServerOptions options) {
         return 1;
     } catch (const MeraDBError& e) {
         std::cerr << e.what() << "\n";
+        return 1;
+    } catch (const std::exception& e) {  // Python's OSError: a data folder that cannot be created or read, ...
+        std::cerr << "Server start nahi hua (" << options.host << ":" << options.port << "): " << e.what() << "\n";
         return 1;
     }
 

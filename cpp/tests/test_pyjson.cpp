@@ -103,3 +103,23 @@ TEST_CASE("pyjson isValidUtf8 is strict", "[pyjson]") {
     CHECK_FALSE(isValidUtf8("\xF4\x90\x80\x80"));  // above U+10FFFF
     CHECK_FALSE(isValidUtf8("\xFF"));
 }
+
+TEST_CASE("pyjson utf8ErrorText words invalid UTF-8 like Python's UnicodeDecodeError", "[pyjson]") {
+    // Each expected text is str(UnicodeDecodeError) from bytes.decode("utf-8") in Python 3.12.
+    CHECK(utf8ErrorText("fine \xC3\xA9 \xE4\xB8\x96 \xF0\x9F\x98\x80") == "");
+    CHECK(utf8ErrorText("\xFF") == "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte");
+    CHECK(utf8ErrorText("\x80") == "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte");
+    CHECK(utf8ErrorText("\xC0\xAF") == "'utf-8' codec can't decode byte 0xc0 in position 0: invalid start byte");
+    CHECK(utf8ErrorText("ab\xC3(") == "'utf-8' codec can't decode byte 0xc3 in position 2: invalid continuation byte");
+    CHECK(utf8ErrorText("\xC3") == "'utf-8' codec can't decode byte 0xc3 in position 0: unexpected end of data");
+    CHECK(utf8ErrorText("\xE2\x82") == "'utf-8' codec can't decode bytes in position 0-1: unexpected end of data");
+    CHECK(utf8ErrorText("\xE2(\xA1") == "'utf-8' codec can't decode byte 0xe2 in position 0: invalid continuation byte");
+    CHECK(utf8ErrorText("\xE2\x82(") == "'utf-8' codec can't decode bytes in position 0-1: invalid continuation byte");
+    CHECK(utf8ErrorText("\xED\xA0\x80") == "'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte");
+    CHECK(utf8ErrorText("\xE0\x80\x80") == "'utf-8' codec can't decode byte 0xe0 in position 0: invalid continuation byte");
+    CHECK(utf8ErrorText("\xF0\x90\x80") == "'utf-8' codec can't decode bytes in position 0-2: unexpected end of data");
+    CHECK(utf8ErrorText("x\xF0\x9F") == "'utf-8' codec can't decode bytes in position 1-2: unexpected end of data");
+    CHECK(utf8ErrorText("\xF4\x90\x80\x80") == "'utf-8' codec can't decode byte 0xf4 in position 0: invalid continuation byte");
+    CHECK(utf8ErrorText("\xF0(\x8C\xBC") == "'utf-8' codec can't decode byte 0xf0 in position 0: invalid continuation byte");
+    CHECK(utf8ErrorText("\xF0\x90(\xBC") == "'utf-8' codec can't decode bytes in position 0-1: invalid continuation byte");
+}

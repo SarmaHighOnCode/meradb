@@ -213,6 +213,66 @@ Json parse(const std::string& text) {
     return result;
 }
 
+std::string utf8ErrorText(const std::string& text) {
+    const auto at = [&](std::size_t k) { return static_cast<unsigned char>(text[k]); };
+    const std::size_t n = text.size();
+    for (std::size_t i = 0; i < n;) {
+        const unsigned char b0 = at(i);
+        if (b0 < 0x80) {
+            ++i;
+            continue;
+        }
+        // Mirrors CPython's strict decoder: how many continuation bytes the lead byte wants and
+        // which values the first one may take (no overlong forms, no surrogates, nothing > U+10FFFF).
+        std::size_t continuation = 0;
+        unsigned char lowest = 0x80, highest = 0xBF;
+        if (b0 >= 0xC2 && b0 <= 0xDF) {
+            continuation = 1;
+        } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+            continuation = 2;
+            if (b0 == 0xE0) lowest = 0xA0;
+            if (b0 == 0xED) highest = 0x9F;
+        } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+            continuation = 3;
+            if (b0 == 0xF0) lowest = 0x90;
+            if (b0 == 0xF4) highest = 0x8F;
+        }
+        std::size_t end = i + 1;  // exclusive end of the offending bytes
+        const char* reason = nullptr;
+        if (continuation == 0) {
+            reason = "invalid start byte";
+        } else {
+            for (std::size_t k = 1; k <= continuation; ++k) {
+                if (i + k >= n) {
+                    reason = "unexpected end of data";
+                    end = n;
+                    break;
+                }
+                const unsigned char b = at(i + k);
+                const unsigned char lo = k == 1 ? lowest : 0x80;
+                const unsigned char hi = k == 1 ? highest : 0xBF;
+                if (b < lo || b > hi) {
+                    reason = "invalid continuation byte";
+                    end = i + k;
+                    break;
+                }
+            }
+        }
+        if (reason == nullptr) {
+            i += continuation + 1;
+            continue;
+        }
+        static const char* const hex = "0123456789abcdef";
+        std::string out = "'utf-8' codec can't decode ";
+        if (end - i == 1)
+            out += std::string("byte 0x") + hex[b0 >> 4] + hex[b0 & 15] + " in position " + std::to_string(i);
+        else
+            out += "bytes in position " + std::to_string(i) + "-" + std::to_string(end - 1);
+        return out + ": " + reason;
+    }
+    return "";
+}
+
 bool isValidUtf8(const std::string& text) {
     for (std::size_t i = 0; i < text.size();) {
         std::uint32_t cp = 0;

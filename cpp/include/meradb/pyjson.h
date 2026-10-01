@@ -35,4 +35,8 @@ Json parse(const std::string& text);
 // Strict UTF-8 (no overlong forms, no surrogates, nothing above U+10FFFF).
 bool isValidUtf8(const std::string& text);
 
+// "" for valid UTF-8, else the text of Python's UnicodeDecodeError for `text`.decode("utf-8"):
+// "'utf-8' codec can't decode byte 0xc3 in position 2: invalid continuation byte".
+std::string utf8ErrorText(const std::string& text);
+
 }  // namespace meradb::pyjson

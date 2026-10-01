@@ -4,6 +4,9 @@
 #include "meradb/engine.h"
 #include "server_fixture.h"
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 
 using namespace meradb;
 using namespace meradb_test;
@@ -58,7 +61,7 @@ TEST_CASE("hardening_server invalid UTF-8 and binary junk are protocol errors", 
     RawClient c(s.port());
     c.hello();
     c.sendRaw("{\"type\": \"query\", \"text\": \"\xC3(\"}\n");
-    CHECK(errorOf(c.receive().value()) == "[Protocol Galti] Galat message: invalid UTF-8");
+    CHECK(errorOf(c.receive().value()) == "[Protocol Galti] Galat message: 'utf-8' codec can't decode byte 0xc3 in position 27: invalid continuation byte");
     std::string junk;
     for (int i = 0; i < 300; ++i) junk += static_cast<char>((i * 37) % 251 + 1 == '\n' ? 'x' : (i * 37) % 251 + 1);
     c.sendRaw(junk + "\n");
@@ -218,4 +221,63 @@ TEST_CASE("hardening_server a hundred idle connections stop promptly", "[hardeni
     double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     CHECK(took < 4.0);
     CHECK(s->server().sessions() == 0);
+}
+
+TEST_CASE("hardening_server a client that stops reading cannot keep the server from shutting down", "[hardening][server]") {
+    RunningServer s;
+    {
+        RawClient filler(s.port());
+        filler.hello();
+        filler.query("BANAO TABLE big (id INT, s TEXT)");
+        const std::string row = std::string(2000, 'x');
+        std::string insert = "DAALO MEIN big MAAN ";
+        for (int i = 0; i < 1500; ++i) insert += (i ? ", (" : "(") + std::to_string(i) + ", '" + row + "')";
+        CHECK(filler.query(insert)["results"][0]["error"] == "");
+    }
+    RawClient stalled(s.port());
+    stalled.hello();
+    for (int i = 0; i < 12; ++i) stalled.send(Json{{"type", "query"}, {"text", "DIKHAO * SE big"}});  // ~3 MB each, never read
+    sleepMs(300);  // let the server fill its socket buffers and block in send()
+    {
+        RawClient other(s.port());
+        other.hello();
+        CHECK(other.request(Json{{"type", "shutdown"}})["ok"] == true);
+    }
+    CHECK(waitFor([&] { return s.stopped(); }, 8.0));
+}
+
+TEST_CASE("hardening_server unknown request types are shown like Python's repr", "[hardening][server]") {
+    RunningServer s;
+    RawClient c(s.port());
+    c.hello();
+    CHECK(errorOf(c.request(Json::parse("{\"type\": [\"a\"]}"))) == "Unknown request type: ['a']");
+    CHECK(errorOf(c.request(Json::parse("{\"type\": {\"a\": [1, \"x\", null, false]}}"))) ==
+          "Unknown request type: {'a': [1, 'x', None, False]}");
+    CHECK(errorOf(c.request(Json::parse("{\"type\": 1.5}"))) == "Unknown request type: 1.5");
+    CHECK(errorOf(c.request(Json::parse("{\"type\": null}"))) == "Unknown request type: None");
+    CHECK(errorOf(c.request(Json::parse("{\"type\": \"nope\"}"))) == "Unknown request type: 'nope'");
+    CHECK(errorOf(c.request(Json::parse("{}"))) == "Unknown request type: None");
+}
+
+TEST_CASE("hardening_server serve() reports an unusable data folder like Python instead of aborting", "[hardening][server]") {
+    TempDir dir;
+    const std::string blocker = dir.file("a_file");
+    {
+        std::ofstream(blocker) << "not a folder";
+    }
+    ServerOptions options;
+    options.dataDir = (std::filesystem::path(blocker) / "sub").string();
+    options.port = 0;
+    std::ostringstream captured;
+    std::streambuf* saved = std::cerr.rdbuf(captured.rdbuf());
+    int code = -1;
+    try {
+        code = serve(options);
+    } catch (...) {
+        std::cerr.rdbuf(saved);
+        throw;
+    }
+    std::cerr.rdbuf(saved);
+    CHECK(code == 1);
+    CHECK(captured.str().rfind("Server start nahi hua (127.0.0.1:0): ", 0) == 0);
 }

@@ -408,11 +408,16 @@ nlohmann::ordered_json Engine::schemaTree() {
 }
 
 void Engine::close() {
-    if (inTransaction()) {
-        try {
-            executeStatement(ast::Rollback());
-        } catch (const MeraDBError&) {
-        }
+    if (!inTransaction()) return;
+    try {
+        executeStatement(ast::Rollback());
+    } catch (const std::exception&) {  // MeraDBError, or a filesystem_error out of the snapshot restore
+    }
+    // Whatever happened, a closing session must not keep the shared lock: the
+    // snapshot stays on disk and crash recovery undoes the transaction next start.
+    if (inTransaction() && txnThread_ == std::this_thread::get_id()) {
+        txnDb.reset();
+        instance_->lock.unlock();
     }
 }
 

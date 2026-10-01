@@ -180,9 +180,30 @@ bool Socket::waitReadable(double seconds) {
     return waitReady(toNative(handle_), false, seconds);
 }
 
-void Socket::sendAll(const std::string& data) {
+void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
     if (handle_ == kInvalid) throw NetError("socket band hai");
     std::size_t sent = 0;
+    if (stop != nullptr) {
+        struct NonBlocking {  // blocking mode is restored on every exit path
+            Native s;
+            explicit NonBlocking(Native native) : s(native) { setNonBlocking(s, true); }
+            ~NonBlocking() { setNonBlocking(s, false); }
+        } mode(toNative(handle_));
+        while (sent < data.size()) {
+            std::size_t chunk = std::min<std::size_t>(data.size() - sent, 1u << 16);
+            IoLen n = ::send(toNative(handle_), data.data() + sent, static_cast<IoCap>(chunk), 0);
+            if (n >= 0) {
+                sent += static_cast<std::size_t>(n);
+                continue;
+            }
+            int e = lastError();
+            if (isInterrupted(e)) continue;
+            if (!isTimeout(e)) throw NetError(errorText(e));  // timeout here = would block: no room yet
+            if (stop->load()) throw NetError("server band ho raha hai");  // only a blocked send gives up
+            waitReady(toNative(handle_), true, 0.1);
+        }
+        return;
+    }
     while (sent < data.size()) {
         std::size_t chunk = data.size() - sent;
         if (chunk > 1u << 20) chunk = 1u << 20;

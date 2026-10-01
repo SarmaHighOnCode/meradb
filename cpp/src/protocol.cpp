@@ -26,8 +26,9 @@ MessageReader::Fill MessageReader::fill() {
     return Fill::Data;
 }
 
-Json MessageReader::parseLine(const std::string& line) const {
-    if (!pyjson::isValidUtf8(line)) throw ProtocolError("Galat message: invalid UTF-8");
+Json MessageReader::parseLine(const std::string& line, bool terminated) const {
+    const std::string decodeError = pyjson::utf8ErrorText(terminated ? line + "\n" : line);
+    if (!decodeError.empty()) throw ProtocolError("Galat message: " + decodeError);
     Json message;
     try {
         message = pyjson::parse(line);
@@ -59,7 +60,7 @@ std::optional<Json> MessageReader::receive() {
             buffer_.erase(0, newline + 1);
             scanned_ = 0;
             if (line.size() + 1 > maxBytes_) throw ProtocolError("Message bahut bada hai");  // Python counts the "\n"
-            return parseLine(line);
+            return parseLine(line, true);
         }
         scanned_ = buffer_.size();
         if (buffer_.size() >= maxBytes_) {
@@ -75,12 +76,14 @@ std::optional<Json> MessageReader::receive() {
             std::string tail = std::move(buffer_);  // Python's readline() hands back an unterminated tail too
             buffer_.clear();
             scanned_ = 0;
-            return parseLine(tail);
+            return parseLine(tail, false);
         }
     }
 }
 
-void send(net::Socket& socket, const Json& message) { socket.sendAll(pyjson::dump(message) + "\n"); }
+void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop) {
+    socket.sendAll(pyjson::dump(message) + "\n", stop);
+}
 
 // ---------------------------------------------------------------------------
 // cells and results

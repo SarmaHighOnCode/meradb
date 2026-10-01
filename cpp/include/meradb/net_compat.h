@@ -4,6 +4,7 @@
 // I/O, RAII. Public header: no <winsock2.h> / <sys/socket.h> here, the
 // native descriptor is carried as a std::intptr_t.
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -51,7 +52,11 @@ public:
     bool waitReadable(double seconds);
 
     // Sends every byte (looping over partial sends). Throws NetError.
-    void sendAll(const std::string& data);
+    // With `stop`, a peer that has stopped reading cannot hold the caller for
+    // ever: the socket is written non-blocking, the wait for room is polled
+    // every 100 ms, and once *stop is true the send is abandoned with
+    // NetError("server band ho raha hai").
+    void sendAll(const std::string& data, const std::atomic<bool>* stop = nullptr);
     // Reads at most `capacity` bytes. Returns 0 when the peer closed the
     // connection. Throws NetError on an error or when the receive timeout
     // (see setReceiveTimeout) expires ("timed out").

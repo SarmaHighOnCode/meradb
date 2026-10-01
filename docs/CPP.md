@@ -202,7 +202,14 @@ These are deliberate and small.
   options (`--dat` for `--data`); the C++ command line requires the full option name.
 - **Server shutdown**: stopping the server rolls back every open transaction cleanly; Python's
   daemon threads die with the process and rely on crash recovery at the next start. The data
-  folder ends up the same.
+  folder ends up the same. A session blocked sending a reply to a client that has stopped
+  reading is dropped (and rolled back) once the server is stopping, so `shutdown` and Ctrl+C
+  always finish; Python's daemon threads never wait for it either.
+- **Protocol error wording**: `Galat message: ...` for malformed JSON carries the JSON
+  library's own text in C++ (Python: `Expecting value: line 1 column 1 (char 0)`); invalid UTF-8
+  and the repr in `Unknown request type: ...` match Python. An oversize line is answered with ONE
+  `Message bahut bada hai` and its remainder is skipped (Python reads the tail as further
+  messages and answers each).
 - **`start`** launches `meradb_cli server` (this program), not `python -m meradb server`.
 - **SHA-256 in-tree** (no picosha2 as the design spec suggested; see the plan's D4).
 - **Platform coverage**: only the MinGW (Windows) build has been compiled and run so far. The

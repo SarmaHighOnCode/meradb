@@ -52,7 +52,8 @@ public:
 private:
     enum class Fill { Data, Eof, Stopped };
     Fill fill();
-    Json parseLine(const std::string& line) const;
+    // `terminated`: the line ended with a newline (Python decodes it together with that newline).
+    Json parseLine(const std::string& line, bool terminated) const;
 
     net::Socket& socket_;
     std::size_t maxBytes_;
@@ -63,7 +64,8 @@ private:
 };
 
 // One JSON object plus "\n". Throws net::NetError.
-void send(net::Socket& socket, const Json& message);
+// With `stop`, a stalled peer cannot block the caller past the stop flag (see Socket::sendAll).
+void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop = nullptr);
 
 // ---- cells and results (engine.py: Result.to_dict / from_dict) ----
 // null / bool / int / float / string as themselves; a DATE as {"$date": "YYYY-MM-DD"}.

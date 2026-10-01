@@ -6,6 +6,7 @@
 #include "test_util.h"
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 
@@ -115,4 +116,23 @@ TEST_CASE("engine_server databases() lists directories only", "[engine][server]"
     std::filesystem::create_directories(dir.path() / ".hidden");
     std::ofstream(dir.file("users.json")) << "{}";
     CHECK(instance.databases() == std::vector<std::string>{"main", "zoo"});
+}
+
+TEST_CASE("engine_server close() releases the shared lock even when the rollback itself fails", "[engine][server]") {
+    meradb_test::TempDir dir;
+    auto instance = std::make_shared<Instance>(dir.str());
+    instance->lockTimeoutSeconds = 0.3;
+    Engine a(instance);
+    a.execute("BANAO TABLE t (x INT); SHURU");
+    // Without its snapshot the restore throws a std::filesystem_error (not a MeraDBError).
+    std::filesystem::remove_all(std::filesystem::path(dir.str()) / SNAPSHOT_DIR / "main");
+    a.close();
+    CHECK_FALSE(a.inTransaction());
+    std::string error = "unset";
+    std::thread other([&] {
+        Engine b(instance);
+        error = b.runScript("DIKHAO TABLES")[0].error;
+    });
+    other.join();
+    CHECK(error.find("Database busy") == std::string::npos);
 }
