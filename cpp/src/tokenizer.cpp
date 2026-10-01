@@ -47,7 +47,8 @@ char Tokenizer::peek(int offset) const {
 
 char Tokenizer::advance() {
     char c = text_[pos_++];
-    if (c == '\n') { ++line_; col_ = 1; } else { ++col_; }
+    if (c == '\n') { ++line_; col_ = 1; }
+    else if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) ++col_;  // count characters, not UTF-8 bytes (Python's str)
     return c;
 }
 
@@ -183,7 +184,12 @@ std::vector<Token> Tokenizer::tokenize() {
                 static const std::string oneChar = "(),;*=<>+-/%.";
                 if (oneChar.find(c) == std::string::npos) {
                     // Python formats the character with repr(): '@', "'" or '\\'
-                    std::string shown = (c == '\\') ? std::string("'\\\\'") : std::string("'") + c + "'";
+                    // A non-ASCII character is shown whole (all of its UTF-8 bytes), as Python's repr does for
+                    // printable characters; escaping of unprintable ones (e.g. '\xa0') is not reproduced.
+                    unsigned char lead = static_cast<unsigned char>(c);
+                    size_t length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+                    std::string character = text_.substr(pos_, length);
+                    std::string shown = (c == '\\') ? std::string("'\\\\'") : "'" + character + "'";
                     error("Ye character samajh nahi aaya: " + shown);
                 }
                 advance();

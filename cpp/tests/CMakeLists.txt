@@ -38,6 +38,7 @@ add_executable(meradb_tests
   test_server_hardening.cpp
   test_server_control.cpp
   test_cli.cpp
+  test_tokenizer_unicode.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
@@ -76,6 +77,9 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME cli_lifecycle
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_lifecycle.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(cli_lifecycle PROPERTIES TIMEOUT 240)
+  add_test(NAME interop_matrix
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/interop_check.py --cli $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(interop_matrix PROPERTIES TIMEOUT 900)
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
 endif()
