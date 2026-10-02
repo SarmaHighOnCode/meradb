@@ -402,11 +402,6 @@ TEST_CASE("shell loop: every recorded Python transcript is reproduced exactly", 
     for (int i = 0; i < count; ++i) {
         const auto& transcript = all[i];
         DYNAMIC_SECTION(transcript.name) {
-            // The tokenizer shows an unprintable character raw where Python's repr() escapes it ('\xa0', '\x1a').
-            // That is a core divergence recorded in docs/CPP.md (Task 14), not a shell one, so these two are not
-            // replayed here; the cross-engine script (Task 11) skips them for the same reason.
-            const std::string name = transcript.name;
-            if (name == "unicode_space" || name == "ctrl_z_in_pipe") continue;
             TempDir dir;
             LocalBackend backend(dir.file("data"));
             std::istringstream in(transcript.input);

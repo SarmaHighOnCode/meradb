@@ -205,8 +205,13 @@ These are deliberate and small.
 - **Non-ASCII identifiers**: Python accepts any Unicode letter in a table or column name;
   C++ accepts ASCII letters, digits and `_` only (Unicode letter classes need tables the
   project does not depend on). Non-ASCII text in string literals and data is fine.
-  Unexpected non-ASCII characters in a query are shown whole, but Python's escaping of
-  unprintable ones (`'\xa0'`) is not reproduced.
+  Whitespace is NOT part of this difference: the tokenizer skips exactly the 29 characters
+  Python's `str.isspace()` accepts (no-break space, U+3000, U+2028/2029, U+0085,
+  U+001C..U+001F, ...) plus U+FEFF, and counts one column per character. In the
+  `Ye character samajh nahi aaya: '<c>'` error the character is written like Python's
+  `repr()` for ASCII controls (`'\x00'`, `'\x1b'`), U+007F..U+00AD, and the common invisible
+  format characters (`'\u200b'`, `'\u2060'`); other characters Python's tables call
+  unprintable (unassigned or private-use code points) are shown raw.
 - **INT overflow family**: Python integers are unbounded, C++ `INT` values are 64-bit.
   Arithmetic that overflows 64 bits is reported as an error instead of producing a big number.
 - **Command-line abbreviations**: Python's `argparse` accepts unambiguous abbreviations of long

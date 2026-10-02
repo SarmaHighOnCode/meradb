@@ -57,7 +57,7 @@ std::string reprCharacter(const std::string& text, std::size_t pos) {
     else if (cp == '\n') body = "\\n";
     else if (cp == '\r') body = "\\r";
     else if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0xAD) body = "\\x" + hex(cp, 2);
-    else if ((cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F))
+    else if (cp == 0x061C || cp == 0x180E || (cp >= 0xFFF9 && cp <= 0xFFFB) || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F))
         body = "\\u" + hex(cp, 4);
     else body = text.substr(pos, length);
     return "'" + body + "'";
@@ -89,7 +89,16 @@ void Tokenizer::skipWhitespaceAndComments() {
             ++col_;
             continue;
         }
-        if (std::isspace(static_cast<unsigned char>(c))) { advance(); continue; }
+        {
+            // str.isspace() as Python's tokenizer uses it: the 29 whitespace characters, ASCII or not
+            // (U+001C..U+001F, U+0085, U+00A0, U+3000 ... but not U+200B, and U+FEFF is handled above).
+            char32_t cp = 0;
+            const std::size_t length = pytext::decode(text_, pos_, cp);
+            if (pytext::isSpace(cp)) {
+                for (std::size_t i = 0; i < length; ++i) advance();  // one character: one column
+                continue;
+            }
+        }
         if (c == '-' && peek(1) == '-') {
             while (pos_ < text_.size() && peek() != '\n') advance();
             continue;

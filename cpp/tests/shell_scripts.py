@@ -102,10 +102,6 @@ SCRIPTS = {
     "ctrl_z_in_pipe": "BANAO TABLE z (id INT);\n\x1a\n.tables\n;\n",
 }
 
-# The tokenizer's "Ye character samajh nahi aaya: '<c>'" shows an unprintable character raw, where Python's repr()
-# escapes it ('\xa0', '\x1a'). A core divergence (docs/CPP.md), not a shell one: not compared.
-KNOWN_REPR_DIVERGENCE = ["unicode_space", "ctrl_z_in_pipe"]
-
 # The scripts also run through a server (every client/server pair): the ones that do not depend on local-only
 # behaviour. Each run starts two servers and two clients, so the list is kept to what adds coverage.
 SERVER_SCRIPTS = [

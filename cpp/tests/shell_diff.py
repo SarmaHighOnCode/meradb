@@ -27,7 +27,7 @@ sys.path.insert(0, str(HERE))
 sys.stdout.reconfigure(encoding="utf-8")  # diffs may contain non-ASCII text; never die on a console code page
 
 from interop_check import Server  # noqa: E402  (a foreground server of either kind on a free port)
-from shell_scripts import KNOWN_REPR_DIVERGENCE, SCRIPTS, SERVER_SCRIPTS  # noqa: E402
+from shell_scripts import SCRIPTS, SERVER_SCRIPTS  # noqa: E402
 
 
 def child_env() -> dict:
@@ -64,9 +64,6 @@ def check_local(cli: str, names: list[str]) -> list[str]:
     failures = []
     for name in selected(names, SCRIPTS):
         label = f"local: {name}"
-        if name in KNOWN_REPR_DIVERGENCE:
-            print(f"SKIP {label} (the tokenizer shows an unprintable character raw, Python escapes it)")
-            continue
         script = SCRIPTS[name]
         with tempfile.TemporaryDirectory() as root:
             data = os.path.join(root, "data")  # the same path for both, so the banner's "connected:" line matches

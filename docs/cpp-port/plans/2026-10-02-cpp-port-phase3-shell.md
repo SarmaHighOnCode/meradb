@@ -3037,11 +3037,6 @@ TEST_CASE("shell loop: every recorded Python transcript is reproduced exactly", 
     for (int i = 0; i < count; ++i) {
         const auto& transcript = all[i];
         DYNAMIC_SECTION(transcript.name) {
-            // The tokenizer shows an unprintable character raw where Python's repr() escapes it ('\xa0', '\x1a').
-            // That is a core divergence recorded in docs/CPP.md (Task 14), not a shell one, so these two are not
-            // replayed here; the cross-engine script (Task 11) skips them for the same reason.
-            const std::string name = transcript.name;
-            if (name == "unicode_space" || name == "ctrl_z_in_pipe") continue;
             TempDir dir;
             LocalBackend backend(dir.file("data"));
             std::istringstream in(transcript.input);
@@ -3118,7 +3113,7 @@ locals/arguments of different calls (no two in one argument list), as the Global
 cmake --build cpp/build
 ctest --test-dir cpp/build --output-on-failure -R "shell loop"
 ```
-Expected: 15 test cases pass, including the 29 replayed transcripts (31 recorded, 2 skipped as above).
+Expected: 15 test cases pass, including the 31 replayed transcripts (every recorded one).
 Then the whole suite: `ctest --test-dir cpp/build --output-on-failure`.
 
 - [ ] **Step 6: Commit**
@@ -3129,10 +3124,10 @@ git commit -m "Add the read-eval-print loop and replay Python's shell transcript
 ```
 
 **Completion checklist:**
-- [ ] 29 of the 31 Python transcripts reproduce byte for byte through `repl::run` on a real `LocalBackend`
+- [ ] all 31 Python transcripts reproduce byte for byte through `repl::run` on a real `LocalBackend`
 - [ ] the blank-line quirk, `.exit` vs end-of-input newline, and the `130` rule each have a test
 - [ ] a dropped connection never ends the shell
-- [ ] the two skipped transcripts are documented as a tokenizer `repr()` difference, to be recorded in docs (Task 14)
+- [ ] no transcript is skipped: `unicode_space` needs the tokenizer to treat non-ASCII whitespace as Python does, `ctrl_z_in_pipe` needs the `repr()`-style escape (`'\x1a'`) in the tokenizer error
 - [ ] suite green, zero warnings
 
 ---
@@ -3382,7 +3377,7 @@ git commit -m "Wire the interactive shell into meradb_cli and share its code pat
 ### Task 11: Cross-engine shell diff: local mode
 
 **Files:**
-- Modify: `cpp/tests/shell_scripts.py` (append `KNOWN_REPR_DIVERGENCE`)
+- Modify: `cpp/tests/shell_scripts.py`
 - Create: `cpp/tests/shell_diff.py`
 - Modify: `cpp/tests/CMakeLists.txt` (register `shell_diff_local`)
 
@@ -3394,18 +3389,13 @@ git commit -m "Wire the interactive shell into meradb_cli and share its code pat
   path is used for both runs (wiped in between) so the banner's `connected: local (<path>)` line is
   identical. Colour is off (`NO_COLOR=1`, piped); colour is covered by the golden unit tests.
 - Python runs with `PYTHONIOENCODING=utf-8` so it prints `·` and `█` like the C++ shell always does (D4).
-- The two scripts in `KNOWN_REPR_DIVERGENCE` are reported as `SKIP`: the tokenizer's
-  `Ye character samajh nahi aaya: '<c>'` message shows an unprintable character raw where Python's `repr()`
-  escapes it (`'\xa0'`, `'\x1a'`). That is a Phase 1 core difference, listed in `docs/CPP.md` (Task 14),
-  not a shell difference; hiding it inside the diff tool would hide real bugs, so it is skipped by name.
+- No script is skipped. (An earlier draft skipped `unicode_space` and `ctrl_z_in_pipe` as a "`repr()`
+  divergence"; the real differences were that the C++ tokenizer rejected non-ASCII whitespace Python accepts and
+  printed control characters raw in its error text. Both are fixed in the tokenizer, so both scripts are compared.)
 
 - [ ] **Step 1: Append to `cpp/tests/shell_scripts.py`**
 
-```python
-# The tokenizer's "Ye character samajh nahi aaya: '<c>'" shows an unprintable character raw, where Python's repr()
-# escapes it ('\xa0', '\x1a'). A core divergence (docs/CPP.md), not a shell one: not compared.
-KNOWN_REPR_DIVERGENCE = ["unicode_space", "ctrl_z_in_pipe"]
-```
+Nothing to append: every script in `SCRIPTS` is compared.
 
 - [ ] **Step 2: Write `cpp/tests/shell_diff.py`**
 
@@ -3436,7 +3426,7 @@ REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.stdout.reconfigure(encoding="utf-8")  # diffs may contain non-ASCII text; never die on a console code page
 
-from shell_scripts import KNOWN_REPR_DIVERGENCE, SCRIPTS  # noqa: E402
+from shell_scripts import SCRIPTS  # noqa: E402
 
 
 def child_env() -> dict:
@@ -3473,9 +3463,6 @@ def check_local(cli: str, names: list[str]) -> list[str]:
     failures = []
     for name in selected(names, SCRIPTS):
         label = f"local: {name}"
-        if name in KNOWN_REPR_DIVERGENCE:
-            print(f"SKIP {label} (the tokenizer shows an unprintable character raw, Python escapes it)")
-            continue
         script = SCRIPTS[name]
         with tempfile.TemporaryDirectory() as root:
             data = os.path.join(root, "data")  # the same path for both, so the banner's "connected:" line matches
@@ -3513,8 +3500,7 @@ if __name__ == "__main__":
 ```bash
 python cpp/tests/shell_diff.py --cli cpp/build/meradb_cli
 ```
-Expected: 29 lines `PASS local: <name> (<n> lines, exit=0)`, two `SKIP` lines (`unicode_space`,
-`ctrl_z_in_pipe`) and `ALL MATCHED`; exit code 0. Any `FAIL` prints a unified diff of the two transcripts:
+Expected: 31 lines `PASS local: <name> (<n> lines, exit=0)` and `ALL MATCHED`; exit code 0. Any `FAIL` prints a unified diff of the two transcripts:
 fix the C++ shell (Python is the oracle), never the script.
 
 - [ ] **Step 4: Prove the diff can fail** (a check that does not fail on a bug is worthless)
@@ -3545,8 +3531,7 @@ git commit -m "Diff the C++ shell against the Python shell on piped scripts"
 ```
 
 **Completion checklist:**
-- [ ] all 29 compared scripts match on stdout, stderr and exit code
-- [ ] the two skipped scripts are skipped by name, with the reason printed
+- [ ] all 31 scripts match on stdout, stderr and exit code (none is skipped)
 - [ ] the mutation check in Step 4 was seen failing, then reverted
 - [ ] no temp folder, process or pid file is left behind; no `MERADB_*` variable leaks into a child
 - [ ] suite green
@@ -3617,7 +3602,7 @@ sys.path.insert(0, str(HERE))
 sys.stdout.reconfigure(encoding="utf-8")  # diffs may contain non-ASCII text; never die on a console code page
 
 from interop_check import Server  # noqa: E402  (a foreground server of either kind on a free port)
-from shell_scripts import KNOWN_REPR_DIVERGENCE, SCRIPTS, SERVER_SCRIPTS  # noqa: E402
+from shell_scripts import SCRIPTS, SERVER_SCRIPTS  # noqa: E402
 
 
 def child_env() -> dict:
@@ -3654,9 +3639,6 @@ def check_local(cli: str, names: list[str]) -> list[str]:
     failures = []
     for name in selected(names, SCRIPTS):
         label = f"local: {name}"
-        if name in KNOWN_REPR_DIVERGENCE:
-            print(f"SKIP {label} (the tokenizer shows an unprintable character raw, Python escapes it)")
-            continue
         script = SCRIPTS[name]
         with tempfile.TemporaryDirectory() as root:
             data = os.path.join(root, "data")  # the same path for both, so the banner's "connected:" line matches
@@ -4245,9 +4227,10 @@ compiled on MinGW only and never run against a real terminal in a test):
 - **Shell: operating-system wording** after `Server se connection toot gaya:` (a dropped connection) is
   the platform's own text, which differs from Python's (`[WinError 10054] ...` vs a bare message). The
   words before it match.
-- **Shell: unprintable characters in a tokenizer error** — the existing "Non-ASCII identifiers" entry
-  above: `Ye character samajh nahi aaya: '<c>'` prints a NBSP or a control character raw where Python
-  prints `'\xa0'` / `'\x1a'`. The shell comparison scripts skip the two scripts that hit it.
+- **Shell: unprintable characters in a tokenizer error** — `Ye character samajh nahi aaya: '<c>'` escapes
+  ASCII controls, U+007F..U+00AD and the common invisible format characters like Python's `repr()`; only
+  other characters Python calls unprintable (unassigned, private use) are still shown raw. Non-ASCII
+  whitespace is accepted exactly as Python does. No shell comparison script is skipped.
 ```
 
 Also change the "Windows console" bullet's last sentence ("Not verifiable without an interactive console
@@ -4273,7 +4256,7 @@ Replace the whole Phase 3 bullet with the hand-off below, and adjust the Phase 4
   `sys::InterruptGuard` inside the full-screen UI: FTXUI owns the terminal and its keys.
 - **Phase 5, polish**: `docs/REPORT.md`; grow the divergence list above; consider Unicode
   identifiers (ICU or a small generated table of letter ranges) if full parity is wanted, which would
-  also let the tokenizer escape unprintable characters like Python's `repr()`;
+  also let the tokenizer escape every unprintable character like Python's `repr()`;
   verify the POSIX and MSVC builds first thing and fix warnings (the code follows the
   portability rules but those toolchains have not been run yet). The terminal primitives in `sys_compat`
   (`readTerminalLine`, `InterruptGuard`, `AnsiConsole`) are the part most in need of a real run on Linux,
@@ -4356,8 +4339,8 @@ Batches go in order; each ends with a green full suite. Within a batch, tasks go
       server and against a Python server, and `run` shares its output path (colour, dropped connections)
 - [ ] banner, prompts, `.help` output and every colour code equal what `meradb/repl.py` prints, byte for byte
       (generated goldens, both colour modes)
-- [ ] 29 recorded Python transcripts are reproduced by `repl::run`; `shell_diff.py` matches stdout, stderr and
-      exit code on 29 scripts in local mode and on 13 scripts through all four client/server pairs
+- [ ] all 31 recorded Python transcripts are reproduced by `repl::run`; `shell_diff.py` matches stdout, stderr and
+      exit code on 31 scripts in local mode and on 13 scripts through all four client/server pairs
 - [ ] `shell_session.py` holds: logins and grants, a server stopping mid-session, local fallback, hostile input
 - [ ] Windows console handled: UTF-8 code page, `ReadConsoleW`, virtual-terminal colour switched on and
       restored, piped stdin read in binary mode; POSIX tty read with `read(0)` (not compiled here)

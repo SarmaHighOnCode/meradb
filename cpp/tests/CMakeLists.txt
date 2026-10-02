@@ -39,6 +39,7 @@ add_executable(meradb_tests
   test_server_hardening.cpp
   test_server_control.cpp
   test_cli.cpp
+  test_tokenizer_space.cpp
   test_tokenizer_unicode.cpp
   test_pytext.cpp
   test_term_style.cpp
