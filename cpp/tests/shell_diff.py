@@ -2,12 +2,14 @@
 Drives the Python shell (`python -m meradb shell`) and the C++ shell (`meradb_cli shell`) with the same
 piped script and diffs everything they print -- stdout, stderr and the exit code.
 
-Every script in shell_scripts.py runs with `--local` on a fresh data folder (server mode is added in the
-next task).
+Modes:
+  local     both shells open a fresh data folder (--local); every script in shell_scripts.py
+  server    the same scripts through every client/server pair: a Python or a C++ client against a Python
+            or a C++ server (the output of the three other pairs must equal the Python-to-Python baseline)
 
 Usage:
-    python cpp/tests/shell_diff.py --cli path/to/meradb_cli                 # every script
-    python cpp/tests/shell_diff.py --cli path/to/meradb_cli basic errors    # just these
+    python cpp/tests/shell_diff.py --cli path/to/meradb_cli                 # both modes, every script
+    python cpp/tests/shell_diff.py --cli path/to/meradb_cli --mode local basic errors
 Exit code 0 = everything matched.
 """
 import argparse
@@ -24,7 +26,8 @@ REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.stdout.reconfigure(encoding="utf-8")  # diffs may contain non-ASCII text; never die on a console code page
 
-from shell_scripts import KNOWN_REPR_DIVERGENCE, SCRIPTS  # noqa: E402
+from interop_check import Server  # noqa: E402  (a foreground server of either kind on a free port)
+from shell_scripts import KNOWN_REPR_DIVERGENCE, SCRIPTS, SERVER_SCRIPTS  # noqa: E402
 
 
 def child_env() -> dict:
@@ -81,13 +84,53 @@ def check_local(cli: str, names: list[str]) -> list[str]:
     return failures
 
 
+# ---------------------------------------------------------------- server mode
+
+def check_servers(cli: str, names: list[str], strict: bool) -> list[str]:
+    failures = []
+    pool = {n: SCRIPTS[n] for n in SERVER_SCRIPTS}
+    if names and not strict:  # both modes were asked for: take only the named scripts that also run through servers
+        names = [n for n in names if n in pool]
+        if not names:
+            return failures
+    for name in selected(names, pool):
+        script = SCRIPTS[name]
+        results = {}
+        for server_kind in ("python", "cpp"):
+            for client_kind in ("python", "cpp"):
+                with tempfile.TemporaryDirectory() as data, Server(server_kind, cli, data) as server:
+                    out, err, code = run_shell(client_kind, cli, ["--port", str(server.port)], script)
+                    # the port differs per server; nothing else about the banner may
+                    results[(client_kind, server_kind)] = (out.replace(f"127.0.0.1:{server.port}", "127.0.0.1:PORT"),
+                                                           err.replace(str(server.port), "PORT"), code)
+        baseline = results[("python", "python")]
+        for pair, got in results.items():
+            if pair == ("python", "python"):
+                continue
+            label = f"server: {name}: {pair[0]} client -> {pair[1]} server"
+            if got == baseline:
+                print(f"PASS {label} ({len(got[0].splitlines())} lines)")
+            else:
+                print(f"FAIL {label}")
+                failures.append(label)
+                show_diff(baseline[0], got[0], "python->python", f"{pair[0]}->{pair[1]}")
+                if baseline[1] != got[1]:
+                    show_diff(baseline[1], got[1], "python->python stderr", "stderr")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("names", nargs="*", help="script names from shell_scripts.py (default: all)")
     parser.add_argument("--cli", required=True)
+    parser.add_argument("--mode", choices=["local", "server", "all"], default="all")
     args = parser.parse_args()
     cli = str(Path(args.cli).resolve())  # children run with cwd=REPO_ROOT, so a relative path would break
-    failures = check_local(cli, args.names)
+    failures = []
+    if args.mode in ("local", "all"):
+        failures += check_local(cli, args.names)
+    if args.mode in ("server", "all"):
+        failures += check_servers(cli, args.names, strict=args.mode == "server")
     print("ALL MATCHED" if not failures else "FAILED: " + "; ".join(failures))
     return 1 if failures else 0
 

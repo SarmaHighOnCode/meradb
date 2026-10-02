@@ -101,8 +101,11 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/fuzz_triggers.py --cli $<TARGET_FILE:meradb_cli> --seeds 100)
   set_tests_properties(interchange fuzz_triggers PROPERTIES TIMEOUT 900)
   add_test(NAME shell_diff_local
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_diff.py --cli $<TARGET_FILE:meradb_cli>)
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_diff.py --cli $<TARGET_FILE:meradb_cli> --mode local)
+  add_test(NAME shell_diff_server
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_diff.py --cli $<TARGET_FILE:meradb_cli> --mode server)
   set_tests_properties(shell_diff_local PROPERTIES TIMEOUT 600)
+  set_tests_properties(shell_diff_server PROPERTIES TIMEOUT 900)
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
 endif()
