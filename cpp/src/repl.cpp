@@ -1,5 +1,11 @@
 // cpp/src/repl.cpp -- see repl.h.
 #include "meradb/repl.h"
+#include "meradb/cli_format.h"
+#include "meradb/errors.h"
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <vector>
 
 namespace meradb::repl {
 
@@ -28,6 +34,69 @@ ReadStatus StreamLineSource::read(const std::string& prompt, std::string& line) 
 ReadStatus ConsoleLineSource::read(const std::string& prompt, std::string& line) {
     out_ << prompt << std::flush;
     return sys::readTerminalLine(line);
+}
+
+// ---------------------------------------------------------------------------
+// running text and files
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Python's text mode (universal newlines): "\r\n" and a lone "\r" both become "\n".
+std::string normalizeNewlines(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '\r') {
+            out += '\n';
+            if (i + 1 < in.size() && in[i + 1] == '\n') ++i;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+bool runText(Backend& backend, const std::string& text, std::ostream& out, const term::Style& style) {
+    std::vector<Result> results;
+    try {
+        results = backend.runScript(text);
+    } catch (const MeraDBError& e) {  // e.g. the server connection dropped
+        out << e.what() << "\n";
+        return false;
+    }
+    bool ok = true;
+    for (const auto& result : results) {
+        const std::string rendered = formatResult(result, style);
+        if (!rendered.empty()) out << rendered << "\n";
+        out << "\n";
+        if (!result.error.empty()) ok = false;
+    }
+    return ok;
+}
+
+bool runFile(Backend& backend, const std::string& path, std::ostream& out, const term::Style& style) {
+    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    if (!file) {
+        // Same wording as Python's OSError text: "[Errno 2] No such file or directory: 'x'"
+        std::string quoted;
+        for (char c : path) {
+            if (c == '\\' || c == '\'') quoted += '\\';
+            quoted += c;
+        }
+        std::error_code ec;
+        const bool missing = !std::filesystem::exists(std::filesystem::u8path(path), ec);
+        out << "File nahi khuli: " << (missing ? "[Errno 2] No such file or directory: '" : "[Errno 13] Permission denied: '")
+            << quoted << "'\n";
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    std::string text = buffer.str();
+    if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // utf-8-sig, like Python
+    return runText(backend, normalizeNewlines(text), out, style);
 }
 
 }  // namespace meradb::repl

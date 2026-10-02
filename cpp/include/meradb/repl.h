@@ -4,7 +4,9 @@
 // Backend, print the results. Everything prints to a `std::ostream&` and reads from a `LineSource`, so the
 // whole loop runs against scripted input in tests; only ConsoleLineSource touches a real terminal.
 #pragma once
+#include "meradb/backend.h"
 #include "meradb/sys_compat.h"
+#include "meradb/term_style.h"
 #include <istream>
 #include <ostream>
 #include <string>
@@ -50,5 +52,14 @@ public:
 private:
     std::ostream& out_;
 };
+
+// Python's run_text: run `text` on the backend and print every result followed by a blank line. A statement
+// that fails prints its error and the next ones still run. A MeraDBError escaping the backend (the server
+// connection dropped) is printed (`str(e)`) and the shell goes on. False if anything went wrong.
+bool runText(Backend& backend, const std::string& text, std::ostream& out, const term::Style& style);
+
+// Python's run_file: read a script (UTF-8, an optional byte-order mark, any newline style) and runText it.
+// An unreadable file prints "File nahi khuli: <reason>" and returns false.
+bool runFile(Backend& backend, const std::string& path, std::ostream& out, const term::Style& style);
 
 }  // namespace meradb::repl
