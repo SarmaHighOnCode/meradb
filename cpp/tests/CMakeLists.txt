@@ -43,6 +43,7 @@ add_executable(meradb_tests
   test_pytext.cpp
   test_term_style.cpp
   test_repl_text.cpp
+  test_repl_input.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
