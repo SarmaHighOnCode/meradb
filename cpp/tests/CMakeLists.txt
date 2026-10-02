@@ -40,6 +40,7 @@ add_executable(meradb_tests
   test_server_control.cpp
   test_cli.cpp
   test_tokenizer_unicode.cpp
+  test_pytext.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
