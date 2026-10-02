@@ -2,6 +2,8 @@
 #include "meradb/repl.h"
 #include "meradb/cli_format.h"
 #include "meradb/errors.h"
+#include "meradb/pytext.h"
+#include "meradb/repl_text.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -97,6 +99,35 @@ bool runFile(Backend& backend, const std::string& path, std::ostream& out, const
     std::string text = buffer.str();
     if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // utf-8-sig, like Python
     return runText(backend, normalizeNewlines(text), out, style);
+}
+
+// ---------------------------------------------------------------------------
+// the shell
+// ---------------------------------------------------------------------------
+
+bool endsStatement(const std::string& buffer) { return pytext::endsWith(pytext::rstrip(buffer), ";"); }
+
+bool handleDotCommand(Backend& backend, const std::string& line, std::ostream& out, const term::Style& style) {
+    const std::vector<std::string> parts = pytext::split(line);
+    if (parts.empty()) return true;  // cannot happen: the caller passes a stripped line that starts with "."
+    const std::string cmd = pytext::lowerAscii(parts[0]);
+    if (cmd == ".exit" || cmd == ".quit" || cmd == ".nikal") return false;
+    if (cmd == ".help") {
+        const std::string topic = pytext::strip(line.substr(parts[0].size()));  // everything after ".help"
+        if (!topic.empty())
+            out << renderReference(style, topic) << "\n";
+        else
+            out << fullHelp(style) << "\n";
+    } else if (cmd == ".tables") {
+        runText(backend, "DIKHAO TABLES;", out, style);
+    } else if (cmd == ".schema" && parts.size() > 1) {
+        runText(backend, "BATAO " + parts[1] + ";", out, style);
+    } else if (cmd == ".run" && parts.size() > 1) {
+        runFile(backend, parts[1], out, style);
+    } else {
+        out << "Ye shell command nahi pata: " << line << "  (.help dekho)\n";
+    }
+    return true;
 }
 
 }  // namespace meradb::repl

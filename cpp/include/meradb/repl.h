@@ -62,4 +62,12 @@ bool runText(Backend& backend, const std::string& text, std::ostream& out, const
 // An unreadable file prints "File nahi khuli: <reason>" and returns false.
 bool runFile(Backend& backend, const std::string& path, std::ostream& out, const term::Style& style);
 
+// Whether the text typed so far ends a statement: Python's buffer.rstrip().endswith(";"). It does not look
+// inside strings or comments (a line that ends in `;` inside a string literal ends it too).
+bool endsStatement(const std::string& buffer);
+
+// Python's handle_dot_command(backend, line); `line` is already stripped and starts with ".". False when the
+// user asked to leave (.exit, .quit, .nikal).
+bool handleDotCommand(Backend& backend, const std::string& line, std::ostream& out, const term::Style& style);
+
 }  // namespace meradb::repl
