@@ -1,7 +1,9 @@
 // cpp/tests/test_tokenizer_unicode.cpp -- columns and error characters for non-ASCII source text.
 // Found by the interop matrix (Task 23): Python counts characters, Phase 1 counted UTF-8 bytes.
 #include <catch2/catch_test_macros.hpp>
+#include "meradb/engine.h"
 #include "meradb/errors.h"
+#include "test_util.h"
 #include "meradb/tokenizer.h"
 #include <string>
 
@@ -38,4 +40,28 @@ TEST_CASE("tokenizer_unicode non-ASCII text inside strings is kept byte for byte
     REQUIRE(tokens.size() == 2);
     CHECK(tokens[0].textValue == "caf\xC3\xA9 \xE4\xB8\x96\xE7\x95\x8C");
     CHECK(tokens[0].col == 1);
+}
+
+// Expected texts come from Python's tokenizer, which formats the character with repr().
+TEST_CASE("tokenizer_unicode control and invisible characters are shown escaped, like repr()", "[tokenizer][unicode]") {
+    const std::string head = "Ye character samajh nahi aaya: ";
+    CHECK(errorOf(std::string("DIKHAO\0 TABLES;", 15)) == head + "'\\x00' (line 1, col 7)");
+    CHECK(errorOf("a \x01") == head + "'\\x01' (line 1, col 3)");
+    CHECK(errorOf("a \x1b") == head + "'\\x1b' (line 1, col 3)");
+    CHECK(errorOf("a \x7f") == head + "'\\x7f' (line 1, col 3)");
+    CHECK(errorOf("a \xC2\x80") == head + "'\\x80' (line 1, col 3)");
+    CHECK(errorOf("a \xC2\x9F") == head + "'\\x9f' (line 1, col 3)");
+    CHECK(errorOf("a \xC2\xAD") == head + "'\\xad' (line 1, col 3)");
+    CHECK(errorOf("a \xE2\x80\x8B") == head + "'\\u200b' (line 1, col 3)");  // zero width space: not whitespace
+    CHECK(errorOf("a \xE2\x80\x8F") == head + "'\\u200f' (line 1, col 3)");
+    CHECK(errorOf("a \xE2\x81\xA0") == head + "'\\u2060' (line 1, col 3)");
+    CHECK(errorOf("a\\") == head + "'\\\\' (line 1, col 2)");
+}
+
+TEST_CASE("tokenizer_unicode a NUL in the text keeps the whole error through the engine", "[tokenizer][unicode]") {
+    meradb_test::TempDir dir;
+    Engine engine(dir.path().string());
+    const auto results = engine.runScript(std::string("DIKHAO\0 TABLES;", 15));
+    REQUIRE(results.size() == 1);
+    CHECK(results[0].error == "[Tokenizer Galti] Ye character samajh nahi aaya: '\\x00' (line 1, col 7)");
 }

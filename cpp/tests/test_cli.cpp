@@ -343,6 +343,15 @@ TEST_CASE("cli each subcommand's --help matches argparse's text", "[cli]") {
 }
 
 // Every expectation below was taken from `python -m meradb` (argparse, Python 3.12).
+TEST_CASE("cli a file name that starts like an option letter is still a file", "[cli]") {
+    CleanEnv env;
+    auto run = parseCliArgs({"run", "adir", "pdata.sql", "Hfile", "Ufoo", "Wx", "-d", "db"});
+    CHECK(run.error.empty());
+    CHECK(run.files == std::vector<std::string>{"adir", "pdata.sql", "Hfile", "Ufoo", "Wx"});
+    CHECK(run.database == "db");
+    CHECK(parseCliArgs({"status", "adir"}).error == "unrecognized arguments: adir");
+}
+
 TEST_CASE("cli glued short options, bundles and explicit values follow argparse", "[cli]") {
     CleanEnv env;
     CHECK(parseCliArgs({"status", "-DX"}).dataDir == "X");

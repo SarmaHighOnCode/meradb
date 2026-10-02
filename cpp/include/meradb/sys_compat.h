@@ -174,4 +174,9 @@ ReadStatus readTerminalLine(std::string& line);
 // stdin into binary mode so the bytes arrive untouched. Does nothing elsewhere.
 void setStdinBinary();
 
+// Reads a whole file as bytes (UTF-8 path). Returns 0 on success, otherwise the errno number that Python's
+// open() would report for the same failure: 2 (missing), 13 (permission; on Windows also a directory),
+// 21 (a directory, elsewhere), 22 (a name the system rejects), 20, 24, ... or 5 for a read error.
+int readFileBytes(const std::string& path, std::string& content);
+
 }  // namespace meradb::sys

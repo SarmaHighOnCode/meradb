@@ -1,5 +1,6 @@
 // cpp/tests/test_repl.cpp -- running text and files, dot-commands and the read-eval-print loop.
 #include <catch2/catch_test_macros.hpp>
+#include "meradb/datatypes.h"
 #include "meradb/repl.h"
 #include "meradb/repl_text.h"
 #include "golden_shell.h"
@@ -92,6 +93,38 @@ TEST_CASE("shell runFile reports a missing file with Python's wording", "[shell]
     std::ostringstream out;
     CHECK_FALSE(repl::runFile(backend, "definitely_missing_script.mdb", out, kPlain));
     CHECK(out.str() == "File nahi khuli: [Errno 2] No such file or directory: 'definitely_missing_script.mdb'\n");
+    CHECK(backend.scripts.empty());
+}
+
+TEST_CASE("shell runFile formats the file name like Python's repr() and picks the errno like open()", "[shell]") {
+    FakeBackend backend;
+    const auto message = [&](const std::string& path) {
+        std::ostringstream out;
+        CHECK_FALSE(repl::runFile(backend, path, out, kPlain));
+        return out.str();
+    };
+    CHECK(message("'x.mdb'") == "File nahi khuli: [Errno 2] No such file or directory: \"'x.mdb'\"\n");
+    CHECK(message("n\xC3\xA5me.mdb") == "File nahi khuli: [Errno 2] No such file or directory: 'n\xC3\xA5me.mdb'\n");
+    CHECK(message("my file.mdb") == "File nahi khuli: [Errno 2] No such file or directory: 'my file.mdb'\n");
+    CHECK(message("no_such_dir\\x.mdb") == "File nahi khuli: [Errno 2] No such file or directory: 'no_such_dir\\\\x.mdb'\n");
+#ifdef _WIN32
+    CHECK(message("a?b.mdb") == "File nahi khuli: [Errno 22] Invalid argument: 'a?b.mdb'\n");
+    CHECK(message("\"x.mdb\"") == "File nahi khuli: [Errno 22] Invalid argument: '\"x.mdb\"'\n");
+#endif
+    CHECK(backend.scripts.empty());
+}
+
+TEST_CASE("shell runFile on a directory fails like Python's open() does", "[shell]") {
+    TempDir dir;
+    FakeBackend backend;
+    std::ostringstream out;
+    const std::string path = dir.path().string();
+    CHECK_FALSE(repl::runFile(backend, path, out, kPlain));
+#ifdef _WIN32
+    CHECK(out.str() == "File nahi khuli: [Errno 13] Permission denied: " + pyRepr(path) + "\n");
+#else
+    CHECK(out.str() == "File nahi khuli: [Errno 21] Is a directory: " + pyRepr(path) + "\n");
+#endif
     CHECK(backend.scripts.empty());
 }
 

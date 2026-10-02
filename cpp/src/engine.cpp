@@ -307,7 +307,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
         statements = parseScript(text);
     } catch (const MeraDBError& e) {
         Result r;
-        r.error = e.what();
+        r.error = e.formatted();
         return {r};
     }
     std::vector<Result> results;
@@ -316,7 +316,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
             results.push_back(guarded(*stmt));
         } catch (const MeraDBError& e) {
             Result r;
-            r.error = e.what();
+            r.error = e.formatted();
             results.push_back(std::move(r));
         }
     }

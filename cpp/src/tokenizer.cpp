@@ -1,6 +1,7 @@
 // cpp/src/tokenizer.cpp
 #include "meradb/tokenizer.h"
 #include "meradb/errors.h"
+#include "meradb/pytext.h"
 #include <cctype>
 #include <cstdlib>
 #include <stdexcept>
@@ -35,6 +36,31 @@ std::string toUpper(std::string s) {
 std::string toLower(std::string s) {
     for (auto& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+// Python's repr() of the one character that stopped the tokenizer. Printable text is shown as it is (all of
+// its UTF-8 bytes); the control and invisible characters repr() escapes are escaped the same way. Not
+// reproduced: characters Python's tables call unprintable that are not in the lists below (unassigned code
+// points, private use, the rest of the format characters).
+std::string reprCharacter(const std::string& text, std::size_t pos) {
+    char32_t cp = 0;
+    const std::size_t length = pytext::decode(text, pos, cp);
+    const auto hex = [](char32_t value, int digits) {
+        static const char* kDigits = "0123456789abcdef";
+        std::string out;
+        for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) out += kDigits[(value >> shift) & 0xF];
+        return out;
+    };
+    std::string body;
+    if (cp == '\\') body = "\\\\";
+    else if (cp == '\t') body = "\\t";
+    else if (cp == '\n') body = "\\n";
+    else if (cp == '\r') body = "\\r";
+    else if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0xAD) body = "\\x" + hex(cp, 2);
+    else if ((cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F))
+        body = "\\u" + hex(cp, 4);
+    else body = text.substr(pos, length);
+    return "'" + body + "'";
 }
 }  // namespace
 
@@ -183,14 +209,8 @@ std::vector<Token> Tokenizer::tokenize() {
             } else {
                 static const std::string oneChar = "(),;*=<>+-/%.";
                 if (oneChar.find(c) == std::string::npos) {
-                    // Python formats the character with repr(): '@', "'" or '\\'
-                    // A non-ASCII character is shown whole (all of its UTF-8 bytes), as Python's repr does for
-                    // printable characters; escaping of unprintable ones (e.g. '\xa0') is not reproduced.
-                    unsigned char lead = static_cast<unsigned char>(c);
-                    size_t length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-                    std::string character = text_.substr(pos_, length);
-                    std::string shown = (c == '\\') ? std::string("'\\\\'") : "'" + character + "'";
-                    error("Ye character samajh nahi aaya: " + shown);
+                    // Python formats the character with repr(): '@', '\\', '\x00' (see reprCharacter)
+                    error("Ye character samajh nahi aaya: " + reprCharacter(text_, pos_));
                 }
                 advance();
                 symbol = std::string(1, c);

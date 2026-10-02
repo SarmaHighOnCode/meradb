@@ -14,6 +14,8 @@ public:
     virtual std::string stage() const { return "MeraDB"; }
     const std::string& message() const { return message_; }
     const char* what() const noexcept override { return formatted_.c_str(); }
+    // The same text as what(), as a std::string: embedded NUL bytes (a tokenizer error can quote one) survive.
+    const std::string& formatted() const noexcept { return formatted_; }
 
 protected:
     // Subclass constructors call this after their own stage() becomes

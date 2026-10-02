@@ -307,7 +307,7 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
         std::vector<Piece> pieces;
         if (arg.rfind("--", 0) == 0 && arg.find('=') != std::string::npos) {
             pieces.push_back({arg.substr(0, arg.find('=')), true, arg.substr(arg.find('=') + 1)});
-        } else if (arg.size() > 2 && arg[1] != '-' && shortKind("-" + arg.substr(1, 1)) != 0) {
+        } else if (arg.size() > 2 && arg[0] == '-' && arg[1] != '-' && shortKind("-" + arg.substr(1, 1)) != 0) {
             std::string rest = arg.substr(1);  // option letters still to read
             while (!rest.empty()) {
                 std::string opt = "-" + rest.substr(0, 1);
@@ -499,9 +499,35 @@ term::Style detectStyle(sys::AnsiConsole& ansi) {
 // Test seam (see ShellInputOverride in cli.h): when set, the shell reads this stream, never the console.
 std::istream* g_shellInput = nullptr;
 
+// Python's `finally: backend.close()`: the backend is closed (an open transaction rolled back) on every way
+// out, including an exception that is not a MeraDBError. On a normal return the caller closes explicitly.
+class BackendCloser {
+public:
+    explicit BackendCloser(Backend& backend) : backend_(backend) {}
+    ~BackendCloser() {
+        if (!done_) {
+            try {
+                backend_.close();
+            } catch (...) {  // already unwinding: the original exception is the one that matters
+            }
+        }
+    }
+    void close() {
+        done_ = true;
+        backend_.close();
+    }
+    BackendCloser(const BackendCloser&) = delete;
+    BackendCloser& operator=(const BackendCloser&) = delete;
+
+private:
+    Backend& backend_;
+    bool done_ = false;
+};
+
 // Python's cmd_shell: open the backend, run the shell on it, close the backend.
 int runShellCommand(const CliArgs& args) {
     auto backend = openBackend(args);
+    BackendCloser closer(*backend);
     int code = 0;
     if (g_shellInput != nullptr) {
         repl::StreamLineSource source(*g_shellInput, std::cout);
@@ -519,7 +545,7 @@ int runShellCommand(const CliArgs& args) {
         repl::StreamLineSource source(std::cin, std::cout);
         code = repl::run(*backend, source, std::cout, style, protocol::kProgramVersion, style.on() ? 40 : 0);
     }
-    backend->close();
+    closer.close();
     return code;
 }
 
@@ -573,12 +599,13 @@ int cliMain(std::vector<std::string> argv) {
         if (args.command == "status") return serverStatus(controlOptions(args));
         if (args.command == "run") {
             auto backend = openBackend(args);
+            BackendCloser closer(*backend);
             sys::AnsiConsole ansi;
             const term::Style style = detectStyle(ansi);
             bool allOk = true;
             for (const auto& path : args.files)
                 if (!repl::runFile(*backend, path, std::cout, style)) allOk = false;  // run ALL files, even after a failure
-            backend->close();
+            closer.close();
             return allOk ? 0 : 1;
         }
         if (args.command == "shell") return runShellCommand(args);

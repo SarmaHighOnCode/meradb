@@ -1,12 +1,14 @@
 // cpp/src/repl.cpp -- see repl.h.
 #include "meradb/repl.h"
 #include "meradb/cli_format.h"
+#include "meradb/datatypes.h"
 #include "meradb/errors.h"
 #include "meradb/pytext.h"
 #include "meradb/repl_text.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 #include <vector>
 
 namespace meradb::repl {
@@ -59,6 +61,20 @@ std::string normalizeNewlines(const std::string& in) {
     return out;
 }
 
+// strerror() of the errno numbers readFileBytes reports, as Python's OSError prints them.
+std::string errnoText(int err) {
+    switch (err) {
+        case 2: return "No such file or directory";
+        case 5: return "Input/output error";
+        case 13: return "Permission denied";
+        case 20: return "Not a directory";
+        case 21: return "Is a directory";
+        case 22: return "Invalid argument";
+        case 24: return "Too many open files";
+        default: return std::generic_category().message(err);
+    }
+}
+
 }  // namespace
 
 bool runText(Backend& backend, const std::string& text, std::ostream& out, const term::Style& style) {
@@ -66,7 +82,7 @@ bool runText(Backend& backend, const std::string& text, std::ostream& out, const
     try {
         results = backend.runScript(text);
     } catch (const MeraDBError& e) {  // e.g. the server connection dropped
-        out << e.what() << "\n";
+        out << e.formatted() << "\n";
         return false;
     }
     bool ok = true;
@@ -80,23 +96,13 @@ bool runText(Backend& backend, const std::string& text, std::ostream& out, const
 }
 
 bool runFile(Backend& backend, const std::string& path, std::ostream& out, const term::Style& style) {
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
-    if (!file) {
-        // Same wording as Python's OSError text: "[Errno 2] No such file or directory: 'x'"
-        std::string quoted;
-        for (char c : path) {
-            if (c == '\\' || c == '\'') quoted += '\\';
-            quoted += c;
-        }
-        std::error_code ec;
-        const bool missing = !std::filesystem::exists(std::filesystem::u8path(path), ec);
-        out << "File nahi khuli: " << (missing ? "[Errno 2] No such file or directory: '" : "[Errno 13] Permission denied: '")
-            << quoted << "'\n";
+    std::string text;
+    const int err = sys::readFileBytes(path, text);
+    if (err != 0) {
+        // Python's OSError text: "[Errno 2] No such file or directory: 'x'" (the name is repr()'d)
+        out << "File nahi khuli: [Errno " << err << "] " << errnoText(err) << ": " << pyRepr(path) << "\n";
         return false;
     }
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    std::string text = buffer.str();
     if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // utf-8-sig, like Python
     return runText(backend, normalizeNewlines(text), out, style);
 }

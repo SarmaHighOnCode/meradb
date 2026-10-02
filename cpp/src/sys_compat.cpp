@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -651,6 +652,73 @@ ReadStatus readTerminalLine(std::string& line) {
         if (c == '\n') return ReadStatus::Line;
         line.push_back(c);
     }
+#endif
+}
+
+int readFileBytes(const std::string& path, std::string& content) {
+    content.clear();
+#ifdef _WIN32
+    HANDLE file = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        // CPython's winerror -> errno table (PC/errmap.h); a directory fails here with ERROR_ACCESS_DENIED.
+        switch (GetLastError()) {
+            case ERROR_FILE_NOT_FOUND:
+            case ERROR_PATH_NOT_FOUND:
+            case ERROR_INVALID_DRIVE:
+            case ERROR_BAD_PATHNAME:
+            case ERROR_FILENAME_EXCED_RANGE:
+            case ERROR_BAD_NETPATH:
+            case ERROR_BAD_NET_NAME:
+                return 2;
+            case ERROR_ACCESS_DENIED:
+            case ERROR_SHARING_VIOLATION:
+            case ERROR_LOCK_VIOLATION:
+            case ERROR_NETWORK_ACCESS_DENIED:
+            case ERROR_WRITE_PROTECT:
+                return 13;
+            case ERROR_TOO_MANY_OPEN_FILES:
+                return 24;
+            case ERROR_DIRECTORY:
+                return 20;
+            default:
+                return 22;
+        }
+    }
+    char buffer[65536];
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(file, buffer, sizeof buffer, &got, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) break;
+            CloseHandle(file);
+            return 5;
+        }
+        if (got == 0) break;
+        content.append(buffer, got);
+    }
+    CloseHandle(file);
+    return 0;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return errno;
+    struct stat info {};
+    if (::fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) {
+        ::close(fd);
+        return 21;
+    }
+    char buffer[65536];
+    for (;;) {
+        const auto got = ::read(fd, buffer, sizeof buffer);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            return 5;
+        }
+        if (got == 0) break;
+        content.append(buffer, static_cast<std::size_t>(got));
+    }
+    ::close(fd);
+    return 0;
 #endif
 }
 
