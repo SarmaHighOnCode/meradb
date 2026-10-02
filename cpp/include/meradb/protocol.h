@@ -24,7 +24,8 @@ constexpr int kDefaultPort = 6372;  // M-E-R-A on a phone keypad
 constexpr int kVersion = 1;
 constexpr std::size_t kMaxMessageBytes = 64u * 1024u * 1024u;  // refuse absurdly large lines
 constexpr const char* kPidFile = "meradb.pid";
-constexpr const char* kServerName = "MeraDB 1.0.0";  // "MeraDB " + Python's __version__
+constexpr const char* kProgramVersion = "1.0.0";  // Python's __version__ (shown in the shell banner)
+constexpr const char* kServerName = "MeraDB 1.0.0";  // "MeraDB " + kProgramVersion
 
 // The bare message is what goes on the wire ("[Protocol Galti] " is added by
 // the server when it reports one).

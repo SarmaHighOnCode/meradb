@@ -5,9 +5,10 @@
 //   meradb start | stop | status | server | run FILE... | shell | workbench
 //
 // `meradb x.mdb` means `run`, `meradb --tui` means `workbench`, and no command
-// means `shell`. shell and workbench arrive in a later phase; here they say so.
+// means `shell` (the interactive shell, see repl.h). The workbench arrives in a later phase; here it says so.
 #pragma once
 #include "meradb/backend.h"
+#include <istream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,9 +45,15 @@ CliArgs parseCliArgs(std::vector<std::string> argv);
 // exactly as Python does. Throws MeraDBError.
 std::unique_ptr<Backend> openBackend(const CliArgs& args);
 
-// Runs one script file against `backend`, printing each result followed by a
-// blank line. Returns false if the file could not be read or any statement failed.
-bool runFile(Backend& backend, const std::string& path);
+// A test seam: while one of these is alive, `meradb shell` reads its lines from `in` instead of the
+// console or stdin, and prints without colour, so a test can drive the shell even from a terminal.
+class ShellInputOverride {
+public:
+    explicit ShellInputOverride(std::istream& in);
+    ~ShellInputOverride();
+    ShellInputOverride(const ShellInputOverride&) = delete;
+    ShellInputOverride& operator=(const ShellInputOverride&) = delete;
+};
 
 int cliMain(std::vector<std::string> argv);
 

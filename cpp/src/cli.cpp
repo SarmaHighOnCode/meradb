@@ -1,14 +1,15 @@
 // cpp/src/cli.cpp -- see cli.h.
 #include "meradb/cli.h"
 #include "meradb/ast.h"
-#include "meradb/cli_format.h"
 #include "meradb/client.h"
 #include "meradb/errors.h"
 #include "meradb/fs_util.h"
 #include "meradb/protocol.h"
+#include "meradb/repl.h"
 #include "meradb/server.h"
 #include "meradb/server_control.h"
 #include "meradb/sys_compat.h"
+#include "meradb/term_style.h"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -59,21 +60,6 @@ int envPort() {
     if (text && !text->empty())
         if (auto value = parseInt(*text)) return *value;
     return protocol::kDefaultPort;
-}
-
-// Python's text mode (universal newlines): "\r\n" and a lone "\r" both become "\n".
-std::string normalizeNewlines(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    for (std::size_t i = 0; i < in.size(); ++i) {
-        if (in[i] == '\r') {
-            out += '\n';
-            if (i + 1 < in.size() && in[i + 1] == '\n') ++i;
-        } else {
-            out += in[i];
-        }
-    }
-    return out;
 }
 
 const char* kUsage =
@@ -435,38 +421,6 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
     return args;
 }
 
-bool runFile(Backend& backend, const std::string& path) {
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
-    if (!file) {
-        // Same wording as Python's OSError text: "[Errno 2] No such file or directory: 'x'"
-        std::string quoted;
-        for (char c : path) {
-            if (c == '\\' || c == '\'') quoted += '\\';
-            quoted += c;
-        }
-        std::error_code ec;
-        bool missing = !std::filesystem::exists(std::filesystem::u8path(path), ec);
-        std::cout << "File nahi khuli: "
-                  << (missing ? "[Errno 2] No such file or directory: '" : "[Errno 13] Permission denied: '")
-                  << quoted << "'\n";
-        return false;
-    }
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    std::string text = buffer.str();
-    if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // utf-8-sig, like Python
-    text = normalizeNewlines(text);
-
-    bool ok = true;
-    for (const auto& result : backend.runScript(text)) {
-        std::string out = formatResult(result);
-        if (!out.empty()) std::cout << out << "\n";
-        std::cout << "\n";
-        if (!result.error.empty()) ok = false;
-    }
-    return ok;
-}
-
 namespace {
 
 std::optional<std::string> clientPassword(const CliArgs& args) {
@@ -537,6 +491,38 @@ std::unique_ptr<Backend> openBackend(const CliArgs& args) {
 
 namespace {
 
+// Python's _supports_color(): decided once, for the command that is about to print results.
+term::Style detectStyle(sys::AnsiConsole& ansi) {
+    return term::detectStyle([&ansi] { return ansi.enable(); });
+}
+
+// Test seam (see ShellInputOverride in cli.h): when set, the shell reads this stream, never the console.
+std::istream* g_shellInput = nullptr;
+
+// Python's cmd_shell: open the backend, run the shell on it, close the backend.
+int runShellCommand(const CliArgs& args) {
+    auto backend = openBackend(args);
+    int code = 0;
+    if (g_shellInput != nullptr) {
+        repl::StreamLineSource source(*g_shellInput, std::cout);
+        code = repl::run(*backend, source, std::cout, term::Style::none(), protocol::kProgramVersion, 0);
+    } else if (sys::isTerminal(0)) {
+        sys::AnsiConsole ansi;
+        const term::Style style = detectStyle(ansi);
+        sys::InterruptGuard interrupts;  // Ctrl+C is reported to the shell instead of killing the process
+        repl::ConsoleLineSource source(std::cout);
+        code = repl::run(*backend, source, std::cout, style, protocol::kProgramVersion, style.on() ? 40 : 0);
+    } else {
+        sys::setStdinBinary();  // bytes exactly as sent: no CRLF translation, Ctrl+Z is not end-of-file
+        sys::AnsiConsole ansi;
+        const term::Style style = detectStyle(ansi);
+        repl::StreamLineSource source(std::cin, std::cout);
+        code = repl::run(*backend, source, std::cout, style, protocol::kProgramVersion, style.on() ? 40 : 0);
+    }
+    backend->close();
+    return code;
+}
+
 ControlOptions controlOptions(const CliArgs& args) {
     ControlOptions options;
     options.dataDir = args.dataDir;
@@ -550,6 +536,9 @@ ControlOptions controlOptions(const CliArgs& args) {
 }
 
 }  // namespace
+
+ShellInputOverride::ShellInputOverride(std::istream& in) { g_shellInput = &in; }
+ShellInputOverride::~ShellInputOverride() { g_shellInput = nullptr; }
 
 int cliMain(std::vector<std::string> argv) {
     CliArgs args = parseCliArgs(std::move(argv));
@@ -584,13 +573,16 @@ int cliMain(std::vector<std::string> argv) {
         if (args.command == "status") return serverStatus(controlOptions(args));
         if (args.command == "run") {
             auto backend = openBackend(args);
+            sys::AnsiConsole ansi;
+            const term::Style style = detectStyle(ansi);
             bool allOk = true;
             for (const auto& path : args.files)
-                if (!runFile(*backend, path)) allOk = false;  // run ALL files, even after a failure
+                if (!repl::runFile(*backend, path, std::cout, style)) allOk = false;  // run ALL files, even after a failure
             backend->close();
             return allOk ? 0 : 1;
         }
-        // shell / workbench
+        if (args.command == "shell") return runShellCommand(args);
+        // workbench
         note("`meradb " + args.command + "` abhi C++ version mein nahi hai (aage ke phase mein aayega). "
              "Python version istemal karo, ya scripts ke liye:  meradb run FILE");
         return 1;

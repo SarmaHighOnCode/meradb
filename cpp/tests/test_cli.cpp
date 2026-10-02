@@ -253,12 +253,72 @@ TEST_CASE("cli run with a user logs in and honours privileges", "[cli]") {
     }
 }
 
-TEST_CASE("cli shell and workbench say they are not here yet", "[cli]") {
+TEST_CASE("cli the workbench says it is not here yet", "[cli]") {
     CleanEnv env;
     Capture capture;
-    CHECK(cliMain({"shell"}) == 1);
     CHECK(cliMain({"workbench"}) == 1);
     CHECK(capture.err().find("abhi C++ version mein nahi hai") != std::string::npos);
+}
+
+TEST_CASE("cli the shell banner version is the one the server reports", "[cli][shell]") {
+    CHECK(std::string(protocol::kServerName) == std::string("MeraDB ") + protocol::kProgramVersion);
+}
+
+TEST_CASE("cli shell --local runs a piped session: banner, statements, goodbye", "[cli][shell]") {
+    CleanEnv env;
+    TempDir dir;
+    std::istringstream input("BANAO TABLE t (x INT);\nDAALO MEIN t MAAN (1);\nDIKHAO * SE t;\n.exit\n");
+    ShellInputOverride feed(input);
+    Capture capture;
+    CHECK(cliMain({"shell", "--local", "--data", dir.file("d")}) == 0);
+    const std::string out = capture.out();
+    CHECK(out.find("connected: local (") != std::string::npos);
+    CHECK(out.find("meradb:main> Table 't' ban gaya (1 columns)\n\n") != std::string::npos);
+    CHECK(out.find("| 1 |") != std::string::npos);
+    const std::string goodbye = "meradb:main> Phir milenge!\n";  // .exit: no newline before it
+    REQUIRE(out.size() > goodbye.size());
+    CHECK(out.substr(out.size() - goodbye.size()) == goodbye);
+    CHECK(capture.err().empty());
+    CHECK(std::filesystem::exists(dir.file("d")));  // it really opened the folder it was told to
+}
+
+TEST_CASE("cli no command at all is the shell, and end of input says goodbye", "[cli][shell]") {
+    CleanEnv env;
+    TempDir dir;
+    std::istringstream input("");
+    ShellInputOverride feed(input);
+    Capture capture;
+    CHECK(cliMain({"--local", "--data", dir.file("d")}) == 0);
+    const std::string out = capture.out();
+    const std::string tail = "meradb:main> \nPhir milenge!\n";
+    REQUIRE(out.size() > tail.size());
+    CHECK(out.substr(out.size() - tail.size()) == tail);
+}
+
+TEST_CASE("cli shell goes through a server when one answers", "[cli][shell]") {
+    CleanEnv env;
+    RunningServer s;
+    std::istringstream input("BANAO TABLE via_shell (x INT);\nDIKHAO TABLES;\n");
+    ShellInputOverride feed(input);
+    Capture capture;
+    CHECK(cliMain({"shell", "--port", std::to_string(s.port())}) == 0);
+    const std::string out = capture.out();
+    CHECK(out.find("connected: 127.0.0.1:" + std::to_string(s.port()) + "\n") != std::string::npos);
+    CHECK(out.find("via_shell") != std::string::npos);
+    CHECK(std::filesystem::exists(std::filesystem::path(s.dataDir()) / "main"));
+}
+
+TEST_CASE("cli shell reports a connection failure before any banner", "[cli][shell]") {
+    CleanEnv env;
+    RunningServer other;
+    const int freePort = other.port();
+    other.stop();
+    std::istringstream input(".exit\n");
+    ShellInputOverride feed(input);
+    Capture capture;
+    CHECK(cliMain({"shell", "--port", std::to_string(freePort)}) == 1);
+    CHECK(capture.out().empty());
+    CHECK(capture.err().find("par MeraDB server nahi mila") != std::string::npos);
 }
 
 TEST_CASE("cli each subcommand's --help matches argparse's text", "[cli]") {
