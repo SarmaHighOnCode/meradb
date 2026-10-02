@@ -195,7 +195,7 @@ These are deliberate and small.
   accepts over 1,000 levels), and it is a level count, not a byte guard. The caps exist so
   that a network client cannot crash the server; ordinary scripts never come near them.
 - **Very wide natural joins**: `a SAMAAN MILAO b` over thousands of common columns builds one
-  `=` per column. Python raises `RecursionError` at about 3,000 common columns; C++ combines
+  `=` per column. Python raises `RecursionError` at about 500 common columns (300 passes, 600 fails); C++ combines
   them in a balanced tree (same evaluation order and results) and keeps working, so a 20,000
   column join runs.
 - **Trigger/procedure recursion cap**: a trigger that (directly or indirectly) fires itself

@@ -188,11 +188,27 @@ TEST_CASE("stack_guard the error names the stack limit and the guard resets betw
     meradb_test::TempDir dir;
     Engine e(dir.str());
     e.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1)");
-    std::string deep = "DIKHAO * SE t JAHAN " + parens(300, "x = 1");  // ~1 MB of -O0 frames: over the budget
+    // 300 levels trip the guard only with -O0 frames (~1 MB); optimised frames fit, so either a clean
+    // result or the clean depth error is right, and a crash is the only failure.
+    std::string deep = "DIKHAO * SE t JAHAN " + parens(300, "x = 1");
     Result r = e.runScript(deep)[0];
-    CHECK(r.error.rfind("[Parser Galti] Query bahut gehri (nested) hai (stack limit 512 KB), par ", 0) == 0);
+    if (r.error.empty())
+        CHECK(r.rows.size() == 1);
+    else
+        CHECK(r.error.rfind("[Parser Galti] Query bahut gehri (nested) hai (stack limit 512 KB), par ", 0) == 0);
     CHECK(e.runScript("DIKHAO * SE t JAHAN " + parens(5, "x = 1"))[0].rows.size() == 1);
     CHECK(stackUsedBytes() == 0);  // no StackBase outlives its entry point
+}
+
+TEST_CASE("stack_guard the deepest legal parentheses on a 256 KB thread must trip the guard at any optimisation level", "[stack_guard]") {
+    std::string error;
+    REQUIRE(meradb_test::runOnStack(256 * 1024, [&] {
+        meradb_test::TempDir dir;
+        Engine e(dir.str());
+        e.execute("BANAO TABLE t (x INT)");
+        error = e.runScript("DIKHAO * SE t JAHAN " + parens(399, "x = 1"))[0].error;
+    }));
+    CHECK(error.find("Query bahut gehri (nested) hai (") != std::string::npos);
 }
 
 TEST_CASE("stack_guard nested JSON frames are refused before they can exhaust the stack", "[stack_guard]") {

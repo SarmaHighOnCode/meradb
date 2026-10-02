@@ -231,7 +231,7 @@ std::string optionDisplayName(const std::string& name, bool isServer) {
     if (name == "-d" || name == "--database") return "-d/--database";
     if (name == "-U" || name == "--user") return "-U/--user";
     if (name == "-h" || name == "--help") return "-h/--help";
-    if (name == "-W" || name == "--password") return "-W/--password";
+    if (name == "-W" || name == "--password") return isServer ? "--password" : "-W/--password";
     if (name == "-v" || name == "--verbose") return "-v/--verbose";
     return name;
 }

@@ -187,7 +187,7 @@ std::string firstError(const std::vector<Result>& rs) { return rs[0].error.empty
 
 // The AND chain behind a natural join is as wide as the schema, which a client
 // controls: it is built balanced, so a 20,000-column join works (Python itself
-// stops with a RecursionError near 3,000 columns; we chose to work correctly).
+// stops with a RecursionError near 500 columns; we chose to work correctly).
 // Creating the two tables is the slow part (~15 s at -O0), so they are made
 // once and joined from the test's own thread and from a std::thread.
 TEST_CASE("hardening natural join of very wide tables does not overflow the stack", "[hardening]") {
