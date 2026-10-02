@@ -59,6 +59,7 @@ add_library(meradb_core STATIC
   src/cli.cpp
   src/pytext.cpp
   src/term_style.cpp
+  src/repl_text.cpp
   # source files are appended here by later tasks
 )
 if(NOT MSVC)
