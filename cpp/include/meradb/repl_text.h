@@ -38,4 +38,15 @@ std::string renderReference(const term::Style& style, const std::string& query =
 // reference, a blank line, the examples.
 std::string fullHelp(const term::Style& style);
 
+// Python's print_banner(version, where). With pauseMs > 0 each logo and wordmark line is flushed and
+// followed by that pause (the "reveal" animation, which Python plays only when colour is on).
+void printBanner(std::ostream& out, const term::Style& style, const std::string& version, const std::string& where,
+                 int pauseMs);
+
+// "meradb:<db>> ", or "meradb:<db>*> " while a transaction is open.
+std::string promptFor(const term::Style& style, const std::string& db, bool inTransaction);
+
+// Shown while a statement is still being typed.
+inline constexpr const char* kContinuationPrompt = "      ...> ";
+
 }  // namespace meradb::repl

@@ -43,3 +43,34 @@ TEST_CASE("shell help: the reference data has every category Python has", "[shel
     CHECK(rows > 60);
     CHECK(std::string(repl::examplesHelp()).rfind("Quick examples (full reference: docs/LANGUAGE.md):\n", 0) == 0);
 }
+
+TEST_CASE("shell banner matches Python, plain and coloured", "[shell]") {
+    for (bool color : {false, true}) {
+        INFO((color ? "colour" : "plain"));
+        std::ostringstream out;
+        repl::printBanner(out, term::Style(color), "1.0.0", "local (/data/x)", 0);
+        CHECK(out.str() == golden_shell::get("banner", color));
+        std::ostringstream server;
+        repl::printBanner(server, term::Style(color), "1.0.0", "127.0.0.1:6372", 0);
+        CHECK(server.str() == golden_shell::get("banner_server", color));
+    }
+}
+
+TEST_CASE("shell banner reveal pauses only when asked to", "[shell]") {
+    std::ostringstream out;
+    const auto start = std::chrono::steady_clock::now();
+    repl::printBanner(out, term::Style::none(), "1.0.0", "x", 5);  // 12 logo/wordmark lines x 5 ms
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    CHECK(elapsed >= std::chrono::milliseconds(50));
+    CHECK(out.str().find("connected: x") != std::string::npos);
+}
+
+TEST_CASE("shell prompts match Python", "[shell]") {
+    for (bool color : {false, true}) {
+        INFO((color ? "colour" : "plain"));
+        const term::Style style(color);
+        CHECK(repl::promptFor(style, "main", false) == golden_shell::get("prompt_main", color));
+        CHECK(repl::promptFor(style, "college", true) == golden_shell::get("prompt_txn", color));
+    }
+    CHECK(std::string(repl::kContinuationPrompt) == "      ...> ");
+}
