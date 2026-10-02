@@ -110,7 +110,7 @@ bool endsStatement(const std::string& buffer) { return pytext::endsWith(pytext::
 bool handleDotCommand(Backend& backend, const std::string& line, std::ostream& out, const term::Style& style) {
     const std::vector<std::string> parts = pytext::split(line);
     if (parts.empty()) return true;  // cannot happen: the caller passes a stripped line that starts with "."
-    const std::string cmd = pytext::lowerAscii(parts[0]);
+    const std::string cmd = pytext::lower(parts[0]);
     if (cmd == ".exit" || cmd == ".quit" || cmd == ".nikal") return false;
     if (cmd == ".help") {
         const std::string topic = pytext::strip(line.substr(parts[0].size()));  // everything after ".help"

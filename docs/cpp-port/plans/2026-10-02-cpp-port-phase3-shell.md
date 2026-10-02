@@ -291,7 +291,8 @@ format_table(result) / print_result(result)
 
 **Interfaces:**
 - Produces, in `namespace meradb::pytext`: `isSpace(char32_t)`, `decode(text, at, cp)`, `lstrip`, `rstrip`,
-  `strip`, `split`, `lowerAscii`, `length`, `ljust`, `startsWith`, `endsWith`. The shell decides "is this a
+  `strip`, `split`, `lower` (originally `lowerAscii`, replaced by a full Unicode `str.lower()`),
+  `length`, `ljust`, `startsWith`, `endsWith`. The shell decides "is this a
   dot-command" with `strip(line)`, "does the statement end here" with `rstrip(buffer)`, cuts a command with
   `split`, and pads the help table with `ljust` — all with **Python's** notion of whitespace (29
   characters, including NBSP U+00A0, U+0085 and the ideographic space U+3000). `isspace()` from `<cctype>`
@@ -2467,7 +2468,7 @@ git commit -m "Add runText and runFile with Python's dropped-connection handling
   (`line` is stripped and starts with `.`; false means "leave the shell") and
   `bool repl::endsStatement(const std::string& buffer)`, `buffer.rstrip().endswith(";")` with Python's
   whitespace (Task 9's loop uses it; it lives here because it is the other half of the dot-command rule).
-- Rules (D2 items 8-9): the command word is `split()[0].lower()` (ASCII lowering, as `lowerAscii`);
+- Rules (D2 items 8-9): the command word is `split()[0].lower()` (full Unicode lowering, `pytext::lower`, which replaced the original ASCII-only `lowerAscii`);
   `.exit` / `.quit` / `.nikal` leave, extra words ignored; `.help` takes everything after the command word,
   stripped, as its topic; `.tables` runs `DIKHAO TABLES;`; `.schema X` runs `BATAO X;` with the **first**
   argument only; `.run F` runs file `F` (first argument only, so a path with spaces is cut); `.schema` and
@@ -4232,8 +4233,13 @@ compiled on MinGW only and never run against a real terminal in a test):
 - **Shell: input that is not valid UTF-8**: Python's strict decoder stops with a traceback; the C++ shell
   passes the bytes on and the tokenizer reports an unexpected character. A NUL byte is likewise an
   ordinary character. Nothing depends on it.
-- **Shell: `.help` topic matching** lower-cases ASCII letters only (Python's `str.lower()` also folds
-  other alphabets); the help text is ASCII Hinglish, so no topic can tell the difference.
+- **Shell: `.help` topics and dot-command words** use `pytext::lower`, a full Unicode `str.lower()`
+  (generated tables from Python 3.12 / Unicode 15.0 by `cpp/tests/gen_lower_table.py`, including `U+0130`
+  and the final-sigma rule), so `.help ÉCOLE` echoes `école` and `.help <Kelvin sign>unji` finds the
+  MUKHYA KUNJI rows exactly as Python does. Only text from a Unicode version other than 15.0 could differ.
+  `cpp/tests/shell_lower_diff.py` compares both shells. `pytext` also follows Python's strict UTF-8
+  rules, but input that is not valid UTF-8 is passed through (each bad byte is one unit) where Python
+  stops with `UnicodeDecodeError`.
 - **Shell: `-W` with piped input**: the password prompt reads its answer from the first line of the
   piped stdin; only a real console hides the typing. Not compared against Python.
 - **Shell: operating-system wording** after `Server se connection toot gaya:` (a dropped connection) is

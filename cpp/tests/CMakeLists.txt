@@ -86,6 +86,9 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME cli_unicode
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_unicode.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(cli_unicode PROPERTIES TIMEOUT 240)
+  add_test(NAME shell_lower_diff
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_lower_diff.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(shell_lower_diff PROPERTIES TIMEOUT 300)
   add_test(NAME cli_args_diff
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_args_diff.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(cli_args_diff PROPERTIES TIMEOUT 300)

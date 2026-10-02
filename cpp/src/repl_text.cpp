@@ -22,7 +22,7 @@ std::string shellCommandsHelp(const term::Style& style) {
 }
 
 std::string renderReference(const term::Style& style, const std::string& rawQuery) {
-    const std::string query = pytext::lowerAscii(pytext::strip(rawQuery));
+    const std::string query = pytext::lower(pytext::strip(rawQuery));
 
     struct Matched {
         const HelpCategory* category;
@@ -32,7 +32,7 @@ std::string renderReference(const term::Style& style, const std::string& rawQuer
     for (const auto& category : helpReference()) {
         Matched m{&category, {}};
         for (const auto& row : category.rows) {
-            const std::string haystack = pytext::lowerAscii(row.keyword + " " + row.sql + " " + row.description);
+            const std::string haystack = pytext::lower(row.keyword + " " + row.sql + " " + row.description);
             if (query.empty() || haystack.find(query) != std::string::npos) m.rows.push_back(&row);
         }
         if (!m.rows.empty()) matched.push_back(std::move(m));
