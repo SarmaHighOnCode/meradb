@@ -145,6 +145,8 @@ int run(Backend& backend, LineSource& in, std::ostream& out, const term::Style& 
         } else {
             prompt = kContinuationPrompt;
         }
+        // Ctrl+C that landed after the last poll: leave now, run nothing and read nothing more.
+        if (!sys::mayReadAnotherLine(in.takePendingInterrupt())) return 130;
         std::string line;
         if (in.read(prompt, line) != ReadStatus::Line) {  // end of input, or Ctrl+C at the prompt
             out << "\nPhir milenge!\n";

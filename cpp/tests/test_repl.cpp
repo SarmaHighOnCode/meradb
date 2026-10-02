@@ -318,6 +318,16 @@ TEST_CASE("shell loop: Ctrl+C while a statement runs ends the shell with 130, si
     CHECK(out.str() == bannerFor("fake:1") + "meradb:main> done\n\n");
 }
 
+TEST_CASE("shell loop: Ctrl+C that landed before the next read ends it with 130 without running or reading anything", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"DIKHAO 2;"}, out);
+    source.pending = true;  // Ctrl+C arrived after the last poll, before the shell asked for a line
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 130);
+    CHECK(source.reads == 0);
+    CHECK(backend.scripts.empty());
+}
+
 TEST_CASE("shell loop: Ctrl+C during a dot-command also ends it with 130", "[shell]") {
     FakeBackend backend;
     std::ostringstream out;

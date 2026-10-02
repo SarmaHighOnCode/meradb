@@ -1,7 +1,9 @@
 // cpp/tests/test_repl_input.cpp -- the shell's line sources.
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/repl.h"
+#include <atomic>
 #include <sstream>
+#include <thread>
 
 using namespace meradb;
 
@@ -72,4 +74,63 @@ TEST_CASE("shell input: a console source reports Ctrl+C that arrived while it wa
     sys::InterruptGuard::trigger();
     CHECK(source.takePendingInterrupt());
     CHECK_FALSE(source.takePendingInterrupt());  // once per Ctrl+C
+}
+
+TEST_CASE("interrupt gate: a cancel is issued only while the reader is inside the read", "[shell]") {
+    sys::InterruptGate gate;
+    std::atomic<bool> pending{false};
+    int cancels = 0;
+    const auto cancel = [&] { ++cancels; };
+
+    CHECK_FALSE(gate.cancelIfReading(cancel));  // idle: a statement may be running, nothing is cancelled
+    CHECK(gate.enterRead(pending));
+    CHECK(gate.cancelIfReading(cancel));
+    gate.leaveRead();
+    CHECK_FALSE(gate.cancelIfReading(cancel));  // the read is over: back to running statements
+    CHECK(cancels == 1);
+}
+
+TEST_CASE("interrupt gate: Ctrl+C before the read is seen by the reader, which then does not read", "[shell]") {
+    sys::InterruptGate gate;
+    std::atomic<bool> pending{true};
+    CHECK_FALSE(gate.enterRead(pending));
+    int cancels = 0;
+    CHECK_FALSE(gate.cancelIfReading([&] { ++cancels; }));  // not inside a read: the handler cancels nothing
+    CHECK(cancels == 0);
+}
+
+TEST_CASE("interrupt gate: once leaveRead returned no cancel is ever issued, from any thread", "[shell]") {
+    sys::InterruptGate gate;
+    std::atomic<bool> pending{false};
+    std::atomic<bool> left{false};
+    std::atomic<int> cancelsAfterLeave{0};
+    std::atomic<bool> stop{false};
+    std::thread handler([&] {
+        while (!stop.load()) gate.cancelIfReading([&] { if (left.load()) ++cancelsAfterLeave; });
+    });
+    for (int i = 0; i < 20000; ++i) {
+        left = false;
+        gate.enterRead(pending);
+        gate.leaveRead();
+        left = true;  // a statement runs from here on
+        std::this_thread::yield();
+    }
+    stop = true;
+    handler.join();
+    CHECK(cancelsAfterLeave.load() == 0);
+}
+
+TEST_CASE("interrupt gate: a shell that has seen Ctrl+C may not read another line", "[shell]") {
+    CHECK(sys::mayReadAnotherLine(false));
+    CHECK_FALSE(sys::mayReadAnotherLine(true));
+}
+
+TEST_CASE("shell input: pending() looks at the flag without clearing it", "[shell]") {
+    sys::InterruptGuard guard;
+    CHECK_FALSE(sys::InterruptGuard::pending());
+    sys::InterruptGuard::trigger();
+    CHECK(sys::InterruptGuard::pending());
+    CHECK(sys::InterruptGuard::pending());
+    CHECK(sys::InterruptGuard::consume());
+    CHECK_FALSE(sys::InterruptGuard::pending());
 }

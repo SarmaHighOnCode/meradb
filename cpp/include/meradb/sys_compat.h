@@ -4,9 +4,12 @@
 // server and CLI need: environment, pid, wall clock, randomness. Public
 // header: no <windows.h> here.
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -133,7 +136,32 @@ public:
     static bool consume();
     // Does what the Ctrl+C handler does. For tests, which cannot press the key.
     static void trigger();
+    // True while a Ctrl+C is pending, without clearing it.
+    static bool pending();
 };
+
+// The hand-over between a thread that reads a console line and the Ctrl+C handler thread (used on Windows,
+// portable so it can be unit tested). The handler may cancel the reader's I/O ONLY while the reader is
+// inside the read: leaveRead() takes the same lock the handler holds while it cancels, so once leaveRead()
+// has returned, no cancel can still be issued or in flight against whatever the thread does next
+// (a socket write, a file write). A Ctrl+C that lands before enterRead() is seen by enterRead().
+class InterruptGate {
+public:
+    // Reader, immediately before the blocking read. False: an interrupt is already pending, do not read.
+    bool enterRead(const std::atomic<bool>& interruptPending);
+    // Reader, immediately after the blocking read returned (whatever the outcome).
+    void leaveRead();
+    // Handler, after it has set the pending flag. Runs `cancel` (under the lock) and returns true only while
+    // the reader is inside the read; false when it is not (nothing is cancelled).
+    bool cancelIfReading(const std::function<void()>& cancel);
+
+private:
+    std::mutex mutex_;
+    bool inRead_ = false;
+};
+
+// Whether a shell loop that has already seen Ctrl+C may still read another line (it may not).
+inline bool mayReadAnotherLine(bool interruptPending) { return !interruptPending; }
 
 enum class ReadStatus { Line, Eof, Interrupted };
 

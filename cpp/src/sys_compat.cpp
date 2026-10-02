@@ -21,6 +21,7 @@
 #else
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -499,11 +500,24 @@ static_assert(std::atomic<bool>::is_always_lock_free, "the Ctrl+C flag is set fr
 std::mutex g_readerThreadMutex;
 HANDLE g_readerThread = nullptr;
 
+InterruptGate g_gate;
+
+void cancelReaderRead() {
+    std::lock_guard<std::mutex> lock(g_readerThreadMutex);
+    if (g_readerThread != nullptr) CancelSynchronousIo(g_readerThread);
+}
+
 BOOL WINAPI onConsoleControl(DWORD event) {
     if (event != CTRL_C_EVENT) return FALSE;  // Ctrl+Break and the rest keep their default meaning
     g_interrupted = true;
-    std::lock_guard<std::mutex> lock(g_readerThreadMutex);
-    if (g_readerThread != nullptr) CancelSynchronousIo(g_readerThread);  // wake a waiting ReadConsole
+    // Wake the console read, and ONLY that: the reader thread also runs statements (socket and file writes),
+    // which must finish. The gate cancels while the thread is inside ReadConsoleW and never otherwise. If the
+    // flag was set just before ReadConsoleW was entered the first cancel finds nothing to cancel, so repeat
+    // (briefly) until the reader has left the read.
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        if (!g_gate.cancelIfReading(cancelReaderRead)) break;
+        Sleep(5);
+    }
     return TRUE;
 }
 #else
@@ -543,7 +557,28 @@ InterruptGuard::~InterruptGuard() {
 #endif
 }
 
+bool InterruptGate::enterRead(const std::atomic<bool>& interruptPending) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (interruptPending.load()) return false;
+    inRead_ = true;
+    return true;
+}
+
+void InterruptGate::leaveRead() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    inRead_ = false;
+}
+
+bool InterruptGate::cancelIfReading(const std::function<void()>& cancel) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!inRead_) return false;
+    cancel();
+    return true;
+}
+
 bool InterruptGuard::consume() { return g_interrupted.exchange(false); }
+
+bool InterruptGuard::pending() { return g_interrupted.load(); }
 
 void InterruptGuard::trigger() { g_interrupted = true; }
 
@@ -555,9 +590,22 @@ ReadStatus readTerminalLine(std::string& line) {
     for (;;) {
         wchar_t buffer[512];
         DWORD got = 0;
+        // A Ctrl+C that arrived before the read (flag already set) is seen here: no read is started.
+        if (!g_gate.enterRead(g_interrupted)) {
+            InterruptGuard::consume();
+            return ReadStatus::Interrupted;
+        }
         const BOOL ok = ReadConsoleW(in, buffer, 512, &got, nullptr);
-        const bool aborted = !ok && GetLastError() == ERROR_OPERATION_ABORTED;
-        if (InterruptGuard::consume() || aborted) return ReadStatus::Interrupted;
+        const DWORD failure = ok ? 0 : GetLastError();
+        g_gate.leaveRead();
+        const bool aborted = !ok && failure == ERROR_OPERATION_ABORTED;
+        const bool completeLine = ok && got > 0 && buffer[got - 1] == L'\n';
+        // Ctrl+C with no finished line: discard the partial input. A line that was completed before the Ctrl+C
+        // is kept; the flag stays set and the shell exits 130 after running it.
+        if (aborted || (InterruptGuard::pending() && !completeLine)) {
+            InterruptGuard::consume();
+            return ReadStatus::Interrupted;
+        }
         if (!ok || got == 0) {
             if (text.empty()) return ReadStatus::Eof;
             break;
@@ -570,14 +618,33 @@ ReadStatus readTerminalLine(std::string& line) {
     line = narrow(text);
     return ReadStatus::Line;
 #else
+    // SIGINT stays blocked except inside pselect(): a Ctrl+C that arrives just before the wait cannot slip
+    // between "check the flag" and "start waiting"; it stays pending and interrupts the pselect (EINTR).
+    sigset_t blocked, original;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &blocked, &original);
+    struct Restore {
+        sigset_t* mask;
+        ~Restore() { pthread_sigmask(SIG_SETMASK, mask, nullptr); }
+    } restore{&original};
     for (;;) {
+        if (g_interrupted.load()) {
+            g_interrupted = false;
+            return ReadStatus::Interrupted;
+        }
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(STDIN_FILENO, &readable);
+        const int ready = ::pselect(STDIN_FILENO + 1, &readable, nullptr, nullptr, nullptr, &original);
+        if (ready < 0) {
+            if (errno == EINTR) continue;  // the Ctrl+C handler ran; the flag is looked at above
+            return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+        }
         char c = 0;
         const auto got = ::read(STDIN_FILENO, &c, 1);
         if (got < 0) {
-            if (errno == EINTR) {
-                if (InterruptGuard::consume()) return ReadStatus::Interrupted;
-                continue;
-            }
+            if (errno == EINTR) continue;
             return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
         }
         if (got == 0) return line.empty() ? ReadStatus::Eof : ReadStatus::Line;

@@ -4309,6 +4309,8 @@ The three terminal primitives cannot run under `ctest`. On each terminal below, 
 | 12 | Any | `meradb_cli shell -W` | The password prompt hides what is typed (console); wrong password: error on stderr, exit 1, no banner |
 | 13 | Windows Terminal and classic console | Paste one line longer than 512 UTF-16 units (for example `DIKHAO '` + 600 letters + `';`) | The shell reads the whole line intact (the console read arrives in 512-unit pieces); the echoed result holds all 600 letters |
 | 14 | Windows Terminal and classic console | Paste a line in which an emoji (a surrogate pair) straddles the 512-unit boundary: 511 ASCII letters inside a string literal, then `😀`, then the closing `';` | The shell reads the whole line intact; the emoji comes back whole, not as two replacement characters |
+| 15 | Windows Terminal and classic console | Start `meradb_cli shell` against a server (not `--local`), run a slow statement (a cross join of two 3,000-row tables) and press Ctrl+C while it runs; repeat with `--local` | The statement result is printed in full, the connection is NOT reported as dropped (no `Server se connection toot gaya`), the shell exits with code 130. Ctrl+C is only allowed to wake the console read, never a statement's socket or file write |
+| 16 | Any | "Ctrl+C just before a read": hold Ctrl+C while pressing Enter on a statement, and press Ctrl+C right as a slow statement ends; repeat a few times | Never a hang at the next prompt. A statement already entered runs to the end, then the shell exits 130 without reading another line; a Ctrl+C that reached the prompt before any text exits 0 with `Phir milenge!`. A typed, finished line is never silently discarded |
 
 - [ ] **Step 9: Whole-change check, then commit**
 
