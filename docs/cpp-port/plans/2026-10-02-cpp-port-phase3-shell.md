@@ -4157,8 +4157,8 @@ terminal; on for a terminal on Linux and macOS; on Windows when `WT_SESSION`, `T
 set, otherwise only if the classic console host accepts virtual-terminal processing (switched on for the
 run and restored afterwards). The banner's reveal animation (40 ms per logo line) plays only when colour is on.
 
-**Ctrl+C** at a prompt prints `Phir milenge!` and exits 0. While a statement is running it makes the shell
-exit with code 130 as soon as that statement has finished (see the divergences).
+**Ctrl+C** at a prompt prints `Phir milenge!` and exits 0. While a statement is running it lets that
+statement finish, reads no further line and exits 130 (see the divergences).
 ```
 
 - [ ] **Step 3: `docs/CPP.md` — Verification against Python**
@@ -4210,8 +4210,10 @@ compiled on MinGW only and never run against a real terminal in a test):
   always prints `█` and `·`. (The comparison scripts run Python with `PYTHONIOENCODING=utf-8`.)
 - **Shell: Ctrl+C during a statement**: Python's `KeyboardInterrupt` unwinds at once (exit 130, no
   message). A C++ statement is never abandoned half-way (it holds the engine lock, and `WAPAS` exists
-  because half-applied writes are not acceptable), so the shell notes the interrupt and exits 130 as soon
-  as the statement has finished. Ctrl+C at a prompt behaves like Python (`Phir milenge!`, exit 0).
+  because half-applied writes are not acceptable), so the shell notes the interrupt, lets the statement
+  finish, reads no further line and exits 130. On Windows the Ctrl+C handler cancels only the console
+  read, never a statement's socket or file write. Ctrl+C at a prompt behaves like Python (`Phir
+  milenge!`, exit 0).
 - **Shell: input that is not valid UTF-8**: Python's strict decoder stops with a traceback; the C++ shell
   passes the bytes on and the tokenizer reports an unexpected character. A NUL byte is likewise an
   ordinary character. Nothing depends on it.
@@ -4303,8 +4305,8 @@ ctest --test-dir cpp/build --output-on-failure
 git diff <phase-3-base> -- meradb examples
 git grep -n -i "co-authored" -- cpp docs/CPP.md README.md
 ```
-Expected: the full suite passes (the 503 tests of the start, about 58 new unit test cases, and the three new
-Python checks `shell_diff_local`, `shell_diff_server`, `shell_session`); the `git diff` of `meradb` and
+Expected: the full suite passes (586 tests at the end of Phase 3, including the Python checks
+`shell_diff_local`, `shell_diff_server`, `shell_session` and `shell_lower_diff`); the `git diff` of `meradb` and
 `examples` prints nothing; the `git grep` prints nothing. Read `docs/CPP.md` top to bottom once: every
 command it names exists, every file it names exists, the divergence list matches Design decisions D4-D7.
 
@@ -4314,11 +4316,12 @@ git commit -m "Document the C++ shell, its divergences and the hand-off to the n
 ```
 
 **Completion checklist:**
-- [ ] `docs/CPP.md`: coverage, command line, "The shell", verification commands, layout rows, divergences, next phases
-- [ ] every divergence in D4-D7 and the OS-wording and unprintable-character ones is listed exactly once
-- [ ] README no longer says the shell is Python-only
-- [ ] the manual checklist was handed to the project owner (the three terminal primitives are theirs to confirm)
-- [ ] no tool names, no personal or course details anywhere in the diff
+- [x] `docs/CPP.md`: coverage, command line, "The shell", verification commands, layout rows, divergences, next phases
+- [x] every divergence in D4-D7 and the OS-wording and unprintable-character ones is listed exactly once
+- [x] README no longer says the shell is Python-only
+- [x] the manual checklist is written up in `docs/CPP.md` ("Manual terminal checklist", 16 rows) for the
+      project owner; [ ] running it on real terminals is theirs (the terminal primitives cannot run in ctest)
+- [x] no tool names, no personal or course details anywhere in the diff
 
 ---
 
@@ -4335,20 +4338,23 @@ Batches go in order; each ends with a green full suite. Within a batch, tasks go
 
 ## Phase 3 completion checklist
 
-- [ ] `meradb_cli shell` (and bare `meradb_cli`) runs the interactive shell in local mode, against a C++
+- [x] `meradb_cli shell` (and bare `meradb_cli`) runs the interactive shell in local mode, against a C++
       server and against a Python server, and `run` shares its output path (colour, dropped connections)
-- [ ] banner, prompts, `.help` output and every colour code equal what `meradb/repl.py` prints, byte for byte
+- [x] banner, prompts, `.help` output and every colour code equal what `meradb/repl.py` prints, byte for byte
       (generated goldens, both colour modes)
-- [ ] all 31 recorded Python transcripts are reproduced by `repl::run`; `shell_diff.py` matches stdout, stderr and
-      exit code on 31 scripts in local mode and on 13 scripts through all four client/server pairs
-- [ ] `shell_session.py` holds: logins and grants, a server stopping mid-session, local fallback, hostile input
+- [x] all 31 recorded Python transcripts are reproduced by `repl::run`; `shell_diff.py` matches stdout, stderr and
+      exit code on 31 scripts in local mode and on 13 scripts through every client/server pair (the Python-to-Python run is the baseline, the three
+      other pairs must match it)
+- [x] `shell_session.py` holds: logins and grants, a server stopping mid-session, local fallback, hostile input
 - [ ] Windows console handled: UTF-8 code page, `ReadConsoleW`, virtual-terminal colour switched on and
-      restored, piped stdin read in binary mode; POSIX tty read with `read(0)` (not compiled here)
-- [ ] no new third-party dependency; no editor library (D1)
-- [ ] `.hexdump`, the `^` operator and `GINO(ALAG x)` are NOT implemented (project owner's exercises); `.hexdump`
+      restored, piped stdin read in binary mode; POSIX tty read with `pselect` / `read(0)` (not compiled here).
+      Implemented and smoke-tested; the real-console behaviour is MANUAL (checklist rows 1-16)
+- [x] no new third-party dependency; no editor library (D1)
+- [x] `.hexdump`, the `^` operator and `GINO(ALAG x)` are NOT implemented (project owner's exercises); `.hexdump`
       is an unknown command in the C++ shell, as in the Python one
-- [ ] `docs/CPP.md` and `README.md` updated; divergences D4-D7 recorded; hand-off for Phases 4-5 written
-- [ ] manual terminal checklist (Task 14, Step 8) given to the owner
-- [ ] `git diff <phase-3-base> -- meradb examples` is empty; no tool or personal details in any file
-- [ ] full `ctest` green, zero compiler warnings, no process / pid file / temp folder left behind by any test
+- [x] `docs/CPP.md` and `README.md` updated; divergences D4-D7 recorded; hand-off for Phases 4-5 written
+- [x] manual terminal checklist (Task 14, Step 8) given to the owner (in `docs/CPP.md`); running it is MANUAL
+- [x] `git diff <phase-3-base> -- meradb examples` is empty; no tool or personal details in any file
+- [x] full `ctest` green (586), zero compiler warnings (full rebuild), no process / pid file left behind by any test (the full run created no `meradb_test_*` folder
+      either; two older ones from an interrupted run on the day before were already in the temp folder)
 
