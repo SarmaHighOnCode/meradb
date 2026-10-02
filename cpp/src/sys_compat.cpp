@@ -1,6 +1,7 @@
 // cpp/src/sys_compat.cpp
 #include "meradb/sys_compat.h"
 #include "meradb/errors.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -15,6 +16,8 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <shellapi.h>
+#include <fcntl.h>
+#include <io.h>
 #else
 #include <fcntl.h>
 #include <signal.h>
@@ -417,6 +420,147 @@ std::string killProcess(std::int64_t pid) {
 #else
     if (::kill(static_cast<pid_t>(pid), SIGTERM) != 0) return std::system_category().message(errno);
     return std::string();
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// the interactive terminal
+// ---------------------------------------------------------------------------
+
+bool isTerminal(int fd) {
+#ifdef _WIN32
+    if (fd == 0) return isConsole(STD_INPUT_HANDLE);
+    if (fd == 1) return isConsole(STD_OUTPUT_HANDLE);
+    if (fd == 2) return isConsole(STD_ERROR_HANDLE);
+    return false;
+#else
+    return ::isatty(fd) != 0;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+constexpr DWORD kVirtualTerminalProcessing = 0x0004;  // ENABLE_VIRTUAL_TERMINAL_PROCESSING (older headers lack the name)
+}
+
+AnsiConsole::AnsiConsole() {}
+
+bool AnsiConsole::enable() {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (out == nullptr || out == INVALID_HANDLE_VALUE || !GetConsoleMode(out, &mode)) return false;
+    if ((mode & kVirtualTerminalProcessing) != 0) return true;
+    if (!SetConsoleMode(out, mode | kVirtualTerminalProcessing)) return false;
+    savedMode_ = static_cast<unsigned>(mode);
+    changed_ = true;
+    return true;
+}
+
+AnsiConsole::~AnsiConsole() {
+    if (!changed_) return;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) SetConsoleMode(out, static_cast<DWORD>(savedMode_));
+}
+#else
+AnsiConsole::AnsiConsole() {}
+AnsiConsole::~AnsiConsole() {}
+bool AnsiConsole::enable() { return true; }
+#endif
+
+namespace {
+
+std::atomic<bool> g_interrupted{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "the Ctrl+C flag is set from a signal handler / handler thread");
+
+#ifdef _WIN32
+HANDLE g_readerThread = nullptr;  // a real handle to the thread that created the guard (the one that reads input)
+
+BOOL WINAPI onConsoleControl(DWORD event) {
+    if (event != CTRL_C_EVENT) return FALSE;  // Ctrl+Break and the rest keep their default meaning
+    g_interrupted = true;
+    if (g_readerThread != nullptr) CancelSynchronousIo(g_readerThread);  // wake a waiting ReadConsole
+    return TRUE;
+}
+#else
+struct sigaction g_previousAction;
+
+void onSigint(int) { g_interrupted = true; }
+#endif
+
+}  // namespace
+
+InterruptGuard::InterruptGuard() {
+    g_interrupted = false;
+#ifdef _WIN32
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_readerThread, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS);
+    SetConsoleCtrlHandler(onConsoleControl, TRUE);
+#else
+    struct sigaction action {};
+    action.sa_handler = onSigint;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;  // no SA_RESTART: a read() waiting for a line must return EINTR
+    sigaction(SIGINT, &action, &g_previousAction);
+#endif
+}
+
+InterruptGuard::~InterruptGuard() {
+#ifdef _WIN32
+    SetConsoleCtrlHandler(onConsoleControl, FALSE);
+    if (g_readerThread != nullptr) CloseHandle(g_readerThread);
+    g_readerThread = nullptr;
+#else
+    sigaction(SIGINT, &g_previousAction, nullptr);
+#endif
+}
+
+bool InterruptGuard::consume() { return g_interrupted.exchange(false); }
+
+void InterruptGuard::trigger() { g_interrupted = true; }
+
+ReadStatus readTerminalLine(std::string& line) {
+    line.clear();
+#ifdef _WIN32
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    std::wstring text;
+    for (;;) {
+        wchar_t buffer[512];
+        DWORD got = 0;
+        const BOOL ok = ReadConsoleW(in, buffer, 512, &got, nullptr);
+        const bool aborted = !ok && GetLastError() == ERROR_OPERATION_ABORTED;
+        if (InterruptGuard::consume() || aborted) return ReadStatus::Interrupted;
+        if (!ok || got == 0) {
+            if (text.empty()) return ReadStatus::Eof;
+            break;
+        }
+        text.append(buffer, got);
+        if (text.back() == L'\n') break;  // a longer line arrives in several pieces
+    }
+    while (!text.empty() && (text.back() == L'\n' || text.back() == L'\r')) text.pop_back();
+    if (!text.empty() && text.front() == L'\x1a') return ReadStatus::Eof;  // Ctrl+Z, Enter
+    line = narrow(text);
+    return ReadStatus::Line;
+#else
+    for (;;) {
+        char c = 0;
+        const auto got = ::read(STDIN_FILENO, &c, 1);
+        if (got < 0) {
+            if (errno == EINTR) {
+                if (InterruptGuard::consume()) return ReadStatus::Interrupted;
+                continue;
+            }
+            return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+        }
+        if (got == 0) return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+        if (c == '\n') return ReadStatus::Line;
+        line.push_back(c);
+    }
+#endif
+}
+
+void setStdinBinary() {
+#ifdef _WIN32
+    if (!isConsole(STD_INPUT_HANDLE)) _setmode(_fileno(stdin), _O_BINARY);
 #endif
 }
 

@@ -93,4 +93,57 @@ std::unique_ptr<DetachedProcess> spawnDetached(const std::string& exePath, const
 // Returns "" on success, otherwise the OS error text.
 std::string killProcess(std::int64_t pid);
 
+// ---------------------------------------------------------------------------
+// The interactive terminal (used by the shell)
+// ---------------------------------------------------------------------------
+
+// True when standard stream `fd` (0 = stdin, 1 = stdout, 2 = stderr) is attached to a terminal (a console
+// on Windows). Anything else, including a pipe or a file, is false.
+bool isTerminal(int fd);
+
+// Turns on ANSI escape-code processing for the console that stdout is attached to, on the classic Windows
+// console host (ENABLE_VIRTUAL_TERMINAL_PROCESSING), and puts the old console mode back in the destructor.
+// Does nothing elsewhere.
+class AnsiConsole {
+public:
+    AnsiConsole();
+    ~AnsiConsole();
+    AnsiConsole(const AnsiConsole&) = delete;
+    AnsiConsole& operator=(const AnsiConsole&) = delete;
+
+    // True when escape codes will be understood after this call. False when stdout is not a console,
+    // or the console refuses. Always true on non-Windows platforms.
+    bool enable();
+
+private:
+    unsigned savedMode_ = 0;
+    bool changed_ = false;
+};
+
+// While a guard exists, Ctrl+C does not end the process: it only sets a flag that the shell reads (and,
+// on Windows, cancels a console read that is waiting for a line). One guard at a time.
+class InterruptGuard {
+public:
+    InterruptGuard();
+    ~InterruptGuard();
+    InterruptGuard(const InterruptGuard&) = delete;
+    InterruptGuard& operator=(const InterruptGuard&) = delete;
+
+    // True once per Ctrl+C: reads the flag and clears it.
+    static bool consume();
+    // Does what the Ctrl+C handler does. For tests, which cannot press the key.
+    static void trigger();
+};
+
+enum class ReadStatus { Line, Eof, Interrupted };
+
+// Reads one line from the terminal (stdin MUST be one; see isTerminal) as UTF-8 without its line
+// terminator. Eof: Ctrl+D (Ctrl+Z then Enter on Windows) or a closed input. Interrupted: Ctrl+C, which
+// needs an InterruptGuard; the flag is cleared (consumed) by this return.
+ReadStatus readTerminalLine(std::string& line);
+
+// When stdin is NOT a terminal, Windows would translate CRLF and stop at Ctrl+Z (text mode); this puts
+// stdin into binary mode so the bytes arrive untouched. Does nothing elsewhere.
+void setStdinBinary();
+
 }  // namespace meradb::sys
