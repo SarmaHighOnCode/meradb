@@ -94,8 +94,10 @@ def literal(text):
                 out.append("\\r")
             elif ch == "\x1b":
                 out.append("\\x1b")
+            elif ch == "\t":
+                out.append("\\t")
             elif ord(ch) < 32:
-                raise SystemExit(f"unexpected control character {ch!r}")
+                out.append("\\%03o" % ord(ch))  # octal: at most three digits, so a following digit is never swallowed
             else:
                 out.append(ch)
         pieces.append("".join(out))

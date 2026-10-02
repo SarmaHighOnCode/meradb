@@ -3,6 +3,7 @@
 #include "meradb/repl.h"
 #include "meradb/repl_text.h"
 #include "golden_shell.h"
+#include "golden_transcripts.h"
 #include "repl_test_util.h"
 #include "test_util.h"
 #include <fstream>
@@ -173,4 +174,207 @@ TEST_CASE("shell dot-commands: anything else is unknown, including .hexdump", "[
           "Ye shell command nahi pata: .bogus a b  (.help dekho)\n"
           "Ye shell command nahi pata: .hexdump students  (.help dekho)\n"
           "Ye shell command nahi pata: .  (.help dekho)\n");
+}
+
+// A scripted terminal: hands out lines, then end of input (or Ctrl+C at the prompt).
+namespace {
+
+class ScriptedSource : public repl::LineSource {
+public:
+    ScriptedSource(std::vector<std::string> lines, std::ostream& out) : lines_(std::move(lines)), out_(out) {}
+
+    sys::ReadStatus read(const std::string& prompt, std::string& line) override {
+        out_ << prompt;
+        ++reads;
+        if (next_ >= lines_.size()) return interruptAtEnd ? sys::ReadStatus::Interrupted : sys::ReadStatus::Eof;
+        line = lines_[next_++];
+        return sys::ReadStatus::Line;
+    }
+    bool takePendingInterrupt() override {
+        const bool was = pending;
+        pending = false;
+        return was;
+    }
+
+    bool pending = false;         // "Ctrl+C arrived while a statement was running"
+    bool interruptAtEnd = false;  // the end of the script is a Ctrl+C at the prompt
+    int reads = 0;
+
+private:
+    std::vector<std::string> lines_;
+    std::size_t next_ = 0;
+    std::ostream& out_;
+};
+
+std::string bannerFor(const std::string& where) {
+    std::ostringstream out;
+    repl::printBanner(out, kPlain, "1.0.0", where, 0);
+    return out.str() + "\n";
+}
+
+}  // namespace
+
+TEST_CASE("shell loop: banner, prompt, then end of input says goodbye", "[shell]") {
+    FakeBackend backend;
+    backend.where = "local (/data/x)";
+    std::ostringstream out;
+    ScriptedSource source({}, out);
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+    CHECK(out.str() == golden_shell::get("banner", false) + "\n" + "meradb:main> " + "\nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: the prompt shows the database and an open transaction", "[shell]") {
+    FakeBackend backend;
+    backend.db = "college";
+    backend.txn = true;
+    std::ostringstream out;
+    ScriptedSource source({}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:college*> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: a statement is collected until a line ends with a semicolon", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"DIKHAO", "  1  ", "SE t ;  ", "DIKHAO 2;"}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(backend.scripts == std::vector<std::string>{"DIKHAO\n  1  \nSE t ;  \n", "DIKHAO 2;\n"});
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main>       ...>       ...> ok\n\nmeradb:main> ok\n\nmeradb:main> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: a line starting with a dot is a command only when no statement is pending", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"  .tables  ", "DIKHAO", ".tables", ";"}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(backend.scripts == std::vector<std::string>{"DIKHAO TABLES;", "DIKHAO\n.tables\n;\n"});
+}
+
+TEST_CASE("shell loop: a blank line starts a statement, so a later dot-command is statement text", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"", ".tables", ";"}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(backend.scripts == std::vector<std::string>{"\n.tables\n;\n"});
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main>       ...>       ...> ok\n\nmeradb:main> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: Unicode whitespace after the semicolon still ends the statement", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"A;\xC2\xA0", "B;\xE3\x80\x80"}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(backend.scripts.size() == 2);
+}
+
+TEST_CASE("shell loop: a lone semicolon is sent to the backend, which decides what it means", "[shell]") {
+    FakeBackend backend;
+    backend.onRun = [](const std::string&) { return std::vector<Result>{}; };
+    std::ostringstream out;
+    ScriptedSource source({";"}, out);
+    repl::run(backend, source, out, kPlain, "1.0.0", 0);
+    CHECK(backend.scripts == std::vector<std::string>{";\n"});
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main> meradb:main> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: .exit says goodbye without a leading newline and reads no more", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({".exit", "DIKHAO 1;"}, out);
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+    CHECK(source.reads == 1);
+    CHECK(backend.scripts.empty());
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main> Phir milenge!\n");
+}
+
+TEST_CASE("shell loop: end of input inside a statement drops the statement", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"DIKHAO *"}, out);
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+    CHECK(backend.scripts.empty());
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main>       ...> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: Ctrl+C at a prompt says goodbye like end of input", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"DIKHAO"}, out);
+    source.interruptAtEnd = true;
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main>       ...> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: Ctrl+C while a statement runs ends the shell with 130, silently", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"SLOW;", "DIKHAO 2;"}, out);
+    backend.onRun = [&](const std::string&) {
+        source.pending = true;  // Ctrl+C pressed during the statement
+        return oneMessage("done");
+    };
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 130);
+    CHECK(backend.scripts == std::vector<std::string>{"SLOW;\n"});  // the statement finished; the next line was never read
+    CHECK(out.str() == bannerFor("fake:1") + "meradb:main> done\n\n");
+}
+
+TEST_CASE("shell loop: Ctrl+C during a dot-command also ends it with 130", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({".tables", "DIKHAO 2;"}, out);
+    backend.onRun = [&](const std::string&) {
+        source.pending = true;
+        return oneMessage("done");
+    };
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 130);
+}
+
+TEST_CASE("shell loop: a dropped connection is reported and the shell keeps going", "[shell]") {
+    FakeBackend backend;
+    backend.onRun = [](const std::string&) -> std::vector<Result> { throw ConnectionFailed("Server ne connection band kar diya"); };
+    std::ostringstream out;
+    ScriptedSource source({"A;", "B;"}, out);
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+    CHECK(out.str() == bannerFor("fake:1") +
+                           "meradb:main> [Connection Galti] Server ne connection band kar diya\n"
+                           "meradb:main> [Connection Galti] Server ne connection band kar diya\n"
+                           "meradb:main> \nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: the colour style reaches the banner, the prompts and the results", "[shell]") {
+    FakeBackend backend;
+    backend.where = "local (/data/x)";
+    std::ostringstream out;
+    ScriptedSource source({"X;"}, out);
+    repl::run(backend, source, out, term::Style::colored(), "1.0.0", 0);
+    CHECK(out.str() == golden_shell::get("banner", true) + "\n" + golden_shell::get("prompt_main", true) +
+                           "\x1b[32mok\x1b[0m\n\n" + golden_shell::get("prompt_main", true) + "\nPhir milenge!\n");
+}
+
+// The real engine against what the Python shell printed for the same input.
+TEST_CASE("shell loop: every recorded Python transcript is reproduced exactly", "[shell][transcript]") {
+    int count = 0;
+    const golden_transcripts::Transcript* all = golden_transcripts::all(count);
+    REQUIRE(count > 20);
+    for (int i = 0; i < count; ++i) {
+        const auto& transcript = all[i];
+        DYNAMIC_SECTION(transcript.name) {
+            // The tokenizer shows an unprintable character raw where Python's repr() escapes it ('\xa0', '\x1a').
+            // That is a core divergence recorded in docs/CPP.md (Task 14), not a shell one, so these two are not
+            // replayed here; the cross-engine script (Task 11) skips them for the same reason.
+            const std::string name = transcript.name;
+            if (name == "unicode_space" || name == "ctrl_z_in_pipe") continue;
+            TempDir dir;
+            LocalBackend backend(dir.file("data"));
+            std::istringstream in(transcript.input);
+            std::ostringstream out;
+            repl::StreamLineSource source(in, out);
+            CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
+            const std::string marker = "se khatam hote hain\n\n";
+            const std::string text = out.str();
+            const auto at = text.find(marker);
+            REQUIRE(at != std::string::npos);
+            CHECK(text.substr(at + marker.size()) == transcript.output);
+        }
+    }
 }

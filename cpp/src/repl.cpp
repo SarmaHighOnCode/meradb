@@ -130,4 +130,46 @@ bool handleDotCommand(Backend& backend, const std::string& line, std::ostream& o
     return true;
 }
 
+int run(Backend& backend, LineSource& in, std::ostream& out, const term::Style& style, const std::string& version,
+        int revealPauseMs) {
+    const std::string where = backend.description();
+    printBanner(out, style, version, where, revealPauseMs);
+    out << "\n";
+    std::string buffer;
+    for (;;) {
+        std::string prompt;
+        if (buffer.empty()) {
+            const std::string db = backend.currentDb();
+            const bool inTxn = backend.inTransaction();
+            prompt = promptFor(style, db, inTxn);
+        } else {
+            prompt = kContinuationPrompt;
+        }
+        std::string line;
+        if (in.read(prompt, line) != ReadStatus::Line) {  // end of input, or Ctrl+C at the prompt
+            out << "\nPhir milenge!\n";
+            out.flush();
+            return 0;
+        }
+
+        const std::string stripped = pytext::strip(line);
+        if (buffer.empty() && pytext::startsWith(stripped, ".")) {
+            if (!handleDotCommand(backend, stripped, out, style)) {
+                out << "Phir milenge!\n";
+                out.flush();
+                return 0;
+            }
+            if (in.takePendingInterrupt()) return 130;
+            continue;
+        }
+
+        buffer += line + "\n";
+        if (endsStatement(buffer)) {
+            runText(backend, buffer, out, style);
+            buffer.clear();
+            if (in.takePendingInterrupt()) return 130;
+        }
+    }
+}
+
 }  // namespace meradb::repl

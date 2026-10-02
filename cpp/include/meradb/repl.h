@@ -70,4 +70,10 @@ bool endsStatement(const std::string& buffer);
 // user asked to leave (.exit, .quit, .nikal).
 bool handleDotCommand(Backend& backend, const std::string& line, std::ostream& out, const term::Style& style);
 
+// Python's repl(backend): the banner, then read-eval-print until .exit, end of input or Ctrl+C. Returns the
+// process exit code: 0 normally, 130 if Ctrl+C arrived while a statement was running (Design decision D5).
+// revealPauseMs is the banner animation's pause per line (0 = none).
+int run(Backend& backend, LineSource& in, std::ostream& out, const term::Style& style, const std::string& version,
+        int revealPauseMs);
+
 }  // namespace meradb::repl
