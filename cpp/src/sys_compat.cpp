@@ -441,7 +441,22 @@ bool isTerminal(int fd) {
 #ifdef _WIN32
 namespace {
 constexpr DWORD kVirtualTerminalProcessing = 0x0004;  // ENABLE_VIRTUAL_TERMINAL_PROCESSING (older headers lack the name)
+
+// The console mode to put back, while a change is outstanding. The destructor restores it on a normal return;
+// the atexit handler does the same when the process leaves through std::exit() with a console still switched.
+std::mutex g_ansiMutex;
+bool g_ansiPending = false;
+DWORD g_ansiSavedMode = 0;
+bool g_ansiAtexitRegistered = false;
+
+void restoreAnsiMode() {
+    std::lock_guard<std::mutex> lock(g_ansiMutex);
+    if (!g_ansiPending) return;
+    g_ansiPending = false;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) SetConsoleMode(out, g_ansiSavedMode);
 }
+}  // namespace
 
 AnsiConsole::AnsiConsole() {}
 
@@ -453,13 +468,18 @@ bool AnsiConsole::enable() {
     if (!SetConsoleMode(out, mode | kVirtualTerminalProcessing)) return false;
     savedMode_ = static_cast<unsigned>(mode);
     changed_ = true;
+    std::lock_guard<std::mutex> lock(g_ansiMutex);
+    g_ansiSavedMode = mode;
+    g_ansiPending = true;
+    if (!g_ansiAtexitRegistered) {
+        g_ansiAtexitRegistered = true;
+        std::atexit(restoreAnsiMode);
+    }
     return true;
 }
 
 AnsiConsole::~AnsiConsole() {
-    if (!changed_) return;
-    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (out != nullptr && out != INVALID_HANDLE_VALUE) SetConsoleMode(out, static_cast<DWORD>(savedMode_));
+    if (changed_) restoreAnsiMode();
 }
 #else
 AnsiConsole::AnsiConsole() {}
@@ -473,11 +493,16 @@ std::atomic<bool> g_interrupted{false};
 static_assert(std::atomic<bool>::is_always_lock_free, "the Ctrl+C flag is set from a signal handler / handler thread");
 
 #ifdef _WIN32
-HANDLE g_readerThread = nullptr;  // a real handle to the thread that created the guard (the one that reads input)
+// A real handle to the thread that created the guard (the one that reads input). The control handler runs on a
+// thread of its own, so the handle is only used, closed or cleared under this mutex: the handler can never
+// pass CancelSynchronousIo a handle the destructor has already closed.
+std::mutex g_readerThreadMutex;
+HANDLE g_readerThread = nullptr;
 
 BOOL WINAPI onConsoleControl(DWORD event) {
     if (event != CTRL_C_EVENT) return FALSE;  // Ctrl+Break and the rest keep their default meaning
     g_interrupted = true;
+    std::lock_guard<std::mutex> lock(g_readerThreadMutex);
     if (g_readerThread != nullptr) CancelSynchronousIo(g_readerThread);  // wake a waiting ReadConsole
     return TRUE;
 }
@@ -492,8 +517,11 @@ void onSigint(int) { g_interrupted = true; }
 InterruptGuard::InterruptGuard() {
     g_interrupted = false;
 #ifdef _WIN32
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_readerThread, 0, FALSE,
-                    DUPLICATE_SAME_ACCESS);
+    {
+        std::lock_guard<std::mutex> lock(g_readerThreadMutex);
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_readerThread, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+    }
     SetConsoleCtrlHandler(onConsoleControl, TRUE);
 #else
     struct sigaction action {};
@@ -507,6 +535,7 @@ InterruptGuard::InterruptGuard() {
 InterruptGuard::~InterruptGuard() {
 #ifdef _WIN32
     SetConsoleCtrlHandler(onConsoleControl, FALSE);
+    std::lock_guard<std::mutex> lock(g_readerThreadMutex);  // waits for a handler that is already running
     if (g_readerThread != nullptr) CloseHandle(g_readerThread);
     g_readerThread = nullptr;
 #else

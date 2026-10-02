@@ -1,24 +1,12 @@
 #include "meradb/cli_format.h"
 #include "meradb/datatypes.h"
+#include "meradb/pytext.h"
 #include <algorithm>
 #include <vector>
 
 namespace meradb {
 
 namespace {
-
-// Python pads by code points (len()), not bytes: count UTF-8 lead bytes.
-size_t displayLen(const std::string& s) {
-    size_t n = 0;
-    for (unsigned char c : s)
-        if ((c & 0xC0) != 0x80) ++n;
-    return n;
-}
-
-std::string padRight(const std::string& s, size_t width) {
-    size_t len = displayLen(s);
-    return len >= width ? s : s + std::string(width - len, ' ');
-}
 
 std::string formatTable(const Result& r, const term::Style& style) {
     std::vector<std::vector<std::string>> body;
@@ -28,9 +16,10 @@ std::string formatTable(const Result& r, const term::Style& style) {
         body.push_back(std::move(cells));
     }
     std::vector<size_t> widths;
-    for (const auto& h : r.columns) widths.push_back(displayLen(h));
+    // Python pads by code points (len()), not bytes.
+    for (const auto& h : r.columns) widths.push_back(pytext::length(h));
     for (const auto& row : body)
-        for (size_t i = 0; i < row.size() && i < widths.size(); ++i) widths[i] = std::max(widths[i], displayLen(row[i]));
+        for (size_t i = 0; i < row.size() && i < widths.size(); ++i) widths[i] = std::max(widths[i], pytext::length(row[i]));
 
     std::string plainSep = "+";
     for (size_t w : widths) plainSep += std::string(w + 2, '-') + "+";
@@ -39,7 +28,7 @@ std::string formatTable(const Result& r, const term::Style& style) {
     auto line = [&](const std::vector<std::string>& cells) {
         std::string out = "|";
         for (size_t i = 0; i < widths.size(); ++i) {
-            out += " " + padRight(i < cells.size() ? cells[i] : "", widths[i]) + " |";
+            out += " " + pytext::ljust(i < cells.size() ? cells[i] : "", widths[i]) + " |";
         }
         return out;
     };

@@ -4307,6 +4307,8 @@ The three terminal primitives cannot run under `ctest`. On each terminal below, 
 | 10 | Any | `cpp\build\meradb_cli shell < script.txt` and `... | more`; `meradb_cli shell > out.txt` | No colour, no animation, identical to Python's piped output; a script containing Ctrl+Z is not cut short |
 | 11 | Linux / macOS terminal (if available) | Banner, a statement, Ctrl+D at an empty prompt, Ctrl+D after typing some text, Ctrl+C at a prompt, Ctrl+C during a slow statement | Same as the Windows rows; compare the Ctrl+D-after-text case with Python's and note any difference in the PR |
 | 12 | Any | `meradb_cli shell -W` | The password prompt hides what is typed (console); wrong password: error on stderr, exit 1, no banner |
+| 13 | Windows Terminal and classic console | Paste one line longer than 512 UTF-16 units (for example `DIKHAO '` + 600 letters + `';`) | The shell reads the whole line intact (the console read arrives in 512-unit pieces); the echoed result holds all 600 letters |
+| 14 | Windows Terminal and classic console | Paste a line in which an emoji (a surrogate pair) straddles the 512-unit boundary: 511 ASCII letters inside a string literal, then `😀`, then the closing `';` | The shell reads the whole line intact; the emoji comes back whole, not as two replacement characters |
 
 - [ ] **Step 9: Whole-change check, then commit**
 
