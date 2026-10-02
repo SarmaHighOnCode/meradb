@@ -101,3 +101,7 @@ SCRIPTS = {
     "lone_cr": "BANAO TABLE c (id INT);\rDAALO MEIN c MAAN (1);\rDIKHAO * SE c;\r",
     "ctrl_z_in_pipe": "BANAO TABLE z (id INT);\n\x1a\n.tables\n;\n",
 }
+
+# The tokenizer's "Ye character samajh nahi aaya: '<c>'" shows an unprintable character raw, where Python's repr()
+# escapes it ('\xa0', '\x1a'). A core divergence (docs/CPP.md), not a shell one: not compared.
+KNOWN_REPR_DIVERGENCE = ["unicode_space", "ctrl_z_in_pipe"]
