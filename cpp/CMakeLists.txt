@@ -95,6 +95,20 @@ if(WIN32)
 endif()
 
 if(MERADB_WORKBENCH)
+  # docs/LANGUAGE.md is embedded at build time so the built binary needs no path to the repository.
+  set(MERADB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+  set(MERADB_LANGUAGE_MD ${CMAKE_CURRENT_SOURCE_DIR}/../docs/LANGUAGE.md)
+  set(MERADB_EMBED_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake)
+  if(EXISTS ${MERADB_LANGUAGE_MD})
+    list(APPEND MERADB_EMBED_DEPENDS ${MERADB_LANGUAGE_MD})
+  endif()
+  add_custom_command(
+    OUTPUT ${MERADB_GEN_DIR}/language_doc_data.inc
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${MERADB_LANGUAGE_MD} -DOUTPUT=${MERADB_GEN_DIR}/language_doc_data.inc
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake
+    DEPENDS ${MERADB_EMBED_DEPENDS}
+    COMMENT "Embedding docs/LANGUAGE.md"
+    VERBATIM)
   add_library(meradb_workbench STATIC
     src/workbench.cpp
     src/wb_text.cpp
@@ -102,11 +116,15 @@ if(MERADB_WORKBENCH)
     src/wb_tree.cpp
     src/wb_worker.cpp
     src/wb_session.cpp
+    src/wb_markdown.cpp
+    src/wb_help.cpp
+    ${MERADB_GEN_DIR}/language_doc_data.inc
     # workbench source files are appended here by later tasks
   )
   target_link_libraries(meradb_workbench PUBLIC meradb_core ftxui::component ftxui::dom ftxui::screen)
   # FTXUI's headers are third-party: keep our warning flags quiet about them.
   target_include_directories(meradb_workbench SYSTEM PUBLIC ${ftxui_SOURCE_DIR}/include)
+  target_include_directories(meradb_workbench PRIVATE ${MERADB_GEN_DIR})
 endif()
 
 add_executable(meradb_cli src/main.cpp)

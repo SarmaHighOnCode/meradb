@@ -65,9 +65,11 @@ if(TARGET meradb_workbench)
     test_wb_tree.cpp
     test_wb_worker.cpp
     test_wb_session.cpp
+    test_wb_help.cpp
     # workbench test files are appended here by later tasks
   )
   target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)
+  target_compile_definitions(meradb_wb_tests PRIVATE MERADB_LANGUAGE_MD="${CMAKE_CURRENT_SOURCE_DIR}/../../docs/LANGUAGE.md")
   catch_discover_tests(meradb_wb_tests)
 
   # A developer tool, not a test: shows the raw bytes your terminal sends for each key (see Task 12 / 14).
