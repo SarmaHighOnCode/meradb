@@ -165,6 +165,21 @@ TEST_CASE("wbeditor the cursor covers a whole character, base letter and combini
     CHECK(sel[1].text == "b");
 }
 
+TEST_CASE("wbeditor a selection continuing to the next row marks the line break", "[wbeditor]") {
+    TextBuffer b;
+    b.setText("ab\n\ncd");
+    b.selectRange(Pos{0, 1}, Pos{2, 1});
+    Line first = editorRowLine(b, 0, false);
+    CHECK(plainText(first) == "ab ");
+    CHECK(first.back().style.bg == palette::kCurrentLine);
+    Line empty = editorRowLine(b, 1, false);  // an empty selected line is visible too
+    CHECK(plainText(empty) == " ");
+    CHECK(empty[0].style.bg == palette::kCurrentLine);
+    CHECK(plainText(editorRowLine(b, 2, false)) == "cd");  // the last row has no break after the selection
+    b.selectRange(Pos{0, 1}, Pos{0, 2});
+    CHECK(plainText(editorRowLine(b, 0, false)) == "ab");
+}
+
 TEST_CASE("wbeditor rows narrower than their text: the window equals the clipped row", "[wbeditor]") {
     TextBuffer b;
     b.setText("DIKHAO \xE6\x97\xA5\xE6\x9C\xAC x = 'it''s a string' -- c\xC3\xA9 and 12.5 count (y)");

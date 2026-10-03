@@ -532,9 +532,12 @@ Line buildRow(const TextBuffer& buffer, int row, bool focused, std::size_t lo, s
             x = y;
         }
     }
-    if (endSpace && hi >= text.size()) {
+    // A selection that goes on to the next row also marks this row's line break with one highlighted cell.
+    const bool lineBreak = buffer.hasSelection() && selFrom != none && row < buffer.selection().second.row;
+    if ((endSpace || lineBreak) && hi >= text.size()) {
         Style s;
-        s.inverse = true;
+        if (lineBreak) s.bg = palette::kCurrentLine;
+        s.inverse = endSpace;
         appendSegment(out, " ", s);
     }
     return out;

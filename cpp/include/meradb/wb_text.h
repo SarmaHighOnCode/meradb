@@ -42,7 +42,7 @@ struct LogEntry { LogKind kind = LogKind::Plain; std::vector<Line> lines; };
 class LogBuffer {
 public:
     static constexpr std::size_t kMaxLines = 20000;
-    void add(LogEntry entry);                                  // drops the oldest entries past kMaxLines lines
+    void add(LogEntry entry);                                  // drops the oldest entries past kMaxLines lines (a single bigger entry is kept whole)
     void addText(LogKind kind, const std::string& text);       // text split at '\n', all lines in styleForLogKind
     void clear();
     const std::deque<LogEntry>& entries() const { return entries_; }
