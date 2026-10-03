@@ -120,6 +120,7 @@ if(MERADB_WORKBENCH)
     src/wb_session.cpp
     src/wb_markdown.cpp
     src/wb_help.cpp
+    src/wb_panels.cpp
     ${MERADB_GEN_DIR}/language_doc_data.inc
     # workbench source files are appended here by later tasks
   )
