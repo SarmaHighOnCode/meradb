@@ -48,6 +48,7 @@ add_executable(meradb_tests
   test_repl.cpp
   test_ws_text.cpp
   test_backend_closer.cpp
+  test_highlight.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

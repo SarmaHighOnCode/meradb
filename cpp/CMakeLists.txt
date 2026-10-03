@@ -79,6 +79,7 @@ add_library(meradb_core STATIC
   src/term_style.cpp
   src/repl_text.cpp
   src/repl.cpp
+  src/highlight.cpp
   # source files are appended here by later tasks
 )
 if(NOT MSVC)

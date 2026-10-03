@@ -235,6 +235,8 @@ std::vector<Token> Tokenizer::tokenize() {
     return tokens;
 }
 
+bool isKeyword(const std::string& upperWord) { return keywordSet().count(upperWord) != 0; }
+
 std::vector<Token> tokenize(const std::string& text) {
     return Tokenizer(text).tokenize();
 }

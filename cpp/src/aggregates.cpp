@@ -106,6 +106,14 @@ Value pySum(const std::vector<Value>& values, const std::string& label) {
 
 }  // namespace
 
+bool isAggregateName(const std::string& upperWord) {
+    // The keys of Python's aggregates.ALIASES.
+    static const char* const names[] = {"GINO", "COUNT", "KUL", "SUM", "AUSAT", "AVG", "NYUNTAM", "MIN", "ADHIKTAM", "MAX"};
+    for (const char* n : names)
+        if (upperWord == n) return true;
+    return false;
+}
+
 std::string canonicalName(const FuncCall& func) {
     static const std::unordered_map<std::string, std::string> aliases = {
         {"GINO", "GINO"},       {"COUNT", "GINO"},   {"KUL", "KUL"},         {"SUM", "KUL"},

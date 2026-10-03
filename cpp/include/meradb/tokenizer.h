@@ -42,4 +42,7 @@ private:
 
 std::vector<Token> tokenize(const std::string& text);
 
+// Is this upper-cased word a reserved keyword (the list `tokenize` uses)? Used by the syntax highlighter.
+bool isKeyword(const std::string& upperWord);
+
 }  // namespace meradb

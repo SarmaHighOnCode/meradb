@@ -30,4 +30,7 @@ std::string canonicalName(const ast::FuncCall& func);
 // Compute one aggregate over the rows of one group.
 Value computeAggregate(const ast::FuncCall& func, const std::vector<Row>& groupRows);
 
+// Is this upper-cased word one of the aggregate names (the keys of Python's aggregates.ALIASES)? Highlighter use.
+bool isAggregateName(const std::string& upperWord);
+
 }  // namespace meradb
