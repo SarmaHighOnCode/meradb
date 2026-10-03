@@ -20,6 +20,10 @@ bool isSpace(char32_t codePoint);
 // the text. length(), strip(), split() and lower() all go through this function.
 std::size_t decode(const std::string& text, std::size_t at, char32_t& codePoint);
 
+// Whether Python's re module treats the code point as a word character in a str pattern (letters, digits and
+// other numeric characters of every script, and '_'; not combining marks, symbols or spaces). Generated table.
+bool isWordChar(char32_t codePoint);
+
 std::string lstrip(const std::string& text);
 std::string rstrip(const std::string& text);
 std::string strip(const std::string& text);

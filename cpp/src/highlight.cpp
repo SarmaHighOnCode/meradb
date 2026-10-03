@@ -14,14 +14,31 @@ constexpr std::size_t kNone = static_cast<std::size_t>(-1);
 bool isDigit(unsigned char c) { return c >= '0' && c <= '9'; }
 bool isAsciiAlpha(unsigned char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 bool isAsciiWord(unsigned char c) { return isAsciiAlpha(c) || isDigit(c); }
-bool isWordByte(unsigned char c) { return isAsciiWord(c) || c >= 0x80; }
+
+// Python's : is the character starting at s[at] a regex word character (letter/digit of any script, or '_')?
+bool wordAt(const std::string& s, std::size_t at) {
+    const unsigned char c = static_cast<unsigned char>(s[at]);
+    if (c < 0x80) return isAsciiWord(c);
+    char32_t cp = 0;
+    pytext::decode(s, at, cp);
+    return pytext::isWordChar(cp);
+}
+
+// Is the character that ends just before s[end] a word character?
+bool wordBefore(const std::string& s, std::size_t end) {
+    std::size_t start = end - 1;
+    while (start > 0 && end - start < 4 && (static_cast<unsigned char>(s[start]) & 0xC0) == 0x80) --start;
+    char32_t cp = 0;
+    if (pytext::decode(s, start, cp) != end - start) return false;  // malformed: not a word character
+    return pytext::isWordChar(cp);
+}
 
 bool boundaryAfter(const std::string& s, std::size_t end) {
-    return end >= s.size() || !isWordByte(static_cast<unsigned char>(s[end]));
+    return end >= s.size() || !wordAt(s, end);
 }
 
 std::size_t numberEnd(const std::string& s, std::size_t i) {
-    if (i > 0 && isWordByte(static_cast<unsigned char>(s[i - 1]))) return kNone;  // no \b before the first digit
+    if (i > 0 && wordBefore(s, i)) return kNone;  // no \b before the first digit
     std::size_t j = i;
     while (j < s.size() && isDigit(static_cast<unsigned char>(s[j]))) ++j;
     if (j + 1 < s.size() && s[j] == '.' && isDigit(static_cast<unsigned char>(s[j + 1]))) {

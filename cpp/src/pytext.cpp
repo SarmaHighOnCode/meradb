@@ -123,6 +123,12 @@ struct CaseClassRange {
 // kLowerRanges and kCaseClasses: generated, see cpp/tests/gen_lower_table.py.
 #include "lower_table.inc"
 
+struct WordRange {
+    std::uint32_t lo, hi;
+};
+// kWordRanges: generated, see cpp/tests/gen_word_table.py.
+#include "word_table.inc"
+
 constexpr int kCaseIgnorable = 1;
 constexpr int kCased = 2;
 
@@ -233,6 +239,15 @@ bool startsWith(const std::string& text, const std::string& prefix) {
 
 bool endsWith(const std::string& text, const std::string& suffix) {
     return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool isWordChar(char32_t codePoint) {
+    const auto* end = kWordRanges + sizeof(kWordRanges) / sizeof(kWordRanges[0]);
+    const auto* it = std::upper_bound(kWordRanges, end, static_cast<std::uint32_t>(codePoint),
+                                      [](std::uint32_t value, const WordRange& r) { return value < r.lo; });
+    if (it == kWordRanges) return false;
+    --it;
+    return codePoint <= it->hi;
 }
 
 }  // namespace meradb::pytext

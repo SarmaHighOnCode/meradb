@@ -16,10 +16,13 @@ EDGE = [
     "dikhao Dikhao DIKHAO", "SACH sach JhOoTh KHALI khali", "gino (*)", "gino   (", "count(*) COUNT (x)",
     "max(a) MAX b", "x = 'it''s' -- note", "'é' é -- ü", "12é 3", "é" "12", "1.5é",
     " DIKHAO", "DIKHAO (", "x;y,z.w", "a % b / c + d - e * f",
+    # Unicode word boundaries next to digits (Python re \b: letters and digits of any script are word characters)
+    "5\u20ac", "5\u00a0", "5\U0001f600", "1\u0301", "\u00e95", "5\u2014", "5\u2028", "5\u200b", "5.5\u20ac", "x 5\u00a0 7\u00e9",
+    "5\u4e2d", "\u4e2d5", "5\u0663", "\u20ac5", "\U0001f6005 6", "5\u00b2", "5\u00bd", "5\u2160", "5.5\u0301 2",
 ]
 
-# Lines whose Python result depends on Unicode-aware \b / \d (ruling R11); none so far.
-DROP = set()
+# Lines whose Python result depends on Unicode-aware \b / \d (ruling R11): Arabic-Indic and other non-ASCII decimal digits start or extend numbers in Python only.
+DROP = {"5\u0663"}
 
 
 def corpus():
