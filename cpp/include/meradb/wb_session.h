@@ -63,7 +63,7 @@ public:
     // Takes the backend (created on the UI thread by the CLI), reads its description / db / transaction state
     // (no I/O), logs the two start-up lines, starts the worker and queues the first schema load.
     Session(std::unique_ptr<Backend> backend, SessionOptions options, UiPoster poster);
-    ~Session();  // shutdown()
+    ~Session();  // shutdown(): BLOCKS until the worker is idle -- call requestQuit() and wait for onExit first
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
@@ -102,8 +102,15 @@ public:
     void closeModal();
     void activateTreeRow(int row);                   // Enter on the tree
     void logLine(LogKind kind, const std::string& text);
-    void requestQuit();                              // Ctrl+Q
-    void shutdown();                                 // blocks until the worker has closed the backend; idempotent
+    // Quit protocol (the CLI follows it): call requestQuit() on Ctrl+Q; it returns at once, drops the statements that
+    // have not started, lets the running one finish, closes the backend (rolling an open transaction back) and then
+    // calls onExit on the UI thread. Leave the UI loop from onExit, THEN destroy the Session: by then the destructor has
+    // nothing left to wait for. The UI stays responsive while the running statement finishes.
+    void requestQuit();                              // Ctrl+Q; non-blocking
+    // BLOCKS the calling (UI) thread until the running statement has finished and the backend is closed. The destructor
+    // calls it, so destroying a Session that is still running a slow statement freezes the UI until that statement
+    // ends. Use requestQuit() and wait for onExit instead; shutdown() is the fallback for teardown paths. Idempotent.
+    void shutdown();
 
 private:
     struct Header { std::string description; std::string db; bool inTransaction = false; };

@@ -664,3 +664,35 @@ TEST_CASE("wbsession closures delivered after shutdown change nothing", "[wbsess
     CHECK(s.log().entries().size() == entries);
     CHECK(s.pendingJobs() == pending);
 }
+
+TEST_CASE("wbsession requestQuit during a slow statement: onExit after it ends, destructor then prompt", "[wbsession]") {
+    std::promise<void> release, entered;
+    std::shared_future<void> gate = release.get_future().share();
+    std::atomic<bool> first{true};
+    ManualPoster poster;
+    auto owned = std::make_unique<FakeBackend>();
+    auto seen = owned->seen;
+    owned->beforeRun = [&](const std::string&) {
+        if (first.exchange(false)) {
+            entered.set_value();
+            gate.wait();
+        }
+    };
+    auto session = std::make_unique<Session>(std::move(owned), SessionOptions{}, poster.poster());
+    int exits = 0;
+    session->setOnExit([&exits] { ++exits; });
+    session->runText("slow;");
+    entered.get_future().wait();
+    session->requestQuit();  // returns at once even though the statement is still running
+    CHECK(session->quitting());
+    CHECK_FALSE(poster.pumpUntil([&exits] { return exits > 0; }, std::chrono::milliseconds(150)));
+    CHECK(exits == 0);
+    release.set_value();  // the statement finishes
+    REQUIRE(poster.pumpUntil([&exits] { return exits > 0; }));
+    CHECK(exits == 1);
+    CHECK(seen->closed);
+    const auto before = std::chrono::steady_clock::now();
+    session.reset();  // everything is already closed: nothing left to wait for
+    CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(2));
+    CHECK(seen->closeCalls == 1);
+}
