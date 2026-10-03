@@ -1,5 +1,6 @@
 // cpp/src/wb_ui.cpp
 #include "meradb/wb_ui.h"
+#include "meradb/wb_dialogs.h"
 #include "meradb/wb_keys.h"
 #include <algorithm>
 #include <ftxui/component/event.hpp>
@@ -29,6 +30,9 @@ struct WorkbenchUi::Impl {
     std::shared_ptr<PanelView> tree, results, log, editor;
     Panel focus = Panel::Editor;
     Component root;
+    std::unique_ptr<ConnectForm> form;   // exists while the connect dialog is open
+    HelpDialog help;
+    bool helpOpen = false;
 
     PanelView& panelOf(Panel p) {
         switch (p) {
@@ -44,6 +48,8 @@ struct WorkbenchUi::Impl {
     Element layout(int w, int h);
     Element headerRow(int w);
     Element footerRow(int w);
+    void syncModal();
+    bool handleMouse(const Mouse& mouse);
     bool handle(const Event& e);
     bool dispatch(const Event& e);
     void cycleFocus(int step);
@@ -77,7 +83,56 @@ Element WorkbenchUi::Impl::render() {
     results->setFocused(focus == Panel::Results);
     log->setFocused(focus == Panel::Log);
     editor->setFocused(focus == Panel::Editor);
-    return sizedElement([this](int w, int h) { return layout(w, h); });
+    syncModal();
+    Element base = sizedElement([this](int w, int h) { return layout(w, h); });
+    if (session.modal() == Modal::Connect && form) return modalOverlay(base, renderConnectDialog(*form));
+    if (session.modal() == Modal::Help) return modalOverlay(base, help.render());
+    return base;
+}
+
+// The dialogs' state lives only while they are open: a fresh form (with the backend's host and port) for every
+// Ctrl+O, the help text back at the top for every F1.
+void WorkbenchUi::Impl::syncModal() {
+    const Modal modal = session.modal();
+    if (modal == Modal::Connect) {
+        if (!form) {
+            const ConnectDefaults defaults = session.connectDefaults();
+            form.reset(new ConnectForm(defaults.host, defaults.port));
+        }
+    } else {
+        form.reset();
+    }
+    if (modal == Modal::Help) {
+        if (!helpOpen) help.reset();
+        helpOpen = true;
+    } else {
+        helpOpen = false;
+    }
+}
+
+bool WorkbenchUi::Impl::handleMouse(const Mouse& mouse) {
+    PanelView* hit = nullptr;
+    Panel hitPanel = Panel::Editor;
+    const Panel order[] = {Panel::Tree, Panel::Results, Panel::Log, Panel::Editor};
+    for (Panel p : order) {
+        const Box& b = panelOf(p).box();
+        if (b.x_max >= b.x_min && mouse.x >= b.x_min && mouse.x <= b.x_max && mouse.y >= b.y_min && mouse.y <= b.y_max) {
+            hit = &panelOf(p);
+            hitPanel = p;
+            break;
+        }
+    }
+    if (!hit) return false;
+    if (mouse.motion != Mouse::Pressed) return true;
+    if (mouse.button == Mouse::Left) {
+        focus = hitPanel;
+        hit->click(mouse.x, mouse.y);
+    } else if (mouse.button == Mouse::WheelUp) {
+        hit->scrollWheel(-1);
+    } else if (mouse.button == Mouse::WheelDown) {
+        hit->scrollWheel(1);
+    }
+    return true;
 }
 
 Element WorkbenchUi::Impl::headerRow(int w) {
@@ -170,6 +225,20 @@ bool WorkbenchUi::Impl::dispatch(const Event& e) {
         return true;
     }
     if (session.quitting()) return true;
+    syncModal();
+    const Modal modal = session.modal();
+    if (modal == Modal::Help) return help.onEvent(e, session);   // keys outside its own list do nothing
+    if (modal == Modal::Connect) {
+        if (e.is_mouse() || keys::isInterrupt(e) || keys::isRun(e) || keys::isExplain(e) || keys::isHistoryPrev(e) ||
+            keys::isHistoryNext(e) || keys::isExport(e) || keys::isConnect(e) || keys::isClearLog(e) || keys::isHelp(e))
+            return true;
+        if (!form) return true;
+        return handleConnectEvent(*form, e, session);
+    }
+    if (e.is_mouse()) {
+        Event copy = e;   // Event::mouse() is not const
+        return handleMouse(copy.mouse());
+    }
     if (keys::isInterrupt(e)) {
         session.logLine(LogKind::Warn, "Bahar niklne ke liye Ctrl+Q dabao.");
         return true;

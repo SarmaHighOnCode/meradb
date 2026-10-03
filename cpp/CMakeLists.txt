@@ -122,6 +122,8 @@ if(MERADB_WORKBENCH)
     src/wb_help.cpp
     src/wb_panels.cpp
     src/wb_ui.cpp
+    src/wb_form.cpp
+    src/wb_dialogs.cpp
     ${MERADB_GEN_DIR}/language_doc_data.inc
     # workbench source files are appended here by later tasks
   )
