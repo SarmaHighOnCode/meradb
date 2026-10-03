@@ -88,6 +88,16 @@ TEST_CASE("wbtree expansion survives a refresh", "[wbtree]") {
     CHECK(rowOf(m, "students") > 0);
 }
 
+TEST_CASE("wbtree a refresh re-expands a collapsed root", "[wbtree]") {
+    TreeModel m;
+    m.refresh(sample());
+    m.toggle(0);
+    CHECK(m.rows().size() == 1);
+    m.refresh(sample());
+    CHECK(m.rows()[0].expanded);
+    CHECK(labels(m) == std::vector<std::string>({"Databases", "college", "main", "students", "marks"}));
+}
+
 TEST_CASE("wbtree selection survives a refresh by key", "[wbtree]") {
     TreeModel m;
     m.refresh(sample());

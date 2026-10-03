@@ -152,6 +152,7 @@ void TreeModel::refresh(const nlohmann::ordered_json& databases) {
     }
     expanded_ = std::move(next);
     data_ = databases;
+    rootExpanded_ = true;  // tui.py calls tree.root.expand() on every refresh
     rebuild();
     if (hadSelection) {
         for (std::size_t i = 0; i < rows_.size(); ++i) {
