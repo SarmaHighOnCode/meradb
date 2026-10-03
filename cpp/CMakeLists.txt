@@ -100,6 +100,8 @@ if(MERADB_WORKBENCH)
     src/wb_text.cpp
     src/wb_editor.cpp
     src/wb_tree.cpp
+    src/wb_worker.cpp
+    src/wb_session.cpp
     # workbench source files are appended here by later tasks
   )
   target_link_libraries(meradb_workbench PUBLIC meradb_core ftxui::component ftxui::dom ftxui::screen)
