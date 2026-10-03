@@ -99,6 +99,8 @@ if(MERADB_WORKBENCH)
   set(MERADB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
   set(MERADB_LANGUAGE_MD ${CMAKE_CURRENT_SOURCE_DIR}/../docs/LANGUAGE.md)
   set(MERADB_EMBED_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake)
+  # The file is a dependency only if it exists when CMake configures: a docs/LANGUAGE.md added later is not noticed
+  # until the next configure (re-run cmake once). Editing an existing file re-embeds on the next build.
   if(EXISTS ${MERADB_LANGUAGE_MD})
     list(APPEND MERADB_EMBED_DEPENDS ${MERADB_LANGUAGE_MD})
   endif()

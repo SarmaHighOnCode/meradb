@@ -2,6 +2,7 @@
 #include "meradb/pytext.h"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 namespace meradb::pytext {
 
@@ -248,6 +249,68 @@ bool isWordChar(char32_t codePoint) {
     if (it == kWordRanges) return false;
     --it;
     return codePoint <= it->hi;
+}
+
+namespace {
+// First code point ("zero") of every run of ten decimal digits (Unicode category Nd, Unicode 15.0 like the other
+// tables). Python's int() accepts any of them; the value is the offset within the run.
+const std::uint32_t kDigitZeros[] = {
+    0x30, 0x660, 0x6F0, 0x7C0, 0x966, 0x9E6, 0xA66, 0xAE6, 0xB66, 0xBE6, 0xC66, 0xCE6, 0xD66, 0xDE6, 0xE50, 0xED0,
+    0xF20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90, 0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620,
+    0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0, 0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0,
+    0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50, 0x11DA0, 0x11F50,
+    0x16A60, 0x16AC0, 0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E950,
+    0x1FBF0};
+}  // namespace
+
+int decimalDigit(char32_t codePoint) {
+    const auto* end = kDigitZeros + sizeof(kDigitZeros) / sizeof(kDigitZeros[0]);
+    const auto* it = std::upper_bound(kDigitZeros, end, static_cast<std::uint32_t>(codePoint));
+    if (it == kDigitZeros) return -1;
+    --it;
+    const std::uint32_t offset = static_cast<std::uint32_t>(codePoint) - *it;
+    return offset < 10 ? static_cast<int>(offset) : -1;
+}
+
+std::optional<long long> parseInt(const std::string& raw) {
+    // int() strips str.isspace() characters except U+001C..U+001F (checked against CPython for every code point).
+    struct Ch {
+        char32_t cp;
+        std::size_t length;
+    };
+    std::vector<Ch> chars;
+    for (std::size_t at = 0; at < raw.size();) {
+        char32_t cp = 0;
+        const std::size_t length = decode(raw, at, cp);
+        chars.push_back(Ch{cp, length});
+        at += length;
+    }
+    const auto stripped = [](const Ch& c) { return isSpace(c.cp) && !(c.cp >= 0x1C && c.cp <= 0x1F); };
+    std::size_t first = 0, last = chars.size();
+    while (first < last && stripped(chars[first])) ++first;
+    while (last > first && stripped(chars[last - 1])) --last;
+    if (first == last) return std::nullopt;
+    bool negative = false;
+    if (chars[first].cp == '+' || chars[first].cp == '-') {
+        negative = chars[first].cp == '-';
+        ++first;
+    }
+    constexpr long long kMax = std::numeric_limits<long long>::max();
+    long long value = 0;
+    bool lastWasDigit = false;
+    for (std::size_t i = first; i < last; ++i) {
+        const int d = decimalDigit(chars[i].cp);
+        if (d >= 0) {
+            value = value > (kMax - d) / 10 ? kMax : value * 10 + d;  // saturates
+            lastWasDigit = true;
+        } else if (chars[i].cp == '_' && lastWasDigit && i + 1 < last) {
+            lastWasDigit = false;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!lastWasDigit) return std::nullopt;
+    return negative ? -value : value;
 }
 
 }  // namespace meradb::pytext

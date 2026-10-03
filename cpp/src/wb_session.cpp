@@ -24,25 +24,15 @@ bool allDigits(const std::string& s) {
     return true;
 }
 
-// Python's int(text) for the text of the port box: optional sign, ASCII digits.
+// Python's int(text) for the text of the port box (the CLI's helper, pytext::parseInt: Unicode whitespace around,
+// sign, decimal digits of any script, underscores between digits). A value beyond int is clamped and left for the
+// connection to reject.
 int parsePort(const std::string& text) {
-    std::size_t i = 0;
-    bool negative = false;
-    if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
-        negative = text[i] == '-';
-        ++i;
-    }
-    const std::string digits = text.substr(i);
-    if (!allDigits(digits)) throw std::invalid_argument("invalid literal for int() with base 10: '" + text + "'");
-    long long value = 0;
-    for (char c : digits) {
-        value = value * 10 + (c - '0');
-        if (value > INT_MAX) {
-            value = INT_MAX;
-            break;
-        }
-    }
-    return static_cast<int>(negative ? -value : value);
+    const std::optional<long long> value = pytext::parseInt(text);
+    if (!value) throw std::invalid_argument("invalid literal for int() with base 10: '" + text + "'");
+    if (*value > INT_MAX) return INT_MAX;
+    if (*value < INT_MIN) return INT_MIN;
+    return static_cast<int>(*value);
 }
 
 }  // namespace
@@ -91,14 +81,26 @@ struct Session::Snapshot {
     bool inTransaction = false;
     nlohmann::ordered_json schema = nlohmann::ordered_json::array();
     std::optional<std::string> schemaError;
+    bool keepHeader = false;  // the backend is gone: description / db / transaction here are not real, keep the header
 };
+
+constexpr const char* kUnknownFailure = "anjaan galti hui";
+
+static std::string describeCurrentException() {  // inside a catch block
+    try {
+        throw;
+    } catch (const std::exception& e) {
+        return e.what();
+    } catch (...) {
+        return kUnknownFailure;
+    }
+}
 
 struct Session::RunOutcome {
     std::vector<Result> results;
     double ms = 0;
     bool failed = false;
     std::string failure;
-    std::optional<std::string> echo;  // text to put in history and the log when the job completes (explain)
     std::optional<std::pair<LogKind, std::string>> notice;
     std::optional<Snapshot> snapshot;
 };
@@ -122,10 +124,17 @@ Session::Session(std::unique_ptr<Backend> backend, SessionOptions options, UiPos
     backend_ = std::move(backend);
     ++pending_;
     worker_.post([this] {
-        Snapshot snapshot = takeSnapshot();
+        auto snapshot = std::make_shared<Snapshot>();
+        try {
+            *snapshot = takeSnapshot();
+        } catch (...) {
+            *snapshot = Snapshot{};
+            snapshot->keepHeader = true;
+            snapshot->schemaError = describeCurrentException();
+        }
         postUi([this, snapshot]() {
             --pending_;
-            applySnapshot(snapshot);
+            applySnapshot(*snapshot);
         });
     });
 }
@@ -169,9 +178,8 @@ ConnectDefaults Session::connectDefaults() const { return meradb::wb::connectDef
 
 Session::Snapshot Session::takeSnapshot() {
     Snapshot s;
-    if (!backend_) {
-        s.description = header_.description;
-        s.db = header_.db;
+    if (!backend_) {  // never reads UI state here: applySnapshot keeps the header as it is
+        s.keepHeader = true;
         s.schemaError = "backend band hai";
         return s;
     }
@@ -193,10 +201,25 @@ void Session::runOnWorker(const std::string& text, RunOutcome& out) {
         out.results = backend_->runScript(text);
         out.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         out.snapshot = takeSnapshot();
-    } catch (const std::exception& e) {  // MeraDBError: the server went away; anything else is reported the same way
+    } catch (...) {  // MeraDBError: the server went away; anything else is reported the same way
         out.failed = true;
-        out.failure = e.what();
+        out.failure = describeCurrentException();
     }
+}
+
+// Worker thread: the echo line (and history entry) of a statement that is about to run, with the database as it is
+// right now. tui.py run_text logs `current_db> text` just before running, so after an earlier ISTEMAL the prompt shows
+// the new database; the closure arrives before the result closure of the same job (FIFO).
+void Session::echoOnWorker(const std::string& text, bool addToHistory) {
+    std::optional<std::string> db;
+    try {
+        if (backend_) db = backend_->currentDb();
+    } catch (...) {
+    }
+    postUi([this, text, db, addToHistory]() {
+        if (addToHistory) history_.add(text);
+        log_.add(echoEntry(db ? *db : header_.db, text));
+    });
 }
 
 void Session::closeBackendOnWorker() {
@@ -214,11 +237,12 @@ void Session::closeBackendOnWorker() {
 void Session::enqueueRun(const std::string& text) {
     ++pending_;
     worker_.post([this, text] {
-        RunOutcome out;
-        runOnWorker(text, out);
-        postUi([this, out]() mutable {
+        auto out = std::make_shared<RunOutcome>();
+        echoOnWorker(text, false);
+        runOnWorker(text, *out);
+        postUi([this, out]() {
             --pending_;
-            applyRun(std::move(out));
+            applyRun(std::move(*out));
         });
     });
 }
@@ -227,23 +251,24 @@ void Session::runText(const std::string& raw) {
     if (quitting_) return;
     const std::string text = pytext::strip(raw);
     if (text.empty()) return;
-    history_.add(text);
-    log_.add(echoEntry(header_.db, text));
+    history_.add(text);  // the echo line follows when the statement starts (echoOnWorker)
     enqueueRun(text);
 }
 
 void Session::runEditorText() { runText(editor_.runnableText()); }
 
-void Session::showResult(const Result& result) {
-    lastResult_ = result;
+void Session::showResult(Result result) {
     table_ = makeTable(result);
+    lastResult_ = std::move(result);
     ++resultVersion_;
 }
 
 void Session::applySnapshot(const Snapshot& s) {
-    header_.description = s.description;
-    header_.db = s.db;
-    header_.inTransaction = s.inTransaction;
+    if (!s.keepHeader) {
+        header_.description = s.description;
+        header_.db = s.db;
+        header_.inTransaction = s.inTransaction;
+    }
     if (s.schemaError) {
         log_.addText(LogKind::Dim, "(schema refresh nahi hua: " + *s.schemaError + ")");
         return;
@@ -252,10 +277,6 @@ void Session::applySnapshot(const Snapshot& s) {
 }
 
 void Session::applyRun(RunOutcome out) {
-    if (out.echo) {
-        history_.add(*out.echo);
-        log_.add(echoEntry(header_.db, *out.echo));
-    }
     if (out.notice) {
         log_.addText(out.notice->first, out.notice->second);
         return;
@@ -265,8 +286,8 @@ void Session::applyRun(RunOutcome out) {
         log_.addText(LogKind::Dim, "Ctrl+O se dobara connect karo.");
         return;
     }
-    const Result* shown = nullptr;
-    for (const Result& r : out.results) {
+    Result* shown = nullptr;
+    for (Result& r : out.results) {
         if (!r.error.empty()) {
             log_.addText(LogKind::Error, r.error);
             continue;
@@ -277,7 +298,7 @@ void Session::applyRun(RunOutcome out) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "(%.1f ms)", out.ms);
     log_.addText(LogKind::Dim, buf);
-    if (shown != nullptr) showResult(*shown);
+    if (shown != nullptr) showResult(std::move(*shown));
     if (out.snapshot) applySnapshot(*out.snapshot);
 }
 
@@ -292,23 +313,23 @@ void Session::explainEditorText() {
     const std::string text = pytext::strip(editor_.runnableText());
     ++pending_;
     worker_.post([this, text] {
-        RunOutcome out;
+        auto out = std::make_shared<RunOutcome>();
         try {
             const auto statements = parseScript(text);  // MeraDBError on bad syntax
             if (statements.size() != 1) {
-                out.notice = std::make_pair(
+                out->notice = std::make_pair(
                     LogKind::Warn, std::string("SAMJHAO ek hi query par chalta hai -- ek query select karke F6 dabao"));
             } else {
                 const std::string full = "SAMJHAO " + text;
-                out.echo = full;
-                runOnWorker(full, out);
+                echoOnWorker(full, true);
+                runOnWorker(full, *out);
             }
-        } catch (const std::exception& e) {
-            out.notice = std::make_pair(LogKind::Error, std::string(e.what()));
+        } catch (...) {
+            out->notice = std::make_pair(LogKind::Error, describeCurrentException());
         }
-        postUi([this, out]() mutable {
+        postUi([this, out]() {
             --pending_;
-            applyRun(std::move(out));
+            applyRun(std::move(*out));
         });
     });
 }
@@ -345,26 +366,29 @@ void Session::connect(const ConnectRequest& request) {
     if (quitting_) return;
     ++pending_;
     worker_.post([this, request] {
-        ConnectOutcome out;
+        auto out = std::make_shared<ConnectOutcome>();
         try {
-            if (request.local && dynamic_cast<LocalBackend*>(backend_.get()) != nullptr) {
-                // R14: never two engines on one folder. The old engine is closed (rolling its transaction back).
-                backend_->close();
-            }
+            // Like tui.py, the new backend is built BEFORE the old one is touched, so a failed attempt leaves the old
+            // backend (and its open transaction) exactly as it was. One case cannot follow Python: a new local engine
+            // on the folder the current local engine has open would run crash recovery, which restores the snapshot
+            // of a transaction that is still open here. So a local connect while a local transaction is open is
+            // refused up front; PAKKA or WAPAS first. (A local engine with no transaction has nothing to recover.)
+            if (request.local && dynamic_cast<LocalBackend*>(backend_.get()) != nullptr && backend_->inTransaction())
+                throw std::runtime_error("ek transaction khula hai -- pehle PAKKA ya WAPAS karo, phir Local mode");
             std::unique_ptr<Backend> fresh = options_.factory(request, options_.dataDir);  // may throw
             std::unique_ptr<Backend> old = std::move(backend_);
             backend_ = std::move(fresh);
             try {
-                if (old) old->close();
+                if (old) old->close();  // rolls an open transaction back (a remote one is the server's to undo)
             } catch (...) {
             }
-            out.snapshot = takeSnapshot();
-        } catch (const std::exception& e) {
-            out.error = e.what();
+            out->snapshot = takeSnapshot();
+        } catch (...) {
+            out->error = describeCurrentException();
         }
         postUi([this, out]() {
             --pending_;
-            applyConnect(out);
+            applyConnect(*out);
         });
     });
 }

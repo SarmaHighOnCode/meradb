@@ -3,7 +3,10 @@
 #include "test_util.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include "meradb/backend.h"
+#include "meradb/pytext.h"
 #include <atomic>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -237,13 +240,14 @@ TEST_CASE("wbsession busy label counts queued statements and order is kept", "[w
     CHECK(s.busy());
     CHECK(s.pendingJobs() == 2);
     CHECK(s.busyLabel() == "[chal raha hai +1]");
-    const auto log = logAfterStartup(s);
-    REQUIRE(log.size() == 2);  // both echo lines are in already
-    CHECK(log[0].second == "main> a;");
-    CHECK(log[1].second == "main> b;");
     entered.get_future().wait();
     release.set_value();
     REQUIRE(rig.poster.pumpIdle(s));
+    // the echo lines appear when each statement starts (tui.py logs the prompt just before running), in order
+    std::vector<std::string> echoes;
+    for (const auto& e : logAfterStartup(s))
+        if (e.second.rfind("main> ", 0) == 0) echoes.push_back(e.second);
+    CHECK(echoes == std::vector<std::string>({"main> a;", "main> b;"}));
     CHECK(rig.fake->ranList() == std::vector<std::string>({"a;", "b;"}));
     CHECK(s.busyLabel() == "");
 }
@@ -695,4 +699,123 @@ TEST_CASE("wbsession requestQuit during a slow statement: onExit after it ends, 
     session.reset();  // everything is already closed: nothing left to wait for
     CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(2));
     CHECK(seen->closeCalls == 1);
+}
+
+TEST_CASE("wbsession the port box accepts what Python's int() accepts", "[wbsession]") {
+    using meradb::pytext::parseInt;
+    CHECK(parseInt("6372") == 6372);
+    CHECK(parseInt("6_372") == 6372);
+    CHECK(parseInt(" +6372\t") == 6372);
+    CHECK(parseInt("-1") == -1);
+    CHECK(parseInt("\xC2\xA0" "12" "\xE3\x80\x80") == 12);        // NBSP and ideographic space are stripped
+    CHECK(parseInt("\xD9\xA6\xD9\xA3\xD9\xA7\xD9\xA2") == 6372);  // Arabic-Indic digits
+    CHECK(parseInt("\xEF\xBC\x91\xEF\xBC\x92") == 12);            // fullwidth digits
+    CHECK(parseInt("1\xD9\xA2" "_3") == 123);                       // scripts may mix
+    CHECK_FALSE(parseInt("").has_value());
+    CHECK_FALSE(parseInt("  ").has_value());
+    CHECK_FALSE(parseInt("_1").has_value());
+    CHECK_FALSE(parseInt("1_").has_value());
+    CHECK_FALSE(parseInt("1__2").has_value());
+    CHECK_FALSE(parseInt("+ 1").has_value());
+    CHECK_FALSE(parseInt("+").has_value());
+    CHECK_FALSE(parseInt("1.5").has_value());
+    CHECK_FALSE(parseInt("\xC2\xB2").has_value());                 // superscript two is not a decimal digit
+    CHECK_FALSE(parseInt("1\x1F").has_value());                    // U+001F is not stripped by int()
+    CHECK(parseInt(std::string(40, '9')) == std::numeric_limits<long long>::max());  // saturates, never overflows
+
+    // through the factory: a good port reaches the connection (which fails: nothing listens), a bad one is a ValueError
+    ConnectRequest ok = makeConnectRequest(false, "127.0.0.1", "1_0", "", "");
+    CHECK_THROWS_AS(defaultBackendFactory(ok, ""), ConnectionFailed);
+    ok.port = "\xD9\xA0\xD9\xA1";
+    CHECK_THROWS_AS(defaultBackendFactory(ok, ""), ConnectionFailed);
+    ConnectRequest bad = makeConnectRequest(false, "127.0.0.1", "1__0", "", "");
+    CHECK_THROWS_AS(defaultBackendFactory(bad, ""), std::invalid_argument);
+}
+
+TEST_CASE("wbsession the echo shows the database at the time the statement starts", "[wbsession]") {
+    Rig rig([](FakeBackend& f) {
+        FakeBackend* self = &f;
+        f.beforeRun = [self](const std::string& text) {
+            if (text == "ISTEMAL college;") self->db = "college";
+        };
+    });
+    Session& s = rig.s();
+    s.runText("ISTEMAL college;");
+    s.runText("DIKHAO 1;");  // queued behind the first one: its prompt must already name the new database
+    REQUIRE(rig.poster.pumpIdle(s));
+    std::vector<std::string> echoes;
+    for (const auto& e : logAfterStartup(s))
+        if (e.first == LogKind::Echo) echoes.push_back(e.second);
+    CHECK(echoes == std::vector<std::string>({"main> ISTEMAL college;", "college> DIKHAO 1;"}));
+}
+
+TEST_CASE("wbsession a job that throws still completes and clears the busy state", "[wbsession]") {
+    SECTION("a statement") {
+        Rig rig([](FakeBackend& f) { f.beforeRun = [](const std::string&) { throw 42; }; });
+        Session& s = rig.s();
+        s.runText("boom;");
+        REQUIRE(rig.poster.pumpIdle(s));
+        CHECK_FALSE(s.busy());
+        CHECK(s.busyLabel() == "");
+        bool sawError = false;
+        for (const auto& e : logAfterStartup(s)) sawError = sawError || e.first == LogKind::Error;
+        CHECK(sawError);
+    }
+    SECTION("a connect") {
+        SessionOptions opts;
+        opts.factory = [](const ConnectRequest&, const std::string&) -> std::unique_ptr<Backend> { throw 42; };
+        Rig rig({}, opts);
+        Session& s = rig.s();
+        s.connect(makeConnectRequest(false, "x", "1", "", ""));
+        REQUIRE(rig.poster.pumpIdle(s));
+        CHECK_FALSE(s.busy());
+        CHECK(textOf(s.log().entries().back()).rfind("Connect nahi hua: ", 0) == 0);
+        CHECK_FALSE(rig.fake->closed());
+    }
+    SECTION("an explain") {
+        Rig rig([](FakeBackend& f) { f.beforeRun = [](const std::string&) { throw 42; }; });
+        Session& s = rig.s();
+        s.editor().setText("DIKHAO 1;");
+        s.explainEditorText();
+        REQUIRE(rig.poster.pumpIdle(s));
+        CHECK_FALSE(s.busy());
+    }
+}
+
+TEST_CASE("wbsession a local connect with an open transaction is refused and changes nothing", "[wbsession]") {
+    meradb_test::TempDir dir;
+    int factoryCalls = 0;
+    SessionOptions opts;
+    opts.dataDir = dir.str();
+    opts.factory = [&factoryCalls](const ConnectRequest&, const std::string&) -> std::unique_ptr<Backend> {
+        ++factoryCalls;
+        throw ConnectionFailed("nahi");
+    };
+    ManualPoster poster;
+    Session s(std::make_unique<LocalBackend>(dir.str()), opts, poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    s.runText("SHURU;");
+    REQUIRE(poster.pumpIdle(s));
+    REQUIRE(s.inTransaction());
+    ConnectRequest local;
+    local.local = true;
+    local.host = "127.0.0.1";
+    local.port = "6372";
+    s.connect(local);
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(textOf(s.log().entries().back()).rfind("Connect nahi hua: ", 0) == 0);
+    CHECK(factoryCalls == 0);
+    CHECK(s.inTransaction());  // the transaction survived the refused attempt
+    s.runText("PAKKA;");
+    REQUIRE(poster.pumpIdle(s));
+    CHECK_FALSE(s.inTransaction());
+
+    // no transaction: the factory runs, and when it fails the old backend is untouched and still works
+    s.connect(local);
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(factoryCalls == 1);
+    s.runText("DIKHAO DATABASES;");
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(s.log().entries().size() > 0);
+    CHECK_FALSE(s.busy());
 }

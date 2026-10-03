@@ -5,6 +5,7 @@
 // does in the Python shell), Unicode lower(), and length / ljust counted in characters.
 #pragma once
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,14 @@ std::size_t decode(const std::string& text, std::size_t at, char32_t& codePoint)
 // Whether Python's re module treats the code point as a word character in a str pattern (letters, digits and
 // other numeric characters of every script, and '_'; not combining marks, symbols or spaces). Generated table.
 bool isWordChar(char32_t codePoint);
+
+// The value 0..9 of a decimal digit (Unicode category Nd, every script: str.isdecimal), else -1.
+int decimalDigit(char32_t codePoint);
+
+// Python's int(text) for a str: surrounding whitespace stripped (Unicode, minus U+001C..U+001F), an optional sign,
+// decimal digits of any script with single underscores BETWEEN digits. nullopt where Python raises ValueError;
+// a value beyond long long saturates (callers range-check).
+std::optional<long long> parseInt(const std::string& text);
 
 std::string lstrip(const std::string& text);
 std::string rstrip(const std::string& text);

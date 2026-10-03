@@ -122,12 +122,13 @@ private:
     Snapshot takeSnapshot();
     void runOnWorker(const std::string& text, RunOutcome& out);
     void closeBackendOnWorker();
+    void echoOnWorker(const std::string& text, bool addToHistory);
     // UI thread only
     void enqueueRun(const std::string& text);
     void applyRun(RunOutcome out);
     void applyConnect(const ConnectOutcome& out);
     void applySnapshot(const Snapshot& snapshot);
-    void showResult(const Result& result);
+    void showResult(Result result);
 
     // Worker thread: post a closure to the UI through the poster, guarded by alive_ (see the class comment).
     void postUi(std::function<void()> fn);
