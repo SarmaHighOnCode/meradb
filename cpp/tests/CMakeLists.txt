@@ -70,7 +70,7 @@ if(TARGET meradb_workbench)
     test_wb_window.cpp
     test_wb_form.cpp
     test_wb_dialogs.cpp
-    # workbench test files are appended here by later tasks
+    test_wb_e2e.cpp
   )
   target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)
   target_compile_definitions(meradb_wb_tests PRIVATE MERADB_LANGUAGE_MD="${CMAKE_CURRENT_SOURCE_DIR}/../../docs/LANGUAGE.md")
@@ -79,6 +79,10 @@ if(TARGET meradb_workbench)
   # A developer tool, not a test: shows the raw bytes your terminal sends for each key (see Task 12 / 14).
   add_executable(wb_keyprobe tools/wb_keyprobe.cpp)
   target_link_libraries(wb_keyprobe PRIVATE meradb_workbench meradb_core)
+
+  # Runs one scenario against the C++ session and prints what the workbench shows (used by workbench_diff.py).
+  add_executable(wb_probe wb_probe.cpp)
+  target_link_libraries(wb_probe PRIVATE meradb_workbench meradb_core)
 endif()
 
 # Cross-engine diffs need Python (and the Python reference engine); skip cleanly if absent.
@@ -143,6 +147,12 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME wb_cli_smoke
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wb_cli_smoke.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(wb_cli_smoke PROPERTIES TIMEOUT 120)
+  if(TARGET wb_probe)
+    # Skips (exit 77) when Python has no Textual.
+    add_test(NAME workbench_diff
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/workbench_diff.py --probe $<TARGET_FILE:wb_probe>)
+    set_tests_properties(workbench_diff PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  endif()
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
 endif()
