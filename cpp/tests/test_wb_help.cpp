@@ -4,6 +4,7 @@
 #include "test_util.h"
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <chrono>
 
 using namespace meradb::wb;
 
@@ -135,4 +136,57 @@ TEST_CASE("wbhelp the embedded language reference renders cleanly", "[wbhelp]") 
     }
     CHECK(cheat);
     CHECK(banao);
+}
+
+// ---- malformed input: every block loop must advance and the output must stay bounded ----
+
+TEST_CASE("wbhelp list lines indented with a tab or NBSP terminate", "[wbhelp]") {
+    CHECK(plain(renderMarkdown("\t- x", 40)) == V({"    \xE2\x80\xA2 x"}));
+    CHECK(plain(renderMarkdown("\xC2\xA0- x", 40)) == V({" \xE2\x80\xA2 x"}));
+    CHECK(plain(renderMarkdown("\t1. one\n\t2. two", 40)) == V({"    1. one", "    2. two"}));
+    CHECK(plain(renderMarkdown("- a\n\t- b\n\t\tcontinued", 40)) ==
+          V({"\xE2\x80\xA2 a", "    \xE2\x80\xA2 b continued"}));
+    CHECK(renderMarkdown("\t- a\n  - b\n\xC2\xA0\xC2\xA0- c", 40).size() == 3);
+}
+
+TEST_CASE("wbhelp carriage returns, empty input and unterminated fences", "[wbhelp]") {
+    CHECK(renderMarkdown("", 40).empty());
+    CHECK(renderMarkdown("\r\n\r\n", 40).empty());
+    CHECK(plain(renderMarkdown("a\r\nb\r\n\r\n- x\r\n", 40)) == V({"a b", "", "\xE2\x80\xA2 x"}));
+    CHECK(plain(renderMarkdown("```\ncode\nmore", 40)) == V({"code", "more"}));
+    CHECK(renderMarkdown("```", 40).empty());
+}
+
+TEST_CASE("wbhelp very deep list indentation stays bounded", "[wbhelp]") {
+    const auto lines = renderMarkdown(std::string(100000, ' ') + "- deep", 40);
+    REQUIRE(lines.size() >= 1);
+    std::size_t total = 0;
+    for (const std::string& s : plain(lines)) total += s.size();
+    CHECK(total < 1000);
+    CHECK(renderMarkdown(std::string(10000, '\t') + "- deep", 40).size() >= 1);
+}
+
+TEST_CASE("wbhelp stray pipes and markers do not stall", "[wbhelp]") {
+    renderMarkdown("|\n|\n||\n| a |\n|---|\n|", 40);
+    renderMarkdown("| a | b\n|--|\n| \\|", 0);
+    renderMarkdown(">\n>\n> >\n-\n- \n*\n1.\n1. \n#\n# \n---\n", 3);
+    SUCCEED();
+}
+
+TEST_CASE("wbhelp one megabyte of random bytes terminates quickly", "[wbhelp]") {
+    std::string junk;
+    junk.reserve(1 << 20);
+    unsigned long long state = 88172645463325252ULL;
+    const char alphabet[] = "|-*+>#` \t\n\r.0123456789ab\\_";
+    for (int k = 0; k < (1 << 20); ++k) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        junk += (k % 5 == 0) ? static_cast<char>(state & 0xFF) : alphabet[state % (sizeof alphabet - 1)];
+    }
+    const auto start = std::chrono::steady_clock::now();
+    renderMarkdown(junk, 60);
+    renderMarkdown(junk.substr(0, 1 << 16), 1);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    CHECK(secs < 20.0);
 }

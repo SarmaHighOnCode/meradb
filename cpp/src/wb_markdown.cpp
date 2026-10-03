@@ -182,10 +182,19 @@ std::size_t numberMarker(const std::string& t) {
     return 0;
 }
 
+// How far a line is indented, in cells: a space is 1, a tab 4, any other leading whitespace character 1 (a
+// multi-byte one such as NBSP counts once). Capped so absurd indentation cannot blow up the output.
 std::size_t indentOf(const std::string& line) {
-    std::size_t n = 0;
-    while (n < line.size() && line[n] == ' ') ++n;
-    return n;
+    constexpr std::size_t kMaxIndent = 32;
+    const std::size_t lead = line.find(trim(line));
+    const std::size_t end = lead == std::string::npos ? 0 : lead;
+    std::size_t cells = 0;
+    for (std::size_t k = 0; k < end; ++k) {
+        const unsigned char c = static_cast<unsigned char>(line[k]);
+        if (c == '\t') cells += 4;
+        else if ((c & 0xC0) != 0x80) cells += 1;  // not a UTF-8 continuation byte
+    }
+    return cells < kMaxIndent ? cells : kMaxIndent;
 }
 
 std::vector<std::string> splitRows(const std::string& md) {
@@ -393,8 +402,10 @@ std::vector<Line> renderMarkdown(const std::string& markdown, int width) {
                 const std::string& r = rows[i];
                 const std::string tt = trim(r);
                 if (tt.empty()) break;
+                // The block is entered on trim(raw), so the item loop must see the same text: the body is the
+                // trimmed line (tabs, NBSP and other Unicode whitespace included) and the indent is how far in it sat.
                 const std::size_t ind = indentOf(r);
-                const std::string body = r.substr(ind);
+                const std::string& body = tt;
                 if (const std::size_t bm = bulletMarker(body)) {
                     items.push_back(Item{ind, "\xE2\x80\xA2 ", trim(body.substr(bm))});  // "• "
                 } else if (const std::size_t nm = numberMarker(body)) {
@@ -405,6 +416,10 @@ std::vector<Line> renderMarkdown(const std::string& markdown, int width) {
                     break;
                 }
                 ++i;
+            }
+            if (items.empty()) {  // cannot happen (the block is entered on a marker), but never stall
+                ++i;
+                continue;
             }
             blockStart();
             for (const Item& item : items) {
