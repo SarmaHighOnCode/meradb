@@ -6,6 +6,11 @@
 //   * the Backend is touched ONLY by jobs running on the worker;
 //   * a job never changes session state: it produces a plain-data outcome and hands a closure to the UiPoster,
 //     which runs it on the UI thread (ScreenInteractive::Post in the program, a manual queue in tests).
+// Lifetime of posted closures: every closure goes through the Session's alive token. shutdown() (and so the
+// destructor) clears the token, after which a closure that the poster still delivers is a harmless no-op: the poster
+// may run closures after the Session has been shut down or destroyed, on the UI thread, and needs no tracking of its
+// own. (A closure delivered before shutdown() behaves normally.) The poster itself must outlive the worker's last
+// post, i.e. the Session's destructor.
 #pragma once
 #include "meradb/backend.h"
 #include "meradb/wb_editor.h"
@@ -117,6 +122,12 @@ private:
     void applySnapshot(const Snapshot& snapshot);
     void showResult(const Result& result);
 
+    // Worker thread: post a closure to the UI through the poster, guarded by alive_ (see the class comment).
+    void postUi(std::function<void()> fn);
+
+    // Declared first: each posted closure holds a copy. UI thread writes it (false in shutdown()); closures read it
+    // on the UI thread only.
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     Header header_;
     std::unique_ptr<Backend> backend_;   // worker thread only
     SessionOptions options_;

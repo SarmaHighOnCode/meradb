@@ -629,3 +629,38 @@ TEST_CASE("wbsession destroying the session while a statement runs waits for it"
     }
     CHECK(seen->closed);
 }
+
+TEST_CASE("wbsession closures delivered after the session is destroyed are no-ops", "[wbsession]") {
+    ManualPoster poster;  // outlives the session, like the UI loop
+    int exits = 0;
+    {
+        auto owned = std::make_unique<FakeBackend>();
+        Session s(std::move(owned), SessionOptions{}, poster.poster());
+        s.setOnExit([&exits] { ++exits; });
+        s.runText("a;");
+        s.runText("b;");
+        s.explainEditorText();
+        s.requestQuit();
+        // nothing is pumped: the start-up snapshot, both statements and the exit closure are all still queued
+    }
+    // The session is gone; its queued closures run now (the pre-token code dereferenced freed memory here).
+    REQUIRE(poster.pumpUntil([] { return false; }, std::chrono::milliseconds(100)) == false);
+    CHECK(exits == 0);
+}
+
+TEST_CASE("wbsession closures delivered after shutdown change nothing", "[wbsession]") {
+    ManualPoster poster;
+    auto owned = std::make_unique<FakeBackend>();
+    Session s(std::move(owned), SessionOptions{}, poster.poster());
+    int exits = 0;
+    s.setOnExit([&exits] { ++exits; });
+    s.runText("a;");
+    s.requestQuit();
+    s.shutdown();
+    const std::size_t entries = s.log().entries().size();
+    const int pending = s.pendingJobs();
+    poster.pumpUntil([] { return false; }, std::chrono::milliseconds(100));
+    CHECK(exits == 0);
+    CHECK(s.log().entries().size() == entries);
+    CHECK(s.pendingJobs() == pending);
+}

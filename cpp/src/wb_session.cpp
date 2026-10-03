@@ -123,7 +123,7 @@ Session::Session(std::unique_ptr<Backend> backend, SessionOptions options, UiPos
     ++pending_;
     worker_.post([this] {
         Snapshot snapshot = takeSnapshot();
-        post_([this, snapshot]() {
+        postUi([this, snapshot]() {
             --pending_;
             applySnapshot(snapshot);
         });
@@ -131,6 +131,14 @@ Session::Session(std::unique_ptr<Backend> backend, SessionOptions options, UiPos
 }
 
 Session::~Session() { shutdown(); }
+
+// Worker thread: hand a closure to the UI poster. The wrapper owns a copy of the alive token (not the Session), so a
+// poster that delivers it after shutdown() or after the Session is gone runs a no-op and never touches `this`.
+void Session::postUi(std::function<void()> fn) {
+    post_([alive = alive_, fn = std::move(fn)]() {
+        if (*alive) fn();
+    });
+}
 
 void Session::setOnExit(std::function<void()> onExit) { onExit_ = std::move(onExit); }
 
@@ -208,7 +216,7 @@ void Session::enqueueRun(const std::string& text) {
     worker_.post([this, text] {
         RunOutcome out;
         runOnWorker(text, out);
-        post_([this, out]() mutable {
+        postUi([this, out]() mutable {
             --pending_;
             applyRun(std::move(out));
         });
@@ -298,7 +306,7 @@ void Session::explainEditorText() {
         } catch (const std::exception& e) {
             out.notice = std::make_pair(LogKind::Error, std::string(e.what()));
         }
-        post_([this, out]() mutable {
+        postUi([this, out]() mutable {
             --pending_;
             applyRun(std::move(out));
         });
@@ -354,7 +362,7 @@ void Session::connect(const ConnectRequest& request) {
         } catch (const std::exception& e) {
             out.error = e.what();
         }
-        post_([this, out]() {
+        postUi([this, out]() {
             --pending_;
             applyConnect(out);
         });
@@ -385,7 +393,7 @@ void Session::requestQuit() {
     pending_ -= static_cast<int>(worker_.cancelPending());  // those jobs will never post back
     worker_.post([this] {
         closeBackendOnWorker();
-        post_([this] {
+        postUi([this] {
             if (onExit_) onExit_();
         });
     });
@@ -400,6 +408,7 @@ void Session::shutdown() {
         worker_.post([this] { closeBackendOnWorker(); });
     }
     worker_.stopAndJoin();
+    *alive_ = false;  // closures still queued in the poster become no-ops
 }
 
 }  // namespace meradb::wb
