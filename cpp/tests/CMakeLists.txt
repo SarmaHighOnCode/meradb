@@ -61,6 +61,7 @@ if(TARGET meradb_workbench)
   add_executable(meradb_wb_tests
     test_wb_sanity.cpp
     test_wb_text.cpp
+    test_wb_editor.cpp
     # workbench test files are appended here by later tasks
   )
   target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)

@@ -98,6 +98,7 @@ if(MERADB_WORKBENCH)
   add_library(meradb_workbench STATIC
     src/workbench.cpp
     src/wb_text.cpp
+    src/wb_editor.cpp
     # workbench source files are appended here by later tasks
   )
   target_link_libraries(meradb_workbench PUBLIC meradb_core ftxui::component ftxui::dom ftxui::screen)
