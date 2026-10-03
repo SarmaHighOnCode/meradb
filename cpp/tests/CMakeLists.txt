@@ -140,6 +140,9 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME shell_session
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_session.py --cli $<TARGET_FILE:meradb_cli>)
   set_tests_properties(shell_session PROPERTIES TIMEOUT 900)
+  add_test(NAME wb_cli_smoke
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wb_cli_smoke.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(wb_cli_smoke PROPERTIES TIMEOUT 120)
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
 endif()

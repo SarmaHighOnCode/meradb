@@ -140,6 +140,23 @@ public:
     static bool pending();
 };
 
+// While alive, the terminal's own key handling is switched off so the full-screen workbench receives these keys as
+// ordinary input: POSIX ISIG (Ctrl+C, Ctrl+Z, Ctrl+\), IXON (Ctrl+S / Ctrl+Q flow control) and IEXTEN (Ctrl+V, Ctrl+O);
+// Windows ENABLE_PROCESSED_INPUT (Ctrl+C). Does nothing when stdin is not a terminal. The destructor puts the old
+// mode back. Create it BEFORE the screen's Loop(): FTXUI saves the terminal state when the loop starts and restores
+// it when the loop ends, so ours is the outer layer and is restored last.
+class TerminalModeGuard {
+public:
+    TerminalModeGuard();
+    ~TerminalModeGuard();
+    TerminalModeGuard(const TerminalModeGuard&) = delete;
+    TerminalModeGuard& operator=(const TerminalModeGuard&) = delete;
+    bool active() const;   // false when stdin is not a terminal or the mode could not be changed
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
+
 // The hand-over between a thread that reads a console line and the Ctrl+C handler thread (used on Windows,
 // portable so it can be unit tested). The handler may cancel the reader's I/O ONLY while the reader is
 // inside the read: leaveRead() takes the same lock the handler holds while it cancels, so once leaveRead()

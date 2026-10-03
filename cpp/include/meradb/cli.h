@@ -5,7 +5,8 @@
 //   meradb start | stop | status | server | run FILE... | shell | workbench
 //
 // `meradb x.mdb` means `run`, `meradb --tui` means `workbench`, and no command
-// means `shell` (the interactive shell, see repl.h). The workbench arrives in a later phase; here it says so.
+// means `shell` (the interactive shell, see repl.h). The full-screen workbench lives in its own library
+// (workbench.h) and is reached through a hook; without it, `workbench` says it is not built in.
 #pragma once
 #include "meradb/backend.h"
 #include <istream>
@@ -53,6 +54,20 @@ public:
     ~ShellInputOverride();
     ShellInputOverride(const ShellInputOverride&) = delete;
     ShellInputOverride& operator=(const ShellInputOverride&) = delete;
+};
+
+// The workbench lives in a library that depends on this one, so cliMain reaches it through a hook that main() sets.
+// The runner takes ownership of the backend, closes it, and returns the exit code.
+using WorkbenchRunner = int (*)(std::unique_ptr<Backend> backend, const CliArgs& args);
+void setWorkbenchRunner(WorkbenchRunner runner);   // nullptr (the default): the workbench is not built in
+
+// A test seam like ShellInputOverride: while alive, `workbench` believes stdin/stdout are (or are not) terminals.
+class WorkbenchTerminalOverride {
+public:
+    explicit WorkbenchTerminalOverride(bool isTerminal);
+    ~WorkbenchTerminalOverride();
+    WorkbenchTerminalOverride(const WorkbenchTerminalOverride&) = delete;
+    WorkbenchTerminalOverride& operator=(const WorkbenchTerminalOverride&) = delete;
 };
 
 int cliMain(std::vector<std::string> argv);

@@ -99,3 +99,13 @@ TEST_CASE("sys Utf8Console leaves redirected streams and their code pages alone"
 #endif
     SUCCEED();
 }
+
+TEST_CASE("sys TerminalModeGuard is inert without a terminal", "[sys]") {
+    {
+        sys::TerminalModeGuard guard;
+        if (!sys::isTerminal(0)) CHECK_FALSE(guard.active());
+    }
+    // A second one after the first is gone behaves the same (the old mode was put back, if any).
+    sys::TerminalModeGuard again;
+    if (!sys::isTerminal(0)) CHECK_FALSE(again.active());
+}

@@ -260,6 +260,143 @@ TEST_CASE("cli the workbench says it is not here yet", "[cli]") {
     CHECK(capture.err().find("abhi C++ version mein nahi hai") != std::string::npos);
 }
 
+namespace {
+
+// What the fake workbench runner saw.
+struct RunnerSeen {
+    int calls = 0;
+    std::string description;
+    std::string currentDb;
+    std::string dataDir;
+    std::string command;
+};
+RunnerSeen g_seen;
+bool g_runnerThrows = false;
+
+int fakeRunner(std::unique_ptr<Backend> backend, const CliArgs& args) {
+    ++g_seen.calls;
+    g_seen.description = backend->description();
+    g_seen.currentDb = backend->currentDb();
+    g_seen.dataDir = args.dataDir;
+    g_seen.command = args.command;
+    backend->close();
+    if (g_runnerThrows) throw std::runtime_error("boom");
+    return 7;
+}
+
+// Installs the fake runner for one test case and restores "no workbench" after it.
+class RunnerScope {
+public:
+    RunnerScope() {
+        g_seen = RunnerSeen();
+        g_runnerThrows = false;
+        setWorkbenchRunner(&fakeRunner);
+    }
+    ~RunnerScope() { setWorkbenchRunner(nullptr); }
+};
+
+}  // namespace
+
+TEST_CASE("cli workbench without a terminal refuses before opening anything", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    TempDir dir;
+    WorkbenchTerminalOverride noTerminal(false);
+    Capture capture;
+    // A data folder that cannot be opened would fail loudly if the backend were created first.
+    CHECK(cliMain({"workbench", "--local", "-D", dir.file("not") + "/\x01/nope"}) == 1);
+    CHECK(capture.err().find("terminal chahiye") != std::string::npos);
+    CHECK(capture.err().find("meradb run FILE") != std::string::npos);
+    CHECK(g_seen.calls == 0);
+    CHECK_FALSE(std::filesystem::exists(dir.file("not")));
+}
+
+TEST_CASE("cli workbench hands a local backend to the runner", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    TempDir dir;
+    WorkbenchTerminalOverride terminal(true);
+    Capture capture;
+    CHECK(cliMain({"workbench", "--local", "-D", dir.file("d")}) == 7);
+    CHECK(g_seen.calls == 1);
+    CHECK(g_seen.description.rfind("local (", 0) == 0);
+    CHECK(g_seen.dataDir == dir.file("d"));
+    CHECK(g_seen.command == "workbench");
+}
+
+TEST_CASE("cli tui and --tui open the workbench too, and -d picks the database", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    TempDir dir;
+    {
+        // Create the database "college" first.
+        std::istringstream input("BANAO DATABASE college;\n.exit\n");
+        ShellInputOverride feed(input);
+        Capture capture;
+        REQUIRE(cliMain({"shell", "--local", "-D", dir.file("d")}) == 0);
+    }
+    WorkbenchTerminalOverride terminal(true);
+    {
+        Capture capture;
+        CHECK(cliMain({"tui", "--local", "-D", dir.file("d")}) == 7);
+        CHECK(g_seen.command == "workbench");   // the alias is normalised
+    }
+    {
+        Capture capture;
+        CHECK(cliMain({"--tui", "--local", "-D", dir.file("d")}) == 7);
+        CHECK(g_seen.calls == 2);
+    }
+    {
+        Capture capture;
+        CHECK(cliMain({"workbench", "--local", "-D", dir.file("d"), "-d", "college"}) == 7);
+        CHECK(g_seen.currentDb == "college");
+    }
+}
+
+TEST_CASE("cli workbench argument errors and help never call the runner", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    WorkbenchTerminalOverride terminal(true);
+    {
+        Capture capture;
+        CHECK(cliMain({"workbench", "--nope"}) == 2);
+        CHECK(capture.err().find("usage: meradb") != std::string::npos);
+    }
+    {
+        Capture capture;
+        CHECK(cliMain({"workbench", "-h"}) == 0);
+        CHECK(capture.out().rfind("usage: meradb workbench", 0) == 0);
+    }
+    CHECK(g_seen.calls == 0);
+}
+
+TEST_CASE("cli workbench to an unreachable server fails without calling the runner", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    int port = 0;
+    {
+        RunningServer other;   // borrow a free port, then stop the server so nothing listens on it
+        port = other.port();
+    }
+    WorkbenchTerminalOverride terminal(true);
+    Capture capture;
+    CHECK(cliMain({"workbench", "-H", "127.0.0.1", "-p", std::to_string(port)}) == 1);
+    CHECK_FALSE(capture.err().empty());
+    CHECK(g_seen.calls == 0);
+}
+
+TEST_CASE("cli workbench turns an exception from the runner into exit 1", "[cli]") {
+    CleanEnv env;
+    RunnerScope runner;
+    g_runnerThrows = true;
+    TempDir dir;
+    WorkbenchTerminalOverride terminal(true);
+    Capture capture;
+    CHECK(cliMain({"workbench", "--local", "-D", dir.file("d")}) == 1);
+    CHECK(capture.err().find("boom") != std::string::npos);
+    CHECK(g_seen.calls == 1);
+}
+
 TEST_CASE("cli the shell banner version is the one the server reports", "[cli][shell]") {
     CHECK(std::string(protocol::kServerName) == std::string("MeraDB ") + protocol::kProgramVersion);
 }

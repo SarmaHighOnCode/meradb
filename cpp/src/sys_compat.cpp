@@ -441,6 +441,52 @@ bool isTerminal(int fd) {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// TerminalModeGuard: Ctrl+C / Ctrl+S / Ctrl+Q / Ctrl+O reach the workbench as ordinary keys
+// ---------------------------------------------------------------------------
+
+struct TerminalModeGuard::State {
+#ifdef _WIN32
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    DWORD mode = 0;
+#else
+    struct termios saved;
+#endif
+};
+
+TerminalModeGuard::TerminalModeGuard() {
+    if (!isTerminal(0)) return;
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (h == INVALID_HANDLE_VALUE || h == nullptr || !GetConsoleMode(h, &mode)) return;
+    if (!SetConsoleMode(h, mode & ~static_cast<DWORD>(ENABLE_PROCESSED_INPUT))) return;
+    state_.reset(new State);
+    state_->handle = h;
+    state_->mode = mode;
+#else
+    struct termios t;
+    if (tcgetattr(0, &t) != 0) return;
+    const struct termios saved = t;
+    t.c_lflag &= ~static_cast<tcflag_t>(ISIG | IEXTEN);
+    t.c_iflag &= ~static_cast<tcflag_t>(IXON);
+    if (tcsetattr(0, TCSANOW, &t) != 0) return;
+    state_.reset(new State);
+    state_->saved = saved;
+#endif
+}
+
+TerminalModeGuard::~TerminalModeGuard() {
+    if (!state_) return;
+#ifdef _WIN32
+    SetConsoleMode(state_->handle, state_->mode);
+#else
+    tcsetattr(0, TCSANOW, &state_->saved);
+#endif
+}
+
+bool TerminalModeGuard::active() const { return state_ != nullptr; }
+
 #ifdef _WIN32
 namespace {
 constexpr DWORD kVirtualTerminalProcessing = 0x0004;  // ENABLE_VIRTUAL_TERMINAL_PROCESSING (older headers lack the name)

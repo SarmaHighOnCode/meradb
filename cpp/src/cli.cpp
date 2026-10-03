@@ -506,6 +506,28 @@ int runShellCommand(const CliArgs& args) {
     return code;
 }
 
+// The workbench hook (cli.h) and its test seam for "is there a terminal".
+WorkbenchRunner g_workbenchRunner = nullptr;
+std::optional<bool> g_terminalOverride;
+
+// Python's cmd_workbench. The full-screen UI needs a terminal on both stdin and stdout: with a pipe it says so and
+// opens nothing (the check comes before the backend is opened).
+int runWorkbenchCommand(const CliArgs& args) {
+    if (g_workbenchRunner == nullptr) {
+        note("`meradb workbench` abhi C++ version mein nahi hai (is build mein workbench shaamil nahi). "
+             "Python version istemal karo, ya scripts ke liye:  meradb run FILE");
+        return 1;
+    }
+    const bool terminal = g_terminalOverride ? *g_terminalOverride : (sys::isTerminal(0) && sys::isTerminal(1));
+    if (!terminal) {
+        note("Workbench ke liye terminal chahiye (stdin aur stdout dono terminal hone chahiye). "
+             "Scripts ke liye:  meradb run FILE");
+        return 1;
+    }
+    std::unique_ptr<Backend> backend = openBackend(args);   // notes on stderr, may throw MeraDBError (exit 1)
+    return g_workbenchRunner(std::move(backend), args);
+}
+
 ControlOptions controlOptions(const CliArgs& args) {
     ControlOptions options;
     options.dataDir = args.dataDir;
@@ -522,6 +544,10 @@ ControlOptions controlOptions(const CliArgs& args) {
 
 ShellInputOverride::ShellInputOverride(std::istream& in) { g_shellInput = &in; }
 ShellInputOverride::~ShellInputOverride() { g_shellInput = nullptr; }
+
+void setWorkbenchRunner(WorkbenchRunner runner) { g_workbenchRunner = runner; }
+WorkbenchTerminalOverride::WorkbenchTerminalOverride(bool isTerminal) { g_terminalOverride = isTerminal; }
+WorkbenchTerminalOverride::~WorkbenchTerminalOverride() { g_terminalOverride.reset(); }
 
 int cliMain(std::vector<std::string> argv) {
     CliArgs args = parseCliArgs(std::move(argv));
@@ -566,10 +592,7 @@ int cliMain(std::vector<std::string> argv) {
             return allOk ? 0 : 1;
         }
         if (args.command == "shell") return runShellCommand(args);
-        // workbench
-        note("`meradb " + args.command + "` abhi C++ version mein nahi hai (aage ke phase mein aayega). "
-             "Python version istemal karo, ya scripts ke liye:  meradb run FILE");
-        return 1;
+        return runWorkbenchCommand(args);   // workbench (tui)
     } catch (const MeraDBError& e) {
         note(e.what());
         return 1;
