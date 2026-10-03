@@ -5,15 +5,33 @@ project(meradb_cpp CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
-if(MSVC)
-  add_compile_options(/W4 /utf-8)   # sources contain UTF-8 (Devanagari, dashes) in comments
-else()
-  add_compile_options(-Wall -Wextra)
-endif()
 
 include(FetchContent)
 if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)  # extracted files get the time of extraction (silences FetchContent warning)
+endif()
+
+# The full-screen workbench needs FTXUI, downloaded on the first configure. Without network access configure with
+# -DMERADB_WORKBENCH=OFF (the rest builds as before and `workbench` prints a note), or point
+# -DFETCHCONTENT_SOURCE_DIR_FTXUI=<unpacked v5.0.0 tarball> at a copy you already have.
+option(MERADB_WORKBENCH "Build the full-screen workbench (fetches FTXUI)" ON)
+if(MERADB_WORKBENCH)
+  # Declared before our own warning flags below: add_compile_options only reaches targets created after it.
+  set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    ftxui
+    URL https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v5.0.0.tar.gz
+  )
+  FetchContent_MakeAvailable(ftxui)
+endif()
+
+if(MSVC)
+  add_compile_options(/W4 /utf-8)   # sources contain UTF-8 (Devanagari, dashes) in comments
+else()
+  add_compile_options(-Wall -Wextra)
 endif()
 
 FetchContent_Declare(
@@ -75,8 +93,22 @@ if(WIN32)
   target_compile_definitions(meradb_core PUBLIC _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 
+if(MERADB_WORKBENCH)
+  add_library(meradb_workbench STATIC
+    src/workbench.cpp
+    # workbench source files are appended here by later tasks
+  )
+  target_link_libraries(meradb_workbench PUBLIC meradb_core ftxui::component ftxui::dom ftxui::screen)
+  # FTXUI's headers are third-party: keep our warning flags quiet about them.
+  target_include_directories(meradb_workbench SYSTEM PUBLIC ${ftxui_SOURCE_DIR}/include)
+endif()
+
 add_executable(meradb_cli src/main.cpp)
 target_link_libraries(meradb_cli PRIVATE meradb_core)
+if(MERADB_WORKBENCH)
+  target_link_libraries(meradb_cli PRIVATE meradb_workbench)
+  target_compile_definitions(meradb_cli PRIVATE MERADB_HAVE_WORKBENCH=1)
+endif()
 
 enable_testing()
 add_subdirectory(tests)

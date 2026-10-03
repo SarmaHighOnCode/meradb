@@ -56,6 +56,19 @@ include(CTest)
 include(Catch)
 catch_discover_tests(meradb_tests)
 
+if(TARGET meradb_workbench)
+  add_executable(meradb_wb_tests
+    test_wb_sanity.cpp
+    # workbench test files are appended here by later tasks
+  )
+  target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)
+  catch_discover_tests(meradb_wb_tests)
+
+  # A developer tool, not a test: shows the raw bytes your terminal sends for each key (see Task 12 / 14).
+  add_executable(wb_keyprobe tools/wb_keyprobe.cpp)
+  target_link_libraries(wb_keyprobe PRIVATE meradb_workbench meradb_core)
+endif()
+
 # Cross-engine diffs need Python (and the Python reference engine); skip cleanly if absent.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
