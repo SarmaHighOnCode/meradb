@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <cstdio>
 #include "meradb/wb_editor.h"
 
 using namespace meradb::wb;
@@ -119,4 +121,119 @@ TEST_CASE("wbeditor row rendering: gutter, selection and cursor", "[wbeditor]") 
     CHECK(plainText(end) == "DIKHAO x ");
     CHECK(end.back().style.inverse);
     for (const Segment& s : editorRowLine(b, 0, false)) CHECK_FALSE(s.style.inverse);   // unfocused: no cursor
+}
+
+namespace {
+bool sameRow(const Line& a, const Line& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].text != b[i].text || !(a[i].style == b[i].style)) return false;
+    return true;
+}
+
+std::string inverseText(const Line& line) {
+    std::string out;
+    for (const Segment& s : line)
+        if (s.style.inverse) out += s.text;
+    return out;
+}
+}  // namespace
+
+
+
+TEST_CASE("wbeditor the cursor covers a whole character, base letter and combining marks", "[wbeditor]") {
+    TextBuffer b;
+    b.setText("ae\xCC\x81" "b");  // a, e + U+0301, b: four code points
+    b.moveTo(Pos{0, 1}, false);
+    CHECK(inverseText(editorRowLine(b, 0, true)) == "e\xCC\x81");
+    b.moveTo(Pos{0, 2}, false);  // between the letter and its mark: still the whole character
+    Line row = editorRowLine(b, 0, true);
+    CHECK(inverseText(row) == "e\xCC\x81");
+    CHECK(plainText(row) == "ae\xCC\x81" "b");
+    REQUIRE(row.size() == 3);
+    CHECK(row[1].text == "e\xCC\x81");
+    b.moveTo(Pos{0, 3}, false);
+    CHECK(inverseText(editorRowLine(b, 0, true)) == "b");
+    b.moveTo(Pos{0, 0}, false);
+    CHECK(inverseText(editorRowLine(b, 0, true)) == "a");
+    // a selection ending inside the character covers it whole too
+    b.selectRange(Pos{0, 0}, Pos{0, 2});
+    Line sel = editorRowLine(b, 0, false);
+    REQUIRE(sel.size() == 2);
+    CHECK(sel[0].text == "ae\xCC\x81");
+    CHECK(sel[0].style.bg == palette::kCurrentLine);
+    CHECK(sel[1].text == "b");
+}
+
+TEST_CASE("wbeditor rows narrower than their text: the window equals the clipped row", "[wbeditor]") {
+    TextBuffer b;
+    b.setText("DIKHAO \xE6\x97\xA5\xE6\x9C\xAC x = 'it''s a string' -- c\xC3\xA9 and 12.5 count (y)");
+    unsigned seed = 12345;
+    auto next = [&]() { seed = seed * 1103515245u + 12345u; return static_cast<int>((seed >> 16) & 0x7fff); };
+    for (int pass = 0; pass < 3; ++pass) {
+        if (pass == 1) b.selectRange(Pos{0, 4}, Pos{0, 25});
+        if (pass == 2) b.moveTo(Pos{0, 10}, false);
+        for (bool focused : {true, false}) {
+            for (int i = 0; i < 300; ++i) {
+                const int skip = next() % 90, take = 1 + next() % 30;
+                INFO("pass " << pass << " focused " << focused << " skip " << skip << " take " << take);
+                CHECK(sameRow(editorRowWindow(b, 0, focused, skip, take), clipLine(editorRowLine(b, 0, focused), skip, take)));
+            }
+        }
+    }
+    b.moveTo(Pos{0, 1000}, false);  // cursor past the end: the extra cell is in the window that reaches it
+    const int width = static_cast<int>(plainText(editorRowLine(b, 0, false)).size());
+    CHECK(plainText(editorRowWindow(b, 0, true, 0, 1000)) == plainText(editorRowLine(b, 0, true)));
+    CHECK(width > 0);
+}
+
+TEST_CASE("wbeditor edits keep the cached row data in step with the text", "[wbeditor]") {
+    TextBuffer b;
+    unsigned seed = 7;
+    auto next = [&]() { seed = seed * 1103515245u + 12345u; return static_cast<int>((seed >> 16) & 0x7fff); };
+    const char* pieces[] = {"a", "b c", "\xC3\xA9", "\xE6\x97\xA5", "\xF0\x9F\x98\x80", "e\xCC\x81", "\n", "x\ny", "12", "\xE2\x82", "\x80"};  // the last two merge into one character
+    for (int step = 0; step < 4000; ++step) {
+        switch (next() % 9) {
+            case 0: case 1: case 2: b.insert(pieces[next() % 11]); break;
+            case 3: b.backspace(); break;
+            case 4: b.del(); break;
+            case 5: b.move(static_cast<Move>(next() % 12), next() % 3 == 0); break;
+            case 6: b.moveTo(Pos{next() % 5, next() % 12}, next() % 2 == 0); break;
+            case 7: b.selectRange(Pos{next() % 5, next() % 12}, Pos{next() % 5, next() % 12}); break;
+            default: if (next() % 6 == 0) b.setText(std::string(pieces[next() % 11]) + "\n" + pieces[next() % 11]); break;
+        }
+        TextBuffer fresh;
+        fresh.setText(b.text());
+        for (int r = 0; r < b.lineCount(); ++r) {
+            INFO("step " << step << " row " << r);
+            REQUIRE(b.lineLength(r) == fresh.lineLength(r));
+            for (int c = 12; c >= 0; --c) REQUIRE(b.byteOffset(r, c) == fresh.byteOffset(r, c));
+        }
+    }
+}
+
+TEST_CASE("wbeditor typing and moving on a two megabyte line stays fast", "[wbeditor]") {
+    std::string big;
+    while (big.size() < 2000000) big += "x = 12 'ab' ";
+    TextBuffer b;
+    b.setText(big);
+    const int mid = b.lineLength(0) / 2;
+    b.moveTo(Pos{0, mid}, false);
+    const auto t0 = std::chrono::steady_clock::now();
+    int inserted = 0;
+    for (int i = 0; i < 600; ++i) {
+        b.insert("q");
+        ++inserted;
+        if (i % 3 == 1) { b.backspace(); --inserted; }
+        if (i % 5 == 2) b.move(Move::Left, false);
+        if (i % 7 == 3) b.move(Move::WordRight, false);
+        if (i % 50 == 0) {  // a render costs a scan of the row (tens of ms on 2 MB), so not after every key
+            const Line row = editorRowWindow(b, 0, true, displayColumn(b.line(0), b.cursor().col) - 40, 100);
+            CHECK(plainText(row).size() == 100);
+        }
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(b.line(0).size() == big.size() + static_cast<std::size_t>(inserted));
+    CHECK(ms < 5000);  // about a tenth of a second where this was written; the old per-edit rescans took 24 s
+    INFO("600 edits and 12 rendered windows: " << ms << " ms");
 }

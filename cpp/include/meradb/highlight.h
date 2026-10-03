@@ -24,6 +24,9 @@ const char* kindName(Kind kind);
 
 // Highlight spans for ONE line (no '\n'), in order, never overlapping.
 std::vector<Span> spans(const std::string& line);
+// Only the spans that overlap the byte range [from, to): the same spans spans(line) gives, filtered, but words
+// outside the range are not classified and no span is built for them (for drawing a window of a very long line).
+std::vector<Span> spans(const std::string& line, std::size_t from, std::size_t to);
 
 // highlight.py's RICH_STYLES: rgb is 0xRRGGBB or -1 for "no colour".
 struct RichStyle {

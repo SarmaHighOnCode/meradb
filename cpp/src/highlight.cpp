@@ -62,8 +62,15 @@ bool classifyWord(const std::string& line, std::size_t start, std::size_t end, K
     else if (isKeyword(upper)) kind = Kind::Keyword;
     else if (normalizeType(upper).has_value()) kind = Kind::Type;
     else if (isAggregateName(upper)) {
-        const std::string rest = pytext::lstrip(line.substr(end));
-        if (rest.empty() || rest[0] != '(') return false;
+        // line[end:].lstrip().startswith("("), without copying the rest of the line
+        std::size_t at = end;
+        while (at < line.size()) {
+            char32_t cp = 0;
+            const std::size_t len = pytext::decode(line, at, cp);
+            if (!pytext::isSpace(cp)) break;
+            at += len;
+        }
+        if (at >= line.size() || line[at] != '(') return false;
         kind = Kind::Function;
     } else return false;
     return true;
@@ -87,16 +94,18 @@ const char* kindName(Kind kind) {
     return "";
 }
 
-std::vector<Span> spans(const std::string& s) {
+std::vector<Span> spans(const std::string& s) { return spans(s, 0, s.size()); }
+
+std::vector<Span> spans(const std::string& s, std::size_t from, std::size_t to) {
     std::vector<Span> out;
     const std::size_t n = s.size();
     std::size_t i = 0;
-    while (i < n) {
+    while (i < n && i < to) {
         const unsigned char c = static_cast<unsigned char>(s[i]);
         if (c == '-' && i + 1 < n && s[i + 1] == '-') {
             std::size_t e = s.find('\n', i);
             if (e == std::string::npos) e = n;
-            out.push_back({i, e, Kind::Comment});
+            if (e > from) out.push_back({i, e, Kind::Comment});
             i = e;
             continue;
         }
@@ -110,14 +119,14 @@ std::vector<Span> spans(const std::string& s) {
                 }
                 ++j;
             }
-            out.push_back({i, j, Kind::String});
+            if (j > from) out.push_back({i, j, Kind::String});
             i = j;
             continue;
         }
         if (isDigit(c)) {
             const std::size_t e = numberEnd(s, i);
             if (e != kNone) {
-                out.push_back({i, e, Kind::Number});
+                if (e > from) out.push_back({i, e, Kind::Number});
                 i = e;
             } else {
                 ++i;
@@ -128,22 +137,22 @@ std::vector<Span> spans(const std::string& s) {
             std::size_t j = i + 1;
             while (j < n && isAsciiWord(static_cast<unsigned char>(s[j]))) ++j;
             Kind kind = Kind::Keyword;
-            if (classifyWord(s, i, j, kind)) out.push_back({i, j, kind});
+            if (j > from && classifyWord(s, i, j, kind)) out.push_back({i, j, kind});
             i = j;
             continue;
         }
         if (i + 1 < n && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) || ((c == '>' || c == '!') && s[i + 1] == '='))) {
-            out.push_back({i, i + 2, Kind::Operator});
+            if (i + 2 > from) out.push_back({i, i + 2, Kind::Operator});
             i += 2;
             continue;
         }
         if (c == '=' || c == '<' || c == '>' || c == '+' || c == '-' || c == '*' || c == '/' || c == '%') {
-            out.push_back({i, i + 1, Kind::Operator});
+            if (i + 1 > from) out.push_back({i, i + 1, Kind::Operator});
             ++i;
             continue;
         }
         if (c == '(' || c == ')') {
-            out.push_back({i, i + 1, Kind::Bracket});
+            if (i + 1 > from) out.push_back({i, i + 1, Kind::Bracket});
             ++i;
             continue;
         }

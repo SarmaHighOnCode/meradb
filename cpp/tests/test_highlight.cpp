@@ -45,6 +45,29 @@ TEST_CASE("highlight matches Python's highlight.py on every golden line", "[high
     }
 }
 
+TEST_CASE("highlight spans of a byte range are the whole line's spans that overlap it", "[highlight]") {
+    for (const HighlightCase& c : kHighlightCases) {
+        const std::string line = c.line;
+        const std::vector<Span> all = spans(line);
+        const std::size_t n = line.size();
+        for (std::size_t from = 0; from <= n; from += 1 + n / 7) {
+            for (std::size_t to = from; to <= n; to += 1 + n / 5) {
+                std::vector<Span> want;
+                for (const Span& s : all)
+                    if (s.end > from && s.start < to) want.push_back(s);
+                const std::vector<Span> got = spans(line, from, to);
+                INFO("line: " << line << " range " << from << ".." << to);
+                REQUIRE(got.size() == want.size());
+                for (std::size_t i = 0; i < got.size(); ++i) {
+                    CHECK(got[i].start == want[i].start);
+                    CHECK(got[i].end == want[i].end);
+                    CHECK(got[i].kind == want[i].kind);
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("highlight rich styles are the Dracula table of highlight.py", "[highlight]") {
     CHECK(richStyle(Kind::Keyword).rgb == 0xff79c6);
     CHECK(richStyle(Kind::Keyword).bold);

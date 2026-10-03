@@ -134,20 +134,26 @@ std::vector<std::string> splitLines(const std::string& text) {
     return out;
 }
 
-Line highlightLine(const std::string& line) {
+Line highlightLine(const std::string& line) { return highlightRange(line, 0, line.size()); }
+
+Line highlightRange(const std::string& line, std::size_t from, std::size_t to) {
+    to = std::min(to, line.size());
     Line out;
-    std::size_t pos = 0;
-    for (const highlight::Span& span : highlight::spans(line)) {
-        if (span.start > pos) appendSegment(out, line.substr(pos, span.start - pos), Style{});
+    if (from >= to) return out;
+    std::size_t pos = from;  // everything before `pos` in the range has been emitted
+    for (const highlight::Span& span : highlight::spans(line, from, to)) {
+        const std::size_t start = std::max(span.start, from);
+        const std::size_t end = std::min(span.end, to);
+        if (start > pos) appendSegment(out, line.substr(pos, start - pos), Style{});
         const highlight::RichStyle rich = highlight::richStyle(span.kind);
         Style style;
         style.fg = rich.rgb;
         style.bold = rich.bold;
         style.italic = rich.italic;
-        appendSegment(out, line.substr(span.start, span.end - span.start), style);
-        pos = span.end;
+        appendSegment(out, line.substr(start, end - start), style);
+        pos = end;
     }
-    if (pos < line.size()) appendSegment(out, line.substr(pos), Style{});
+    if (pos < to) appendSegment(out, line.substr(pos, to - pos), Style{});
     return out;
 }
 

@@ -28,6 +28,8 @@ public:
     bool empty() const { return lines_.size() == 1 && lines_[0].empty(); }
     int lineCount() const { return static_cast<int>(lines_.size()); }
     const std::string& line(int row) const { return lines_[static_cast<std::size_t>(row)]; }
+    int lineLength(int row) const;                          // code points in the row (cached for the row last used)
+    std::size_t byteOffset(int row, int col) const;         // byte offset of code point column `col` (clamped to the end)
 
     Pos cursor() const { return cursor_; }
     bool hasSelection() const { return anchor_.has_value() && *anchor_ != cursor_; }
@@ -51,6 +53,19 @@ private:
     Pos cursor_;
     std::optional<Pos> anchor_;
     int desiredCol_ = 0;  // the column Up / Down try to return to
+    // Derived data of the one row last worked on (the cursor's row while typing), so a keystroke on a very long line
+    // does not rescan it: its length in code points, whether its UTF-8 is well formed, and one known
+    // (column, byte offset) pair to walk from. Any edit that is not updated in place resets it. Not thread safe.
+    struct RowCache {
+        int row = -1;
+        int count = -1;  // -1: not computed yet
+        bool wellFormed = false;
+        int col = 0;
+        std::size_t byte = 0;
+    };
+    mutable RowCache cache_;
+    void fillCache(int row) const;
+    void clampPair(int row) const;
     void deleteSelection();
     Pos clampPos(Pos p) const;
 };
@@ -62,5 +77,10 @@ int displayColumn(const std::string& line, int cpCol);   // terminal cells befor
 // One row of the editor body: highlighted, the selection on a lighter background, and (when `focused`) the cursor
 // as an inverse cell (a space past the end of the line).
 Line editorRowLine(const TextBuffer& buffer, int row, bool focused);
+// The same row restricted to terminal cells [skipCells, skipCells + takeCells), exactly what
+// clipLine(editorRowLine(...), skipCells, takeCells) gives (for text without combining marks split from their
+// letter at the window edge), but only the visible part is turned into styled text. This is what the view
+// should draw: on a row of megabytes it stays fast, while editorRowLine builds every character of the row.
+Line editorRowWindow(const TextBuffer& buffer, int row, bool focused, int skipCells, int takeCells);
 
 }  // namespace meradb::wb

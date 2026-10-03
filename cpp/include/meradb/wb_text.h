@@ -57,6 +57,9 @@ private:
 // Python's str.splitlines(): \n \r\n \r \v \f \x1c \x1d \x1e U+0085 U+2028 U+2029; no empty last line; "" -> {}.
 std::vector<std::string> splitLines(const std::string& text);
 Line highlightLine(const std::string& line);               // highlight::spans -> styled segments (RICH_STYLES)
+// The part of highlightLine(line) that lies in bytes [from, to) (both on character boundaries), highlighted as
+// part of the whole line.
+Line highlightRange(const std::string& line, std::size_t from, std::size_t to);
 // tui.py's `Text(f"{db}> ", dim) + highlighted(text)`: lines of text.strip().splitlines(), prefix on the first.
 LogEntry echoEntry(const std::string& db, const std::string& text);
 
