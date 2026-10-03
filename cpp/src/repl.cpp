@@ -154,7 +154,12 @@ int run(Backend& backend, LineSource& in, std::ostream& out, const term::Style& 
         // Ctrl+C that landed after the last poll: leave now, run nothing and read nothing more.
         if (!sys::mayReadAnotherLine(in.takePendingInterrupt())) return 130;
         std::string line;
-        if (in.read(prompt, line) != ReadStatus::Line) {  // end of input, or Ctrl+C at the prompt
+        const ReadStatus status = in.read(prompt, line);
+        if (status == ReadStatus::Failed) {  // the read itself failed: the reason is already on stderr
+            out.flush();
+            return 1;
+        }
+        if (status != ReadStatus::Line) {  // end of input, or Ctrl+C at the prompt
             out << "\nPhir milenge!\n";
             out.flush();
             return 0;

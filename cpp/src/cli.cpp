@@ -1,6 +1,7 @@
 // cpp/src/cli.cpp -- see cli.h.
 #include "meradb/cli.h"
 #include "meradb/ast.h"
+#include "meradb/backend_closer.h"
 #include "meradb/client.h"
 #include "meradb/errors.h"
 #include "meradb/fs_util.h"
@@ -511,31 +512,6 @@ term::Style detectStyle(sys::AnsiConsole& ansi) {
 
 // Test seam (see ShellInputOverride in cli.h): when set, the shell reads this stream, never the console.
 std::istream* g_shellInput = nullptr;
-
-// Python's `finally: backend.close()`: the backend is closed (an open transaction rolled back) on every way
-// out, including an exception that is not a MeraDBError. On a normal return the caller closes explicitly.
-class BackendCloser {
-public:
-    explicit BackendCloser(Backend& backend) : backend_(backend) {}
-    ~BackendCloser() {
-        if (!done_) {
-            try {
-                backend_.close();
-            } catch (...) {  // already unwinding: the original exception is the one that matters
-            }
-        }
-    }
-    void close() {
-        done_ = true;
-        backend_.close();
-    }
-    BackendCloser(const BackendCloser&) = delete;
-    BackendCloser& operator=(const BackendCloser&) = delete;
-
-private:
-    Backend& backend_;
-    bool done_ = false;
-};
 
 // Python's cmd_shell: open the backend, run the shell on it, close the backend.
 int runShellCommand(const CliArgs& args) {

@@ -128,6 +128,22 @@ TEST_CASE("shell runFile on a directory fails like Python's open() does", "[shel
     CHECK(backend.scripts.empty());
 }
 
+#ifdef _WIN32
+// Python on Windows: open('file.mdb\\') and open('file.mdb/') both give [Errno 22] Invalid argument (not 20).
+TEST_CASE("shell runFile on a file name with a trailing separator says EINVAL like Python on Windows", "[shell]") {
+    TempDir dir;
+    writeBinary(dir.file("s.mdb"), "X;");
+    FakeBackend backend;
+    for (const char* separator : {"\\", "/", "\\\\"}) {
+        std::ostringstream out;
+        const std::string path = dir.file("s.mdb") + separator;
+        CHECK_FALSE(repl::runFile(backend, path, out, kPlain));
+        CHECK(out.str() == "File nahi khuli: [Errno 22] Invalid argument: " + pyRepr(path) + "\n");
+    }
+    CHECK(backend.scripts.empty());
+}
+#endif
+
 TEST_CASE("shell runFile survives a dropped connection and says so on stdout", "[shell]") {
     TempDir dir;
     writeBinary(dir.file("s.mdb"), "X;");
@@ -219,7 +235,10 @@ public:
     sys::ReadStatus read(const std::string& prompt, std::string& line) override {
         out_ << prompt;
         ++reads;
-        if (next_ >= lines_.size()) return interruptAtEnd ? sys::ReadStatus::Interrupted : sys::ReadStatus::Eof;
+        if (next_ >= lines_.size()) {
+            if (failAtEnd) return sys::ReadStatus::Failed;
+            return interruptAtEnd ? sys::ReadStatus::Interrupted : sys::ReadStatus::Eof;
+        }
         line = lines_[next_++];
         return sys::ReadStatus::Line;
     }
@@ -231,6 +250,7 @@ public:
 
     bool pending = false;         // "Ctrl+C arrived while a statement was running"
     bool interruptAtEnd = false;  // the end of the script is a Ctrl+C at the prompt
+    bool failAtEnd = false;       // the end of the script is a terminal read error
     int reads = 0;
 
 private:
@@ -254,6 +274,17 @@ TEST_CASE("shell loop: banner, prompt, then end of input says goodbye", "[shell]
     ScriptedSource source({}, out);
     CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 0);
     CHECK(out.str() == golden_shell::get("banner", false) + "\n" + "meradb:main> " + "\nPhir milenge!\n");
+}
+
+TEST_CASE("shell loop: a failed terminal read ends the shell with exit 1 and no goodbye", "[shell]") {
+    FakeBackend backend;
+    std::ostringstream out;
+    ScriptedSource source({"DIKHAO TABLES;"}, out);
+    source.failAtEnd = true;
+    CHECK(repl::run(backend, source, out, kPlain, "1.0.0", 0) == 1);
+    CHECK(backend.scripts == std::vector<std::string>{"DIKHAO TABLES;\n"});
+    CHECK(source.reads == 2);
+    CHECK(out.str().find("Phir milenge!") == std::string::npos);
 }
 
 TEST_CASE("shell loop: the prompt shows the database and an open transaction", "[shell]") {

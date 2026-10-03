@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iostream>
@@ -629,6 +630,11 @@ ReadStatus readTerminalLine(std::string& line) {
         sigset_t* mask;
         ~Restore() { pthread_sigmask(SIG_SETMASK, mask, nullptr); }
     } restore{&original};
+    // Python raises OSError out of input() here and dies with a traceback; one line on stderr is the C++ equivalent.
+    const auto failed = [](int error) {
+        std::cerr << "OSError: [Errno " << error << "] " << std::strerror(error) << '\n';
+        return ReadStatus::Failed;
+    };
     for (;;) {
         if (g_interrupted.load()) {
             g_interrupted = false;
@@ -640,13 +646,13 @@ ReadStatus readTerminalLine(std::string& line) {
         const int ready = ::pselect(STDIN_FILENO + 1, &readable, nullptr, nullptr, nullptr, &original);
         if (ready < 0) {
             if (errno == EINTR) continue;  // the Ctrl+C handler ran; the flag is looked at above
-            return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+            return failed(errno);
         }
         char c = 0;
         const auto got = ::read(STDIN_FILENO, &c, 1);
         if (got < 0) {
             if (errno == EINTR) continue;
-            return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+            return failed(errno);
         }
         if (got == 0) return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
         if (c == '\n') return ReadStatus::Line;
@@ -679,9 +685,7 @@ int readFileBytes(const std::string& path, std::string& content) {
                 return 13;
             case ERROR_TOO_MANY_OPEN_FILES:
                 return 24;
-            case ERROR_DIRECTORY:
-                return 20;
-            default:
+            default:  // includes ERROR_DIRECTORY (a trailing separator on a file name): Python says EINVAL, 22
                 return 22;
         }
     }

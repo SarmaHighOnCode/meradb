@@ -91,7 +91,7 @@ completion and no custom key handling**; what a user gets is whatever the operat
 discipline gives: on a Windows console the console host's editing (arrow keys, Home / End, insert,
 the F7 history list of the session, Ctrl+Left / Right), on a POSIX terminal canonical mode (Backspace,
 Ctrl+U, Ctrl+W, no arrow-key recall). The C++ shell reads the same way — `ReadConsoleW` on a Windows
-console, `read(0)` on a POSIX tty, the stream otherwise — so it is *feature-matched*, with the same
+console, `pselect` + `read` on stdin on a POSIX tty, the stream otherwise — so it is *feature-matched*, with the same
 editing available for free. We therefore do **not** add linenoise / replxx (which the Phase 2 note in
 `docs/CPP.md` floated and which the spec does not name): a dependency, a vendored copy and a
 raw-terminal mode to maintain, for behaviour Python does not have. If the owner later wants arrow-key
@@ -879,6 +879,237 @@ ReadStatus readTerminalLine(std::string& line);
 
 // When stdin is NOT a terminal, Windows would translate CRLF and stop at Ctrl+Z (text mode); this puts
 // stdin into binary mode so the bytes arrive untouched. Does nothing elsewhere.
+void setStdinBinary();
+```
+
+- [ ] **Step 5: Append the implementation to `sys_compat.cpp`**
+
+First add to the includes at the top of `cpp/src/sys_compat.cpp`: `#include <atomic>` with the other
+standard headers; inside the existing `#ifdef _WIN32` include block add `#include <fcntl.h>` and
+`#include <io.h>` (the `#else` block already has `<fcntl.h>`, `<signal.h>`, `<unistd.h>`, `<cerrno>`).
+Then append this at the end of the file, **before** the closing `}  // namespace meradb::sys` (it uses the
+file's existing `isConsole` and `narrow` helpers, which are visible at that point). The listing is the code as it
+now stands, after the Ctrl+C hardening: on Windows the handler cancels the console read only through
+`InterruptGate` (declared in `sys_compat.h`), and on POSIX SIGINT is blocked except inside `pselect()`, so a
+Ctrl+C before the wait cannot be missed. `ReadStatus::Failed` reports a POSIX read error (`OSError: [Errno N]` on
+stderr, exit code 1 from the shell loop):
+
+```cpp
+// ---------------------------------------------------------------------------
+// the interactive terminal
+// ---------------------------------------------------------------------------
+
+bool isTerminal(int fd) {
+#ifdef _WIN32
+    if (fd == 0) return isConsole(STD_INPUT_HANDLE);
+    if (fd == 1) return isConsole(STD_OUTPUT_HANDLE);
+    if (fd == 2) return isConsole(STD_ERROR_HANDLE);
+    return false;
+#else
+    return ::isatty(fd) != 0;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+constexpr DWORD kVirtualTerminalProcessing = 0x0004;  // ENABLE_VIRTUAL_TERMINAL_PROCESSING (older headers lack the name)
+}
+
+AnsiConsole::AnsiConsole() {}
+
+bool AnsiConsole::enable() {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (out == nullptr || out == INVALID_HANDLE_VALUE || !GetConsoleMode(out, &mode)) return false;
+    if ((mode & kVirtualTerminalProcessing) != 0) return true;
+    if (!SetConsoleMode(out, mode | kVirtualTerminalProcessing)) return false;
+    savedMode_ = static_cast<unsigned>(mode);
+    changed_ = true;
+    return true;
+}
+
+AnsiConsole::~AnsiConsole() {
+    if (!changed_) return;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) SetConsoleMode(out, static_cast<DWORD>(savedMode_));
+}
+#else
+AnsiConsole::AnsiConsole() {}
+AnsiConsole::~AnsiConsole() {}
+bool AnsiConsole::enable() { return true; }
+#endif
+
+namespace {
+
+std::atomic<bool> g_interrupted{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "the Ctrl+C flag is set from a signal handler / handler thread");
+
+#ifdef _WIN32
+// A real handle to the thread that created the guard (the one that reads input). The control handler runs on a
+// thread of its own, so the handle is only used, closed or cleared under this mutex: the handler can never
+// pass CancelSynchronousIo a handle the destructor has already closed.
+std::mutex g_readerThreadMutex;
+HANDLE g_readerThread = nullptr;
+
+InterruptGate g_gate;
+
+void cancelReaderRead() {
+    std::lock_guard<std::mutex> lock(g_readerThreadMutex);
+    if (g_readerThread != nullptr) CancelSynchronousIo(g_readerThread);
+}
+
+BOOL WINAPI onConsoleControl(DWORD event) {
+    if (event != CTRL_C_EVENT) return FALSE;  // Ctrl+Break and the rest keep their default meaning
+    g_interrupted = true;
+    // Wake the console read, and ONLY that: the reader thread also runs statements (socket and file writes),
+    // which must finish. The gate cancels while the thread is inside ReadConsoleW and never otherwise. If the
+    // flag was set just before ReadConsoleW was entered the first cancel finds nothing to cancel, so repeat
+    // (briefly) until the reader has left the read.
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        if (!g_gate.cancelIfReading(cancelReaderRead)) break;
+        Sleep(5);
+    }
+    return TRUE;
+}
+#else
+struct sigaction g_previousAction;
+
+void onSigint(int) { g_interrupted = true; }
+#endif
+
+}  // namespace
+
+InterruptGuard::InterruptGuard() {
+    g_interrupted = false;
+#ifdef _WIN32
+    {
+        std::lock_guard<std::mutex> lock(g_readerThreadMutex);
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_readerThread, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+    }
+    SetConsoleCtrlHandler(onConsoleControl, TRUE);
+#else
+    struct sigaction action {};
+    action.sa_handler = onSigint;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;  // no SA_RESTART: a read() waiting for a line must return EINTR
+    sigaction(SIGINT, &action, &g_previousAction);
+#endif
+}
+
+InterruptGuard::~InterruptGuard() {
+#ifdef _WIN32
+    SetConsoleCtrlHandler(onConsoleControl, FALSE);
+    std::lock_guard<std::mutex> lock(g_readerThreadMutex);  // waits for a handler that is already running
+    if (g_readerThread != nullptr) CloseHandle(g_readerThread);
+    g_readerThread = nullptr;
+#else
+    sigaction(SIGINT, &g_previousAction, nullptr);
+#endif
+}
+
+bool InterruptGate::enterRead(const std::atomic<bool>& interruptPending) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (interruptPending.load()) return false;
+    inRead_ = true;
+    return true;
+}
+
+void InterruptGate::leaveRead() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    inRead_ = false;
+}
+
+bool InterruptGate::cancelIfReading(const std::function<void()>& cancel) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!inRead_) return false;
+    cancel();
+    return true;
+}
+
+bool InterruptGuard::consume() { return g_interrupted.exchange(false); }
+
+bool InterruptGuard::pending() { return g_interrupted.load(); }
+
+void InterruptGuard::trigger() { g_interrupted = true; }
+
+ReadStatus readTerminalLine(std::string& line) {
+    line.clear();
+#ifdef _WIN32
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    std::wstring text;
+    for (;;) {
+        wchar_t buffer[512];
+        DWORD got = 0;
+        // A Ctrl+C that arrived before the read (flag already set) is seen here: no read is started.
+        if (!g_gate.enterRead(g_interrupted)) {
+            InterruptGuard::consume();
+            return ReadStatus::Interrupted;
+        }
+        const BOOL ok = ReadConsoleW(in, buffer, 512, &got, nullptr);
+        const DWORD failure = ok ? 0 : GetLastError();
+        g_gate.leaveRead();
+        const bool aborted = !ok && failure == ERROR_OPERATION_ABORTED;
+        const bool completeLine = ok && got > 0 && buffer[got - 1] == L'\n';
+        // Ctrl+C with no finished line: discard the partial input. A line that was completed before the Ctrl+C
+        // is kept; the flag stays set and the shell exits 130 after running it.
+        if (aborted || (InterruptGuard::pending() && !completeLine)) {
+            InterruptGuard::consume();
+            return ReadStatus::Interrupted;
+        }
+        if (!ok || got == 0) {
+            if (text.empty()) return ReadStatus::Eof;
+            break;
+        }
+        text.append(buffer, got);
+        if (text.back() == L'\n') break;  // a longer line arrives in several pieces
+    }
+    while (!text.empty() && (text.back() == L'\n' || text.back() == L'\r')) text.pop_back();
+    if (!text.empty() && text.front() == L'\x1a') return ReadStatus::Eof;  // Ctrl+Z, Enter
+    line = narrow(text);
+    return ReadStatus::Line;
+#else
+    // SIGINT stays blocked except inside pselect(): a Ctrl+C that arrives just before the wait cannot slip
+    // between "check the flag" and "start waiting"; it stays pending and interrupts the pselect (EINTR).
+    sigset_t blocked, original;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &blocked, &original);
+    struct Restore {
+        sigset_t* mask;
+        ~Restore() { pthread_sigmask(SIG_SETMASK, mask, nullptr); }
+    } restore{&original};
+    // Python raises OSError out of input() here and dies with a traceback; one line on stderr is the C++ equivalent.
+    const auto failed = [](int error) {
+        std::cerr << "OSError: [Errno " << error << "] " << std::strerror(error) << '\n';
+        return ReadStatus::Failed;
+    };
+    for (;;) {
+        if (g_interrupted.load()) {
+            g_interrupted = false;
+            return ReadStatus::Interrupted;
+        }
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(STDIN_FILENO, &readable);
+        const int ready = ::pselect(STDIN_FILENO + 1, &readable, nullptr, nullptr, nullptr, &original);
+        if (ready < 0) {
+            if (errno == EINTR) continue;  // the Ctrl+C handler ran; the flag is looked at above
+            return failed(errno);
+        }
+        char c = 0;
+        const auto got = ::read(STDIN_FILENO, &c, 1);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return failed(errno);
+        }
+        if (got == 0) return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
+        if (c == '\n') return ReadStatus::Line;
+        line.push_back(c);
+    }
+#endif
+}
+
 void setStdinBinary();
 ```
 
@@ -4201,7 +4432,7 @@ the terminal: line reading, Ctrl+C, ANSI switch-on)".
 - [ ] **Step 5: `docs/CPP.md` — divergences**
 
 Append to "Known divergences from the Python engine" (before "Platform coverage"; also update that bullet to
-say the terminal primitives — `ReadConsoleW`, the console control handler, `sigaction`, `read(0)` — have been
+say the terminal primitives — `ReadConsoleW`, the console control handler, `sigaction`, `pselect` / `read` — have been
 compiled on MinGW only and never run against a real terminal in a test):
 
 ```markdown
@@ -4347,7 +4578,7 @@ Batches go in order; each ends with a green full suite. Within a batch, tasks go
       other pairs must match it)
 - [x] `shell_session.py` holds: logins and grants, a server stopping mid-session, local fallback, hostile input
 - [ ] Windows console handled: UTF-8 code page, `ReadConsoleW`, virtual-terminal colour switched on and
-      restored, piped stdin read in binary mode; POSIX tty read with `pselect` / `read(0)` (not compiled here).
+      restored, piped stdin read in binary mode; POSIX tty read with `pselect` / `read` on stdin (not compiled here).
       Implemented and smoke-tested; the real-console behaviour is MANUAL (checklist rows 1-16)
 - [x] no new third-party dependency; no editor library (D1)
 - [x] `.hexdump`, the `^` operator and `GINO(ALAG x)` are NOT implemented (project owner's exercises); `.hexdump`

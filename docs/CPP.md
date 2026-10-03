@@ -159,8 +159,9 @@ discarded. If Ctrl+C arrives while a statement is running, the statement is allo
 divergences), its result is printed, no further line is read and the shell exits 130.
 
 **Exit codes.** 0 after a normal end (`.exit`, end of input, Ctrl+C at a prompt); 130 for Ctrl+C during a
-statement; 1 when the shell cannot start (bad option, failed login, no server for an explicit `-H` / `-p`,
-unusable data folder). Errors inside statements never change the exit code of the shell; `run` returns 1 if
+statement; 2 for a bad option (a usage error, the same in both shells); 1 when the shell cannot start
+(failed login, no server for an explicit `-H` / `-p`, unusable data folder) and, on POSIX, when reading the
+terminal itself fails (one line `OSError: [Errno N] ...` on stderr where Python prints a traceback). Errors inside statements never change the exit code of the shell; `run` returns 1 if
 any statement failed.
 
 ## Server notes
@@ -302,7 +303,11 @@ These are deliberate and small.
   `Ye character samajh nahi aaya: '<c>'` error the character is written like Python's
   `repr()` for ASCII controls (`'\x00'`, `'\x1b'`), U+007F..U+00AD, and the common invisible
   format characters (`'\u200b'`, `'\u2060'`); other characters Python's tables call
-  unprintable (unassigned or private-use code points) are shown raw.
+  unprintable (unassigned or private-use code points) are shown raw. Quoted file names and values built
+  by the engine's own `repr` emulation (for example in `File nahi khuli:`) do not escape unprintable
+  characters at all. The same whitespace set is used wherever Python strips or splits user text: the
+  stored text of a CHECK (`SHART`) constraint, `.help` and other dot-command arguments, the server's
+  verbose query log and `--port` numbers (`int()` additionally refuses U+001C..U+001F).
 - **INT overflow family**: Python integers are unbounded, C++ `INT` values are 64-bit.
   Arithmetic that overflows 64 bits is reported as an error instead of producing a big number.
 - **Command-line abbreviations**: Python's `argparse` accepts unambiguous abbreviations of long
@@ -352,7 +357,8 @@ These are deliberate and small.
   because half-applied writes are not acceptable), so the shell notes the interrupt, lets the statement
   finish, reads no further line and exits 130. On Windows the Ctrl+C handler cancels only the console
   read, never a statement's socket or file write. Ctrl+C at a prompt behaves like Python (`Phir
-  milenge!`, exit 0).
+  milenge!`, exit 0); one that lands in the few microseconds between the shell's last check and the start
+  of the next read is by definition at the prompt (it is printed already) and also exits 0.
 - **Shell: terminal-native line editing, no history**: the same as Python (no `readline`), but the
   terminals' own editing is what the user gets, so details such as Ctrl+D after typed text on a POSIX
   terminal are the kernel's and are not compared automatically (manual checklist).
@@ -372,18 +378,11 @@ These are deliberate and small.
   the platform's own text, which differs from Python's (`[WinError 10054] ...` vs a bare message). The
   words before it match. For `File nahi khuli:` the `[Errno N]` number and text match Python for a
   missing file, a directory and an invalid name.
-- **Shell: unprintable characters in a message** -- in `Ye character samajh nahi aaya: '<c>'` the
-  character is written like Python's `repr()` for ASCII controls, U+007F..U+00AD and the common invisible
-  format characters (`'\x00'`, `'\u200b'`); other characters Python's tables call unprintable (unassigned or
-  private-use code points) are shown raw. Quoted file names and values built by the engine's own `repr`
-  emulation (for example in `File nahi khuli:`) do not escape unprintable characters at all. Whitespace is
-  not part of this: the tokenizer skips exactly Python's `str.isspace()` set (plus U+FEFF).
-  No shell comparison script is skipped.
 - **Platform coverage**: only the MinGW (Windows) build has been compiled and run so far. The POSIX
   socket and process code paths were written and reviewed but not yet built, and the MSVC build, including
   the depth-32 recursion check on MSVC's smaller default stack, is still to be verified. The terminal
   primitives of the shell (`ReadConsoleW`, the console control handler, `sigaction` / `pselect`,
-  `read(0)`) have been compiled on MinGW only (the POSIX branch not even that), and none of them has
+  `read` on stdin) have been compiled on MinGW only (the POSIX branch not even that), and none of them has
   been run against a real terminal by a test.
 
 ## Python behaviours mirrored on purpose
@@ -438,6 +437,9 @@ macOS: the same commands in any terminal; `export NO_COLOR=1`.
 | 14 | Windows Terminal and classic console | Paste a line in which an emoji (a surrogate pair) straddles the 512-unit boundary: 511 ASCII letters inside a string literal, then the emoji, then the closing `';` | The shell reads the whole line intact; the emoji comes back whole, not as two replacement characters |
 | 15 | Windows Terminal and classic console | Start `meradb_cli shell` against a server (not `--local`), run a slow statement and press Ctrl+C while it runs; repeat with `--local` | The result is printed in full, the connection is NOT reported as dropped (no `Server se connection toot gaya`), the shell exits with code 130. Ctrl+C may only wake the console read, never a statement's socket or file write |
 | 16 | Any | Ctrl+C just before a read: hold Ctrl+C while pressing Enter on a statement, and press Ctrl+C right as a slow statement ends; repeat a few times | Never a hang at the next prompt. A statement already entered runs to the end, then the shell exits 130 without reading another line; a Ctrl+C that reached the prompt before any text exits 0 with `Phir milenge!`. A typed, finished line is never silently discarded |
+
+Rows 6, 7, 15 and 16 (Ctrl+C) will not react if the shell was started from a launcher that disabled Ctrl+C
+for its children (some IDE run buttons and task runners do): start it from a normal terminal window.
 
 A slow statement: create two tables of 3,000 rows each and run a cross join of them (`DIKHAO * SE a, b;`),
 or any statement that takes a few seconds.

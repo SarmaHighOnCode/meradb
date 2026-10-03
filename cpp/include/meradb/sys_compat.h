@@ -163,11 +163,13 @@ private:
 // Whether a shell loop that has already seen Ctrl+C may still read another line (it may not).
 inline bool mayReadAnotherLine(bool interruptPending) { return !interruptPending; }
 
-enum class ReadStatus { Line, Eof, Interrupted };
+enum class ReadStatus { Line, Eof, Interrupted, Failed };
 
 // Reads one line from the terminal (stdin MUST be one; see isTerminal) as UTF-8 without its line
 // terminator. Eof: Ctrl+D (Ctrl+Z then Enter on Windows) or a closed input. Interrupted: Ctrl+C, which
-// needs an InterruptGuard; the flag is cleared (consumed) by this return.
+// needs an InterruptGuard; the flag is cleared (consumed) by this return. Failed (POSIX only): the read itself
+// failed (for example EIO on a vanished terminal); a one-line "OSError: [Errno N] ..." was written to stderr,
+// where Python would have died with a traceback.
 ReadStatus readTerminalLine(std::string& line);
 
 // When stdin is NOT a terminal, Windows would translate CRLF and stop at Ctrl+Z (text mode); this puts
