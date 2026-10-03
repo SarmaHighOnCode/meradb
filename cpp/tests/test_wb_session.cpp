@@ -3,7 +3,11 @@
 #include "test_util.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <sstream>
 #include <regex>
 
 using namespace meradb;
@@ -263,4 +267,365 @@ TEST_CASE("wbsession clearLog empties the log", "[wbsession]") {
     REQUIRE_FALSE(s.log().entries().empty());
     s.clearLog();
     CHECK(s.log().entries().empty());
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Task 7: explain, history, export, connect, tree activation, quit and shutdown
+
+TEST_CASE("wbsession explain runs SAMJHAO for one statement", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    s.editor().setText("DIKHAO * SE t;");
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"SAMJHAO DIKHAO * SE t;"}));
+    const auto log = logAfterStartup(s);
+    REQUIRE_FALSE(log.empty());
+    CHECK(log[0] == std::make_pair(LogKind::Echo, std::string("main> SAMJHAO DIKHAO * SE t;")));
+    CHECK(s.history().items().back() == "SAMJHAO DIKHAO * SE t;");
+}
+
+TEST_CASE("wbsession explain refuses two statements", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    s.editor().setText("DIKHAO * SE a; DIKHAO * SE b;");
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    const auto log = logAfterStartup(s);
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == std::make_pair(LogKind::Warn, std::string("SAMJHAO ek hi query par chalta hai -- ek query select karke F6 dabao")));
+    CHECK(rig.fake->ranList().empty());
+    CHECK(s.history().items().empty());
+}
+
+TEST_CASE("wbsession explain: empty text, comment only and bad syntax", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    const auto warn = std::make_pair(LogKind::Warn, std::string("SAMJHAO ek hi query par chalta hai -- ek query select karke F6 dabao"));
+    s.editor().setText("");
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    s.editor().setText("-- sirf comment");
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    auto log = logAfterStartup(s);
+    REQUIRE(log.size() == 2);
+    CHECK(log[0] == warn);
+    CHECK(log[1] == warn);
+    s.editor().setText("DIKHAO FROM;");
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    log = logAfterStartup(s);
+    REQUIRE(log.size() == 3);
+    CHECK(log[2].first == LogKind::Error);
+    CHECK(log[2].second.rfind("[", 0) == 0);
+    CHECK(rig.fake->ranList().empty());
+    CHECK(s.history().items().empty());
+}
+
+TEST_CASE("wbsession explain is selection-aware", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    s.editor().setText("DIKHAO * SE a; DIKHAO * SE b;");
+    s.editor().selectRange({0, 0}, {0, 14});
+    s.explainEditorText();
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"SAMJHAO DIKHAO * SE a;"}));
+}
+
+TEST_CASE("wbsession history steps put text in the editor and ask for its focus", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    s.historyStep(-1);
+    CHECK_FALSE(s.takeFocusRequest().has_value());
+    CHECK(s.editor().text() == "");
+    s.runText("a;");
+    s.runText("b;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    s.historyStep(-1);
+    CHECK(s.editor().text() == "b;");
+    CHECK(s.takeFocusRequest() == std::optional<Panel>(Panel::Editor));
+    CHECK_FALSE(s.takeFocusRequest().has_value());
+    s.historyStep(-1);
+    CHECK(s.editor().text() == "a;");
+    s.historyStep(1);
+    CHECK(s.editor().text() == "b;");
+    s.historyStep(1);
+    CHECK(s.editor().text() == "");
+}
+
+TEST_CASE("wbsession export writes the CSV and reports it", "[wbsession]") {
+    meradb_test::TempDir tmp;
+    SessionOptions opts;
+    opts.exportBaseDir = tmp.str();
+    opts.stamp = [] { return std::string("20260101-000000"); };
+    Rig rig(
+        [](FakeBackend& f) {
+            f.replies["DIKHAO * SE t;"] = {tableResult(
+                {"id", "naam"}, {{Value(int64_t(1)), Value(std::string("A"))}, {Value(int64_t(2)), Value()}})};
+        },
+        opts);
+    Session& s = rig.s();
+    s.exportCsv();
+    {
+        const auto log = logAfterStartup(s);
+        REQUIRE(log.size() == 1);
+        CHECK(log[0] == std::make_pair(LogKind::Warn, std::string("Pehle koi DIKHAO query chalao, phir Ctrl+S")));
+        CHECK_FALSE(std::filesystem::exists(tmp.path() / "exports"));
+    }
+    s.runText("DIKHAO * SE t;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    s.exportCsv();
+    const std::filesystem::path file = tmp.path() / "exports" / "meradb-20260101-000000.csv";
+    REQUIRE(std::filesystem::exists(file));
+    std::ifstream in(file, std::ios::binary);
+    std::stringstream bytes;
+    bytes << in.rdbuf();
+    CHECK(bytes.str() == "id,naam\r\n1,A\r\n2,\r\n");
+    const auto& last = s.log().entries().back();
+    CHECK(last.kind == LogKind::Message);
+    CHECK(textOf(last) == "2 row(s) CSV mein save: " + file.string());
+}
+
+TEST_CASE("wbsession export failure is logged in red", "[wbsession]") {
+    meradb_test::TempDir tmp;
+    { std::ofstream(tmp.path() / "exports") << "not a folder"; }
+    SessionOptions opts;
+    opts.exportBaseDir = tmp.str();
+    opts.stamp = [] { return std::string("s"); };
+    Rig rig(
+        [](FakeBackend& f) { f.replies["q;"] = {tableResult({"a"}, {{Value(int64_t(1))}})}; }, opts);
+    Session& s = rig.s();
+    s.runText("q;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    s.exportCsv();
+    const auto& last = s.log().entries().back();
+    CHECK(last.kind == LogKind::Error);
+    CHECK(textOf(last).rfind("CSV save nahi hua: ", 0) == 0);
+}
+
+TEST_CASE("wbsession connect dialog helpers", "[wbsession]") {
+    const ConnectRequest a = makeConnectRequest(false, " h ", "", "", " db ");
+    CHECK_FALSE(a.local);
+    CHECK(a.host == "h");
+    CHECK(a.port == "6372");
+    CHECK_FALSE(a.password.has_value());
+    CHECK(a.database == std::optional<std::string>("db"));
+    const ConnectRequest b = makeConnectRequest(true, "", "", "pw", "");
+    CHECK(b.local);
+    CHECK(b.host == "127.0.0.1");
+    CHECK(b.password == std::optional<std::string>("pw"));
+    CHECK_FALSE(b.database.has_value());
+
+    auto d = connectDefaults("10.0.0.5:6400");
+    CHECK(d.host == "10.0.0.5");
+    CHECK(d.port == "6400");
+    d = connectDefaults("local (C:\\data)");
+    CHECK(d.host == "127.0.0.1");
+    CHECK(d.port == "6372");
+    d = connectDefaults("::1:6372");
+    CHECK(d.host == "::1");
+    CHECK(d.port == "6372");
+    d = connectDefaults("nonsense");
+    CHECK(d.port == "6372");
+
+    ConnectRequest bad = makeConnectRequest(false, "127.0.0.1", "abc", "", "");
+    try {
+        defaultBackendFactory(bad, "");
+        FAIL("expected invalid_argument");
+    } catch (const std::invalid_argument& e) {
+        CHECK(std::string(e.what()) == "invalid literal for int() with base 10: 'abc'");
+    }
+
+    Rig rig;
+    CHECK(rig.s().connectDefaults().host == "fake");
+    CHECK(rig.s().connectDefaults().port == "1");
+    rig.s().openConnectDialog();
+    CHECK(rig.s().modal() == Modal::Connect);
+    rig.s().closeModal();
+    CHECK(rig.s().modal() == Modal::None);
+    rig.s().showHelp();
+    CHECK(rig.s().modal() == Modal::Help);
+}
+
+TEST_CASE("wbsession connect success swaps the backend", "[wbsession]") {
+    FakeBackend* second = nullptr;
+    SessionOptions opts;
+    opts.factory = [&second](const ConnectRequest&, const std::string&) {
+        auto b = std::make_unique<FakeBackend>();
+        b->desc = "other:2";
+        b->db = "college";
+        b->tree = nlohmann::ordered_json::parse(R"([{"name":"college","current":true,"tables":[]}])");
+        second = b.get();
+        return std::unique_ptr<Backend>(std::move(b));
+    };
+    Rig rig([](FakeBackend& f) { f.tree = oneTableSchema(); }, opts);
+    Session& s = rig.s();
+    s.runText("SHURU;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    auto oldSeen = rig.fake->seen;
+    s.openConnectDialog();
+    s.connect(makeConnectRequest(false, "other", "2", "", ""));
+    CHECK(s.modal() == Modal::None);
+    REQUIRE(rig.poster.pumpIdle(s));
+    REQUIRE(second != nullptr);
+    CHECK(s.subtitle() == "other:2  |  db: college");
+    const auto& last = s.log().entries().back();
+    CHECK(last.kind == LogKind::Connected);
+    CHECK(textOf(last) == "Connected: other:2");
+    CHECK(oldSeen->closed);
+    CHECK(oldSeen->rolledBackOnClose);
+    bool sawCollege = false;
+    for (const auto& r : s.tree().rows()) sawCollege = sawCollege || plainText(r.label) == "college";
+    CHECK(sawCollege);
+    s.runText("x;");
+    s.runText("y;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(second->ranList() == std::vector<std::string>({"x;", "y;"}));
+    const auto ids = second->threadList();
+    REQUIRE(ids.size() == 2);
+    CHECK(ids[0] == ids[1]);
+}
+
+TEST_CASE("wbsession connect failure changes nothing", "[wbsession]") {
+    SessionOptions opts;
+    opts.factory = [](const ConnectRequest&, const std::string&) -> std::unique_ptr<Backend> {
+        throw ConnectionFailed("kaun hai");
+    };
+    Rig rig({}, opts);
+    Session& s = rig.s();
+    s.connect(makeConnectRequest(false, "x", "1", "", ""));
+    REQUIRE(rig.poster.pumpIdle(s));
+    const auto& last = s.log().entries().back();
+    CHECK(last.kind == LogKind::Error);
+    CHECK(textOf(last) == "Connect nahi hua: [Connection Galti] kaun hai");
+    CHECK_FALSE(rig.fake->closed());
+    CHECK(s.subtitle() == "fake:1  |  db: main");
+    s.runText("z;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"z;"}));
+}
+
+TEST_CASE("wbsession tree activation runs scripts or inserts the column", "[wbsession]") {
+    Rig rig([](FakeBackend& f) { f.tree = oneTableSchema(); });
+    Session& s = rig.s();
+    auto rowOf = [&s](const std::string& label) {
+        const auto& rows = s.tree().rows();
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            if (rows[i].key.kind != NodeKey::Kind::Root && plainText(rows[i].label).rfind(label, 0) == 0)
+                return static_cast<int>(i);
+        return -1;
+    };
+    const int tableRow = rowOf("t");
+    REQUIRE(tableRow >= 0);
+    s.activateTreeRow(tableRow);  // also toggles the table open
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"DIKHAO * SE t SIRF 100;"}));
+
+    const int columnRow = rowOf("naam");
+    REQUIRE(columnRow >= 0);
+    s.editor().setText("x ");
+    s.activateTreeRow(columnRow);
+    CHECK(s.editor().text() == "x naam");
+    CHECK(s.takeFocusRequest() == std::optional<Panel>(Panel::Editor));
+
+    s.activateTreeRow(rowOf("college"));
+    REQUIRE(rig.poster.pumpIdle(s));
+    CHECK(rig.fake->ranList().back() == "ISTEMAL college;");
+}
+
+TEST_CASE("wbsession quit when idle closes the backend and calls onExit once", "[wbsession]") {
+    Rig rig;
+    Session& s = rig.s();
+    s.runText("SHURU;");
+    REQUIRE(rig.poster.pumpIdle(s));
+    auto seen = rig.fake->seen;
+    int exits = 0;
+    s.setOnExit([&exits] { ++exits; });
+    s.requestQuit();
+    CHECK(s.quitting());
+    CHECK(s.busyLabel() == "[band ho raha hai ...]");
+    s.requestQuit();  // does nothing
+    REQUIRE(rig.poster.pumpUntil([&exits] { return exits > 0; }));
+    CHECK(exits == 1);
+    CHECK(seen->closed);
+    CHECK(seen->rolledBackOnClose);
+    CHECK(seen->closeCalls == 1);
+    const std::size_t entries = s.log().entries().size();
+    s.runText("late;");
+    CHECK(s.log().entries().size() == entries);
+}
+
+TEST_CASE("wbsession quit while busy drops queued jobs and waits for the running one", "[wbsession]") {
+    std::promise<void> release, entered;
+    std::shared_future<void> gate = release.get_future().share();
+    std::atomic<bool> first{true};
+    Rig rig([&](FakeBackend& f) {
+        f.beforeRun = [&](const std::string&) {
+            if (first.exchange(false)) {
+                entered.set_value();
+                gate.wait();
+            }
+        };
+    });
+    Session& s = rig.s();
+    auto seen = rig.fake->seen;
+    int exits = 0;
+    s.setOnExit([&exits] { ++exits; });
+    s.runText("first;");
+    s.runText("second;");
+    entered.get_future().wait();
+    s.requestQuit();
+    CHECK(exits == 0);
+    release.set_value();
+    REQUIRE(rig.poster.pumpUntil([&exits] { return exits > 0; }));
+    CHECK(exits == 1);
+    {
+        std::lock_guard<std::mutex> l(seen->m);
+        CHECK(seen->ran == std::vector<std::string>({"first;"}));
+        CHECK(seen->closed);
+    }
+}
+
+TEST_CASE("wbsession shutdown closes the backend even if the UI never pumps", "[wbsession]") {
+    std::shared_ptr<FakeBackend::Shared> seen;
+    {
+        ManualPoster poster;
+        auto owned = std::make_unique<FakeBackend>();
+        seen = owned->seen;
+        Session s(std::move(owned), SessionOptions{}, poster.poster());
+        s.shutdown();
+        s.shutdown();  // harmless
+        CHECK(s.quitting());
+    }
+    CHECK(seen->closed);
+    CHECK(seen->closeCalls == 1);
+}
+
+TEST_CASE("wbsession destroying the session while a statement runs waits for it", "[wbsession]") {
+    std::shared_ptr<FakeBackend::Shared> seen;
+    std::promise<void> release, entered;
+    std::shared_future<void> gate = release.get_future().share();
+    std::atomic<bool> first{true};
+    {
+        ManualPoster poster;
+        auto owned = std::make_unique<FakeBackend>();
+        seen = owned->seen;
+        owned->beforeRun = [&](const std::string&) {
+            if (first.exchange(false)) {
+                entered.set_value();
+                gate.wait();
+            }
+        };
+        Session s(std::move(owned), SessionOptions{}, poster.poster());
+        s.runText("slow;");
+        entered.get_future().wait();
+        std::thread releaser([&release] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            release.set_value();
+        });
+        s.shutdown();
+        releaser.join();
+    }
+    CHECK(seen->closed);
 }

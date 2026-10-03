@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -60,18 +61,27 @@ public:
     bool dropped = false;      // runScript throws "Server se connection toot gaya"
     bool schemaFails = false;  // schemaTree throws
     bool txn = false;          // set by "SHURU;", cleared by "PAKKA;" / "WAPAS;"
-    bool closed = false, rolledBackOnClose = false;
+    // What the backend saw, shared so a test can still read it after the session has destroyed the backend.
+    struct Shared {
+        std::mutex m;
+        std::vector<std::string> ran;
+        std::vector<std::thread::id> threads;
+        bool closed = false, rolledBackOnClose = false;
+        int closeCalls = 0;
+    };
+    std::shared_ptr<Shared> seen = std::make_shared<Shared>();
     std::string db = "main", desc = "fake:1";
     nlohmann::ordered_json tree = nlohmann::ordered_json::array();
 
-    std::vector<std::string> ranList() const { std::lock_guard<std::mutex> l(m_); return ran_; }
-    std::vector<std::thread::id> threadList() const { std::lock_guard<std::mutex> l(m_); return threads_; }
+    std::vector<std::string> ranList() const { std::lock_guard<std::mutex> l(seen->m); return seen->ran; }
+    std::vector<std::thread::id> threadList() const { std::lock_guard<std::mutex> l(seen->m); return seen->threads; }
+    bool closed() const { std::lock_guard<std::mutex> l(seen->m); return seen->closed; }
 
     std::vector<meradb::Result> runScript(const std::string& text) override {
-        { std::lock_guard<std::mutex> l(m_); threads_.push_back(std::this_thread::get_id()); }
+        { std::lock_guard<std::mutex> l(seen->m); seen->threads.push_back(std::this_thread::get_id()); }
         if (beforeRun) beforeRun(text);
         if (dropped) throw meradb::ConnectionFailed("Server se connection toot gaya: fake");
-        { std::lock_guard<std::mutex> l(m_); ran_.push_back(text); }
+        { std::lock_guard<std::mutex> l(seen->m); seen->ran.push_back(text); }
         if (text == "SHURU;") txn = true;
         if (text == "PAKKA;" || text == "WAPAS;") txn = false;
         auto it = replies.find(text);
@@ -88,12 +98,13 @@ public:
         return tree;
     }
     std::string description() override { return desc; }
-    void close() override { closed = true; rolledBackOnClose = txn; txn = false; }
-
-private:
-    mutable std::mutex m_;
-    std::vector<std::string> ran_;
-    std::vector<std::thread::id> threads_;
+    void close() override {
+        std::lock_guard<std::mutex> l(seen->m);
+        seen->closed = true;
+        seen->rolledBackOnClose = txn;
+        ++seen->closeCalls;
+        txn = false;
+    }
 };
 
 inline meradb::Result tableResult(std::vector<std::string> columns, std::vector<std::vector<meradb::Value>> rows) {
