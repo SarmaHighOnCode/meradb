@@ -46,6 +46,7 @@ add_executable(meradb_tests
   test_repl_text.cpp
   test_repl_input.cpp
   test_repl.cpp
+  test_ws_text.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
@@ -107,6 +108,9 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_diff.py --cli $<TARGET_FILE:meradb_cli> --mode server)
   set_tests_properties(shell_diff_local PROPERTIES TIMEOUT 600)
   set_tests_properties(shell_diff_server PROPERTIES TIMEOUT 900)
+  add_test(NAME ws_text_diff
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ws_text_diff.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(ws_text_diff PROPERTIES TIMEOUT 900)
   add_test(NAME shell_session
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_session.py --cli $<TARGET_FILE:meradb_cli>)
   set_tests_properties(shell_session PROPERTIES TIMEOUT 900)

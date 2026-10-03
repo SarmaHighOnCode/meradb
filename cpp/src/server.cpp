@@ -4,6 +4,7 @@
 #include "meradb/ast.h"
 #include "meradb/datatypes.h"
 #include "meradb/errors.h"
+#include "meradb/pytext.h"
 #include "meradb/sys_compat.h"
 #include <algorithm>
 #include <chrono>
@@ -83,30 +84,19 @@ bool constantTimeEquals(const std::string& a, const std::string& b) {
     return diff == 0;
 }
 
-// ' '.join(text.split())[:limit]  (limit counts characters, not bytes)
+// ' '.join(text.split())[:limit]  (Unicode whitespace; limit counts characters, not bytes)
 std::string collapseWhitespace(const std::string& text, std::size_t limit) {
-    std::string out;
-    bool pendingSpace = false;
-    std::size_t chars = 0;
-    for (char c : text) {
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
-            pendingSpace = !out.empty();
-            continue;
-        }
-        const bool startsCharacter = (static_cast<unsigned char>(c) & 0xC0) != 0x80;
-        if (pendingSpace) {
-            if (chars >= limit) break;
-            out += ' ';
-            ++chars;
-            pendingSpace = false;
-        }
-        if (startsCharacter) {
-            if (chars >= limit) break;
-            ++chars;
-        }
-        out += c;
+    std::string joined;
+    for (const std::string& word : pytext::split(text)) {
+        if (!joined.empty()) joined += ' ';
+        joined += word;
     }
-    return out;
+    std::size_t at = 0;
+    for (std::size_t chars = 0; at < joined.size() && chars < limit; ++chars) {
+        char32_t cp = 0;
+        at += pytext::decode(joined, at, cp);
+    }
+    return joined.substr(0, at);
 }
 
 Json failure(const std::string& message) {

@@ -5,6 +5,7 @@
 #include "meradb/errors.h"
 #include "meradb/fs_util.h"
 #include "meradb/protocol.h"
+#include "meradb/pytext.h"
 #include "meradb/repl.h"
 #include "meradb/server.h"
 #include "meradb/server_control.h"
@@ -17,6 +18,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace meradb {
@@ -26,13 +28,24 @@ const std::set<std::string> kCommands = {"server", "start", "stop", "status", "s
 
 void note(const std::string& message) { std::cerr << message << "\n"; }
 
-// Python's int(): surrounding ASCII whitespace, an optional sign, ASCII digits with single
+// Python's int(): surrounding whitespace (Unicode), an optional sign, ASCII digits with single
 // underscores between them ("1_0"). (Unicode digits and values beyond int are not accepted.)
 std::optional<int> parseInt(const std::string& raw) {
-    const char* space = " \t\n\r\f\v";
-    std::size_t first = raw.find_first_not_of(space);
-    if (first == std::string::npos) return std::nullopt;
-    std::string text = raw.substr(first, raw.find_last_not_of(space) - first + 1);
+    // int() strips str.isspace() characters except U+001C..U+001F (checked against CPython for every code point).
+    std::vector<std::pair<std::size_t, bool>> chars;  // byte offset of each character, and whether int() strips it
+    for (std::size_t at = 0; at < raw.size();) {
+        char32_t cp = 0;
+        const std::size_t length = pytext::decode(raw, at, cp);
+        chars.emplace_back(at, pytext::isSpace(cp) && !(cp >= 0x1C && cp <= 0x1F));
+        at += length;
+    }
+    std::size_t first = 0, last = chars.size();
+    while (first < last && chars[first].second) ++first;
+    while (last > first && chars[last - 1].second) --last;
+    if (first == last) return std::nullopt;
+    const std::size_t from = chars[first].first;
+    const std::size_t to = last == chars.size() ? raw.size() : chars[last].first;
+    const std::string text = raw.substr(from, to - from);
     std::size_t at = (text[0] == '+' || text[0] == '-') ? 1 : 0;
     std::string digits;
     bool lastWasDigit = false;

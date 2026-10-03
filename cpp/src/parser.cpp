@@ -3,6 +3,7 @@
 #include "meradb/ast_util.h"
 #include "meradb/datatypes.h"
 #include "meradb/errors.h"
+#include "meradb/pytext.h"
 #include "meradb/stack_guard.h"
 #include <cctype>
 
@@ -496,8 +497,7 @@ ColumnDef Parser::parseColumnDef() {
             size_t end = static_cast<size_t>(peek().start);  // position of the ")" about to be consumed
             expectSymbol(")");
             std::string raw = sourceText_.substr(start, end - start);
-            while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
-            col.check = raw;
+            col.check = pytext::rstrip(raw);  // str.rstrip(): Unicode whitespace, as Python's parser does
         } else {
             break;
         }
