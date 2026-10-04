@@ -14,6 +14,25 @@
 | 5 | `SANDARBH` (FOREIGN KEY, RESTRICT), `SHART` (CHECK), `DATE`/`TAREEKH`, `VARCHAR(n)`/`NUMBER(p,s)`, `NAYA_NAAM` (RENAME), `KAHO` (output alias) | ✅ Done, **study it** |
 | 4 | Project report draft (`docs/REPORT.md`) | ✅ Draft, **add your details** |
 | 4 | Prove-it exercises below + demo + viva practice | ⬜ **Yours** |
+| C++ 1 | C++ port, phase 1: tokenizer, parser, planner, storage, executor, transactions (`cpp/`) | ✅ Done |
+| C++ 2 | C++ port, phase 2: users and privileges, triggers, procedures, TCP server, `start/stop/status/run` | ✅ Done |
+| C++ 3 | C++ port, phase 3: interactive shell | ✅ Done |
+| C++ 4 | C++ port, phase 4: full-screen workbench (FTXUI) | ✅ Done |
+| C++ 5 | C++ port, phase 5: README/report/build scripts, Linux (POSIX) results | 🔄 In progress |
+| C++ 5 | C++ port: macOS and MSVC (Visual Studio) builds verified | ⬜ Not yet |
+| C++ 5 | Report: your name, college, screenshots (including the C++ chapter 10) | ⬜ **Yours** |
+
+The C++ port (`cpp/`, see `docs/CPP.md`) is the version submitted for the course. It
+reproduces the Python engine's language, output, data files and network protocol, and was
+checked against it by differential tests. The Python version stays as the reference.
+
+**The three prove-it exercises are yours and are deliberately NOT implemented**, in either
+version: `.hexdump <table>` (week 2), the `^` power operator (week 1) and `GINO(ALAG x)`
+(week 3). The C++ shell reports `.hexdump` as an unknown command, `^` as a character it does
+not understand and `GINO(ALAG x)` as a syntax error (a unit test pins the `.hexdump` case). The exercises are
+written for the Python code; if your course also wants them in C++, the matching places are
+`cpp/src/tokenizer.cpp` and `cpp/src/parser.cpp`, `cpp/src/aggregates.cpp` and
+`cpp/src/repl.cpp` (do them in Python first, then port them).
 
 The features are built, but **your grade depends on explaining them**. Each week below
 has reading, a "trace it" task, and a small **prove-it exercise**. Do the exercise
