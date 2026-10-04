@@ -72,10 +72,12 @@ TEST_CASE("parseScript parses DROP TABLE/VIEW/DATABASE and TRUNCATE/VACUUM", "[p
 }
 
 TEST_CASE("parseScript parses BATAO with and without TABLE keyword", "[parser][ddl]") {
-    auto* d1 = dynamic_cast<Describe*>(parseScript("BATAO students;")[0].get());
+    auto stmts1 = parseScript("BATAO students;");  // keep the statements alive while d1 is used
+    auto* d1 = dynamic_cast<Describe*>(stmts1[0].get());
     REQUIRE(d1 != nullptr);
     REQUIRE(d1->table == "students");
-    auto* d2 = dynamic_cast<Describe*>(parseScript("BATAO TABLE students;")[0].get());
+    auto stmts2 = parseScript("BATAO TABLE students;");
+    auto* d2 = dynamic_cast<Describe*>(stmts2[0].get());
     REQUIRE(d2 != nullptr);
     REQUIRE(d2->table == "students");
 }

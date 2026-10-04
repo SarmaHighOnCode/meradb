@@ -90,7 +90,9 @@ TEST_CASE("integer division is correctly rounded before truncating, like Python"
         {INT64_MAX, INT64_MAX - 1, 1},
     };
     for (const auto& c : cases) {
-        Row row = {{"s.a", Value(c.a)}, {"s.b", Value(c.b)}};
+        Row row;
+        row.emplace("s.a", Value(c.a));
+        row.emplace("s.b", Value(c.b));
         REQUIRE(I(ev("s.a / s.b", row)) == c.q);
     }
 }

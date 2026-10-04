@@ -104,10 +104,14 @@ def main():
             label = " ".join(x.replace(root, "<tmp>") for x in args)
             check("same as Python: " + label, mine == theirs, "C++:    %r\nPython: %r" % (mine, theirs))
 
-        # help text wrapping counts characters, and a word longer than a line fills the current line first
-        for folder in ("D:/ünï/😀 dir with spaces/and more words to wrap around the column",
+        # help text wrapping counts characters, and a word longer than a line fills the current line first.
+        # Python 3.13 changed argparse's option layout ("-D, --data DATA"); the C++ text follows 3.12 and earlier.
+        wrap_folders = () if sys.version_info >= (3, 13) else ("D:/ünï/😀 dir with spaces/and more words to wrap around the column",
                        "D:/" + "x" * 80, "D:/ab cd " + "y" * 70 + " tail words", "D:/" + "é" * 70,
-                       "d" * 52 + " e " + "f" * 60, "/tmp/" + "ü" * 55 + " x"):
+                       "d" * 52 + " e " + "f" * 60, "/tmp/" + "ü" * 55 + " x")
+        if not wrap_folders:
+            print("SKIP help wrapping: Python %d.%d formats argparse help differently from 3.12" % sys.version_info[:2])
+        for folder in wrap_folders:
             help_env = dict(env, MERADB_DATA=folder)
             help_py_env = dict(py_env, MERADB_DATA=folder, PYTHONIOENCODING="utf-8")
             mine = run([CLI, "stop", "--help"], help_env, root)
