@@ -174,6 +174,11 @@ if(MERADB_WORKBENCH)
   target_link_libraries(meradb_cli PRIVATE meradb_workbench)
   target_compile_definitions(meradb_cli PRIVATE MERADB_HAVE_WORKBENCH=1)
 endif()
+if(MINGW)
+  # Link the MinGW runtime into the program so it starts from any terminal,
+  # without the compiler's bin folder on PATH.
+  target_link_options(meradb_cli PRIVATE -static)
+endif()
 
 enable_testing()
 add_subdirectory(tests)
