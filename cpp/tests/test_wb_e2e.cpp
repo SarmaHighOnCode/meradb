@@ -617,6 +617,36 @@ TEST_CASE("wbe2e a local connect is refused while a transaction is open, and wor
     CHECK(rig.s().table()->rows.at(0).at(0).text == "0");
 }
 
+TEST_CASE("wbe2e a full log trims incrementally and still shows the right lines", "[wbe2e]") {
+    E2e rig;
+    const std::size_t generation = rig.s().log().generation();
+    for (int i = 0; i < 20100; ++i) rig.s().logLine(LogKind::Plain, "line " + std::to_string(i));
+    CHECK(rig.s().log().trimmedEntries() > 0);
+    CHECK(rig.s().log().generation() == generation);   // trimming is not a reset: the panel keeps its wrapped lines
+    CHECK(rig.s().log().lineCount() <= LogBuffer::kMaxLines);
+    auto lines = rig.screen();
+    CHECK(has(lines, "line 20099"));
+    CHECK(rig.logText().find("line 0\n") == std::string::npos);
+    // Following the end: more lines keep it at the end while old ones go.
+    for (int i = 20100; i < 20120; ++i) rig.s().logLine(LogKind::Plain, "line " + std::to_string(i));
+    lines = rig.screen();
+    CHECK(has(lines, "line 20119"));
+    CHECK_FALSE(has(lines, "line 20099 "));
+    // Scrolled to the top: the oldest line still kept is shown, and it stays after another trim.
+    rig.ui->setFocus(Panel::Log);
+    rig.press(Event::Home);
+    lines = rig.screen();
+    const std::string oldest = plainText(rig.s().log().entries().front().lines.front());
+    CHECK(has(lines, oldest));
+    // The width changes: everything is wrapped again for it.
+    lines = rig.screen(100, 30);
+    CHECK(lines[0].find("MeraDB Workbench") != std::string::npos);
+    rig.s().clearLog();
+    rig.s().logLine(LogKind::Plain, "after clear");
+    CHECK(has(rig.screen(), "after clear"));
+    CHECK_FALSE(has(rig.screen(), "line 20119"));
+}
+
 TEST_CASE("wbe2e the footer fits 80 columns and keeps F1 and ^Q", "[wbe2e]") {
     E2e rig;
     for (int width : {60, 70, 80, 100, 120}) {

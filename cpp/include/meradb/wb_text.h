@@ -48,10 +48,11 @@ public:
     const std::deque<LogEntry>& entries() const { return entries_; }
     std::size_t lineCount() const { return lines_; }
     std::size_t revision() const { return revision_; }      // bumps on every add / clear (view caches key on it)
-    std::size_t generation() const { return generation_; }  // bumps when old entries disappear (clear, trimming)
+    std::size_t generation() const { return generation_; }  // bumps when the log is cleared
+    std::size_t trimmedEntries() const { return trimmed_; } // entries dropped from the front to stay within kMaxLines (total)
 private:
     std::deque<LogEntry> entries_;
-    std::size_t lines_ = 0, revision_ = 0, generation_ = 0;
+    std::size_t lines_ = 0, revision_ = 0, generation_ = 0, trimmed_ = 0;
 };
 
 // Python's str.splitlines(): \n \r\n \r \v \f \x1c \x1d \x1e U+0085 U+2028 U+2029; no empty last line; "" -> {}.

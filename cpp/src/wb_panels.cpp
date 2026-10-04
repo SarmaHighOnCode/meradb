@@ -465,25 +465,42 @@ private:
         follow_ = scroll_.atBottom();
     }
 
-    // Keeps wrapped_ in step with the session's log: rebuilt when old entries vanished or the width changed,
-    // extended when entries were only added.
+    // Keeps wrapped_ in step with the session's log: rebuilt when the log was cleared or the width changed, extended
+    // when entries were added, and shortened at the front (by the wrapped height of each dropped entry) when the log
+    // trimmed its oldest entries, so a full log (20,000 lines) costs only the new lines per statement.
     void sync(int w, int h) {
         const LogBuffer& log = session_.log();
         w = std::max(1, w);
         if (log.generation() != generation_ || w != width_) {
             wrapped_.clear();
-            done_ = 0;
+            counts_.clear();
             generation_ = log.generation();
+            trimmedSeen_ = log.trimmedEntries();
             width_ = w;
             revision_ = static_cast<std::size_t>(-1);
         }
+        if (log.trimmedEntries() != trimmedSeen_) {
+            std::size_t drop = log.trimmedEntries() - trimmedSeen_;
+            trimmedSeen_ = log.trimmedEntries();
+            std::size_t droppedLines = 0;
+            for (; drop > 0 && !counts_.empty(); --drop) {   // entries never wrapped have nothing to remove
+                droppedLines += counts_.front();
+                wrapped_.erase(wrapped_.begin(), wrapped_.begin() + static_cast<std::ptrdiff_t>(counts_.front()));
+                counts_.pop_front();
+            }
+            if (!follow_) scroll_.scrollBy(-static_cast<int>(droppedLines));   // keep the same text in view
+        }
         if (log.revision() != revision_) {
             const std::deque<LogEntry>& entries = log.entries();
-            for (; done_ < entries.size(); ++done_)
-                for (const Line& line : entries[done_].lines) {
+            for (std::size_t i = counts_.size(); i < entries.size(); ++i) {
+                std::size_t count = 0;
+                for (const Line& line : entries[i].lines) {
                     std::vector<Line> pieces = wrapLine(line, width_);
+                    count += pieces.size();
                     for (Line& piece : pieces) wrapped_.push_back(std::move(piece));
                 }
+                counts_.push_back(count);
+            }
             revision_ = log.revision();
         }
         scroll_.setCount(static_cast<int>(wrapped_.size()));
@@ -500,8 +517,9 @@ private:
     }
 
     Session& session_;
-    std::vector<Line> wrapped_;
-    std::size_t done_ = 0;
+    std::deque<Line> wrapped_;
+    std::deque<std::size_t> counts_;   // wrapped lines of each entry already in wrapped_, oldest first
+    std::size_t trimmedSeen_ = 0;
     std::size_t generation_ = static_cast<std::size_t>(-1);
     std::size_t revision_ = static_cast<std::size_t>(-1);
     int width_ = -1;

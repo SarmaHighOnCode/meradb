@@ -81,7 +81,7 @@ void LogBuffer::add(LogEntry entry) {
     while (lines_ > kMaxLines && entries_.size() > 1) {
         lines_ -= entries_.front().lines.size();
         entries_.pop_front();
-        ++generation_;
+        ++trimmed_;
     }
 }
 
