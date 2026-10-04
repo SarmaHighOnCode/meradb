@@ -37,6 +37,13 @@ if(MSVC)
   add_compile_options(/W4 /utf-8)   # sources contain UTF-8 (Devanagari, dashes) in comments
 else()
   add_compile_options(-Wall -Wextra)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+    # GCC 16 speculatively devirtualizes the shared_ptr control block that nlohmann's dump() frees and picks
+    # meradb::Instance (the only make_shared type in the file), then reports a false -Warray-bounds for the
+    # Instance / UserStore destructors. The code is correct (all tests pass); without this option the warning
+    # appears in several files that include engine.h.
+    add_compile_options(-fno-devirtualize-speculatively)
+  endif()
 endif()
 
 FetchContent_Declare(
@@ -50,6 +57,29 @@ FetchContent_Declare(
   URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.4.tar.gz
 )
 FetchContent_MakeAvailable(catch2)
+
+# The downloaded libraries are third-party code: their headers count as system headers for our targets and their
+# own sources are compiled without warnings, so a build reports only what is in this repository.
+function(meradb_quiet_third_party)
+  foreach(name IN LISTS ARGN)
+    if(NOT TARGET ${name})
+      continue()
+    endif()
+    get_target_property(type ${name} TYPE)
+    get_target_property(includes ${name} INTERFACE_INCLUDE_DIRECTORIES)
+    if(includes)
+      set_property(TARGET ${name} APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${includes}")
+    endif()
+    if(NOT type STREQUAL "INTERFACE_LIBRARY")
+      if(MSVC)
+        target_compile_options(${name} PRIVATE /w)
+      else()
+        target_compile_options(${name} PRIVATE -w)
+      endif()
+    endif()
+  endforeach()
+endfunction()
+meradb_quiet_third_party(nlohmann_json Catch2 Catch2WithMain ftxui-screen ftxui-dom ftxui-component)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
