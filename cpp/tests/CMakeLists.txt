@@ -70,6 +70,7 @@ if(TARGET meradb_workbench)
     test_wb_window.cpp
     test_wb_form.cpp
     test_wb_dialogs.cpp
+    test_wb_bridge.cpp
     test_wb_e2e.cpp
   )
   target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)

@@ -1,8 +1,8 @@
 // cpp/include/meradb/workbench.h
 //
 // The full-screen workbench (mirrors meradb/tui.py's run_workbench). Only built when the CMake option
-// MERADB_WORKBENCH is ON; cli.cpp is to reach it through a hook, never directly (the hook arrives with the
-// command-line wiring task; until then runWorkbench is a placeholder that just closes the backend).
+// MERADB_WORKBENCH is ON; cli.cpp reaches it through the hook set by main() (cli.h: setWorkbenchRunner), never
+// directly, so meradb_core does not depend on FTXUI.
 #pragma once
 #include "meradb/backend.h"
 #include "meradb/cli.h"
