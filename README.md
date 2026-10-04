@@ -1,13 +1,21 @@
 # MeraDB
 
-**Apna database, apni bhasha.** A relational database engine built from scratch in pure
-Python, queried in a **Hinglish** language instead of SQL. You run a database **server** in
-the background and connect to it with a **workbench** (like MySQL Workbench) or a
-command-line **shell**.
+**Apna database, apni bhasha.** A relational database engine built from scratch, queried in
+a **Hinglish** language instead of SQL. You run a database **server** in the background and
+connect to it with a **workbench** (like MySQL Workbench) or a command-line **shell**.
 
+MeraDB exists twice, and the two versions are interchangeable (same language, same data
+files, same network protocol):
+
+- **The C++ version** (`cpp/`) is the main one: build it with CMake, run `meradb_cli`.
+  Start with [Building and running the C++ version](#building-and-running-the-c-version).
+- **The Python version** (`meradb/`) is the reference implementation it was ported from.
+  See [The Python version](#the-python-version).
+
+![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Dependencies](https://img.shields.io/badge/engine%20dependencies-none-brightgreen)
-![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen)
+![C++ tests](https://img.shields.io/badge/C%2B%2B%20ctest-780%20tests-brightgreen)
+![Python tests](https://img.shields.io/badge/python%20tests-183%20passing-brightgreen)
 
 ```sql
 BANAO TABLE courses  (id INT MUKHYA KUNJI, title VARCHAR(40) ZAROORI ANOKHA);
@@ -31,18 +39,17 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
 ## Contents
 
 1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Installation](#installation)
-4. [Quick start](#quick-start)
-5. [Command reference](#command-reference)
-6. [Shell commands](#shell-commands)
-7. [Workbench keys](#workbench-keys)
-8. [Language reference](#language-reference)
-9. [Where the data lives](#where-the-data-lives)
-10. [How MeraDB works](#how-meradb-works)
-11. [Running the tests](#running-the-tests)
-12. [Project structure](#project-structure)
-13. [Documentation](#documentation)
+2. [Building and running the C++ version](#building-and-running-the-c-version)
+3. [The Python version](#the-python-version) (requirements, installation, quick start)
+4. [Command reference](#command-reference)
+5. [Shell commands](#shell-commands)
+6. [Workbench keys](#workbench-keys)
+7. [Language reference](#language-reference)
+8. [Where the data lives](#where-the-data-lives)
+9. [How MeraDB works](#how-meradb-works)
+10. [Running the tests](#running-the-tests)
+11. [Project structure](#project-structure)
+12. [Documentation](#documentation)
 
 ---
 
@@ -80,15 +87,158 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
   - one session per client, transactions isolated from each other
   - optional password, or per-user login with privileges
 - **Three clients:**
-  - `meradb workbench`: full-screen UI, like MySQL Workbench
-  - `meradb shell`: command-line shell
-  - a Python client library
+  - `workbench`: full-screen UI, like MySQL Workbench
+  - `shell`: command-line shell
+  - a client library (C++ and Python)
 - **Own storage format:** a binary file format designed from scratch; no SQLite, no database library of any kind
 - **Error messages in Hinglish**
 
 ---
 
-## Requirements
+## Building and running the C++ version
+
+### What you need
+
+- **CMake 3.20 or newer**: [cmake.org/download](https://cmake.org/download/)
+- **A C++17 compiler**, one of: MinGW-w64 g++, MSVC (Visual Studio 2019 or newer), g++ or clang
+- **Git** and **internet access on the first build**: CMake downloads three libraries by itself
+  (nlohmann/json, Catch2 for the tests, and FTXUI for the workbench). Nothing else is installed
+  by hand.
+- **Python is optional**. Only the cross-check tests (C++ against the Python engine) use it, and
+  they are left out of the test run if Python is not found.
+
+### Build
+
+The quickest way is the helper script in the repository root. It finds CMake, configures a
+Release build, builds with all cores and prints where the program is:
+
+```powershell
+.\build.ps1            # Windows PowerShell (add -Test to run the tests afterwards)
+```
+```bash
+./build.sh             # Linux / macOS (add --test to run the tests afterwards)
+```
+
+Or run CMake yourself (all commands from the repository root):
+
+```powershell
+# Windows, MinGW-w64 (g++ and cmake must be on PATH)
+cmake -S cpp -B cpp/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build --parallel
+
+# Windows, MSVC (Developer PowerShell for Visual Studio)
+cmake -S cpp -B cpp/build -G "Visual Studio 17 2022"
+cmake --build cpp/build --config Release --parallel
+```
+```bash
+# Linux / macOS
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build --parallel
+```
+
+The program is one executable:
+
+| Build | Path of the program |
+|-------|---------------------|
+| MinGW, Linux, macOS | `cpp/build/meradb_cli` (`.exe` on Windows) |
+| MSVC / Visual Studio | `cpp/build/Release/meradb_cli.exe` |
+
+To type less, give it a short name for the current terminal (adjust the path for MSVC):
+
+```powershell
+Set-Alias meradb_cli (Resolve-Path cpp\build\meradb_cli.exe)     # PowerShell
+```
+```bash
+alias meradb_cli="$PWD/cpp/build/meradb_cli"                     # bash / zsh
+```
+
+Check it works: `meradb_cli --version` prints `MeraDB 1.0.0`, and `meradb_cli --help` lists the
+commands. (The help text calls the program `meradb`; it is the same program.)
+
+**Building without the workbench.** `-DMERADB_WORKBENCH=OFF` (script: `-NoWorkbench` /
+`--no-workbench`) leaves out the full-screen workbench, so FTXUI is not downloaded and not
+compiled; `meradb_cli workbench` then prints a note and exits. For a machine with no internet,
+unpack the FTXUI v5.0.0 source tarball somewhere and add
+`-DFETCHCONTENT_SOURCE_DIR_FTXUI=<that folder>`. nlohmann/json and Catch2 are still fetched on
+the first configure; copy a finished `cpp/build` folder to such a machine, or see
+[docs/CPP.md](docs/CPP.md).
+
+### Run it
+
+The commands and options are the same as the Python version's (see the
+[command reference](#command-reference), where `meradb` is the Python program; for C++ type
+`meradb_cli` instead).
+
+```bash
+meradb_cli start                       # server in the background (port 6372)
+meradb_cli status                      # is it running? exit code 0 = yes, 3 = no
+meradb_cli shell                       # command-line shell (uses the server if running)
+meradb_cli workbench                   # full-screen UI (needs a real terminal, at least 60 x 24)
+meradb_cli run examples/demo.mdb       # run a script file
+meradb_cli stop                        # stop the background server
+meradb_cli server                      # or: run the server in this terminal (Ctrl+C stops it)
+```
+
+If no server is running, `shell`, `workbench` and `run` open the data folder directly
+("local mode") and print a note on stderr. Add `--local` to ask for that. Inside the shell, type
+statements ending with `;`, `.help` for help and `.exit` to leave (see [Shell commands](#shell-commands)).
+
+Where the data goes: see [Where the data lives](#where-the-data-lives). The C++ and Python
+versions use the same default folder and the same file formats. Set `MERADB_DATA` (or pass
+`-D <folder>`) to use another folder, for example a throw-away one while experimenting:
+
+```powershell
+$env:MERADB_DATA = "$env:TEMP\mera-try"        # PowerShell
+```
+```bash
+export MERADB_DATA=/tmp/mera-try                # bash / zsh
+```
+
+### A 5-minute demo
+
+1. Build (above) and set a throw-away `MERADB_DATA`.
+2. `meradb_cli run examples/demo.mdb`: creates a `college` database and walks through every
+   feature top to bottom (tables, constraints, joins, grouping, views, users, triggers,
+   procedures, transactions, `SAMJHAO`), then drops it again. Its last statements show
+   friendly error messages on purpose, so the exit code is 1; that is expected.
+3. `meradb_cli run examples/rdbms_lab_coverage.mdb`: a longer script that covers a standard
+   first DBMS course syllabus topic by topic.
+4. `meradb_cli start`, then `meradb_cli shell`: type
+   `BANAO TABLE students (id INT MUKHYA KUNJI, naam TEXT ZAROORI, cgpa FLOAT);`, a
+   `DAALO MEIN students MAAN (1, 'Ravi', 8.4), (2, 'Priya', 9.1);` and
+   `DIKHAO naam SE students JAHAN cgpa > 9;` (the output is shown in
+   [Quick start](#quick-start-python-version) below, and is identical).
+5. `meradb_cli workbench` (the server is still running): press **F5** to run the editor text, **F6** for
+   the query plan, **F1** for help, **Ctrl+Q** to quit.
+6. `meradb_cli stop`.
+
+### Run the tests
+
+```bash
+ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
+```
+
+There are about 780 tests: unit tests for every layer, and the cross-checks that compare the
+C++ program with the Python engine (these need Python, and the workbench comparison also
+needs the `textual` package, otherwise it is reported as skipped). The first full run takes a
+few minutes.
+
+### More about the C++ version
+
+[docs/CPP.md](docs/CPP.md) has the details: the module layout, how it is verified against
+Python, the shell and workbench, the manual terminal checklist, and the **list of known
+divergences** from the Python engine (all small and deliberate). Platforms: the Windows MinGW
+build is the one built and tested so far. For Linux see `docs/CPP.md`; macOS and the MSVC
+build have not been verified yet.
+
+---
+
+## The Python version
+
+The Python implementation in `meradb/` is the reference the C++ version was ported from. It is
+complete on its own and installs as the `meradb` command.
+
+### Requirements (Python version)
 
 - **Python 3.10 or newer**: [python.org/downloads](https://www.python.org/downloads/).
   On Windows, tick **"Add python.exe to PATH"** in the installer.
@@ -107,9 +257,9 @@ On macOS/Linux use `python3` instead of `python` if needed.
 
 ---
 
-## Installation
+### Installation (Python version)
 
-### Windows (PowerShell or Command Prompt)
+#### Windows (PowerShell or Command Prompt)
 
 ```powershell
 git clone https://github.com/SarmaHighOnCode/meradb.git
@@ -123,7 +273,7 @@ meradb --version
 > If PowerShell refuses to run `activate`, run this once:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
-### macOS / Linux
+#### macOS / Linux
 
 ```bash
 git clone https://github.com/SarmaHighOnCode/meradb.git
@@ -149,7 +299,7 @@ meradb --version
 
 ---
 
-## Quick start
+### Quick start (Python version)
 
 ```bash
 meradb start                      # 1. start the database server in the background
@@ -188,7 +338,9 @@ They print a note when they do this.
 
 ## Command reference
 
-`meradb` with no command is the same as `meradb shell`. Add `--help` to any command for its options.
+The commands below are written for the Python program `meradb`. The C++ program
+`meradb_cli` has the same commands and options (`-D`, `--port`, `--local`, ...); differences are
+listed in [docs/CPP.md](docs/CPP.md). `meradb` with no command is the same as `meradb shell`. Add `--help` to any command for its options.
 
 | Command | What it does |
 |---------|--------------|
@@ -590,6 +742,10 @@ MeraDB is a learning-scale database:
 
 ## Running the tests
 
+C++ version: see [Run the tests](#run-the-tests) above (`ctest`, about 780 tests).
+
+Python version:
+
 ```bash
 python -m unittest
 ```
@@ -606,6 +762,8 @@ Run one file with, for example, `python -m unittest tests.test_constraints`.
 ---
 
 ## Project structure
+
+Python version (the C++ version is described after this block):
 
 ```
 meradb/
@@ -634,15 +792,23 @@ docs/            documentation
 
 ### C++ implementation
 
-A C++17 port lives in `cpp/`. It shares the Python engine's grammar, output, on-disk formats
-and wire protocol, and is checked against it (example scripts, a client/server interop matrix,
-data folders passed between the engines, a trigger/procedure fuzz). It has the full engine,
-users and privileges, triggers, stored procedures, the TCP server, the `run` / `start` /
-`stop` / `status` commands, the interactive shell (`meradb_cli shell`) and the full-screen workbench
-(`meradb_cli workbench`, built with FTXUI; build option `MERADB_WORKBENCH`, default ON).
-See [docs/CPP.md](docs/CPP.md) for build instructions and status.
+```
+cpp/
+  include/meradb/   headers (one per Python module, plus the shell and workbench)
+  src/              sources: engine, storage, server, client, shell, workbench
+  tests/            ~780 ctest tests: unit tests, golden files, comparison scripts
+  cmake/            helper scripts for the build
+build.ps1, build.sh build helpers (Windows / POSIX)
+```
 
-### Use from Python
+The C++ port shares the Python engine's grammar, output, on-disk formats and wire protocol,
+and is checked against it (example scripts, a client/server interop matrix, data folders passed
+between the engines, a trigger/procedure fuzz). It has the full engine, users and privileges,
+triggers, stored procedures, the TCP server, `run` / `start` / `stop` / `status`, the
+interactive shell and the full-screen workbench (FTXUI). The module-by-module mapping from
+the Python files is in [docs/CPP.md](docs/CPP.md).
+
+### Use from Python (Python version)
 
 ```python
 from meradb.client import Connection
@@ -665,4 +831,4 @@ engine.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1);")
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it works inside: storage format byte by byte, planner, indexes, joins, transactions, concurrency
 - [docs/ROADMAP.md](docs/ROADMAP.md): how the project was built, week by week
 - [docs/REPORT.md](docs/REPORT.md): project report
-- [docs/CPP.md](docs/CPP.md): the C++ port (build instructions, layout, verification, status)
+- [docs/CPP.md](docs/CPP.md): the C++ port (build instructions, layout, verification, known divergences, status)
