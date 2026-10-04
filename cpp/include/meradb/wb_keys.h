@@ -66,6 +66,18 @@ inline bool isQuit(const ftxui::Event& e) { return matches(Action::Quit, e); }
 inline bool isInterrupt(const ftxui::Event& e) { return matches(Action::Interrupt, e); }
 inline bool isSelectAll(const ftxui::Event& e) { return matches(Action::SelectAll, e); }
 
+// ---- aliases ----
+// Home and End as tmux / screen / the Linux console (ESC [ 1 ~, ESC [ 4 ~), rxvt (ESC [ 7 ~, ESC [ 8 ~) and application
+// cursor mode (ESC O H, ESC O F) send them; FTXUI 5 only maps ESC [ H and ESC [ F. Every panel then sees the plain key.
+inline ftxui::Event normalize(const ftxui::Event& e) {
+    if (!e.is_character() && !e.is_mouse()) {
+        const std::string& in = e.input();
+        if (in == "\x1b[1~" || in == "\x1b[7~" || in == "\x1bOH") return ftxui::Event::Home;
+        if (in == "\x1b[4~" || in == "\x1b[8~" || in == "\x1bOF") return ftxui::Event::End;
+    }
+    return e;
+}
+
 // ---- editor cursor keys ----
 struct EditorKey {
     ftxui::Event event;

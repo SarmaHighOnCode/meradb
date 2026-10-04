@@ -194,6 +194,13 @@ Element HelpDialog::render() {
 }
 
 bool HelpDialog::onEvent(const Event& e, Session& session) {
+    if (e.is_mouse()) {
+        Event copy = e;   // Event::mouse() is not const
+        const Mouse& mouse = copy.mouse();
+        if (mouse.motion == Mouse::Pressed && mouse.button == Mouse::WheelUp) scrollWheel(-1);
+        else if (mouse.motion == Mouse::Pressed && mouse.button == Mouse::WheelDown) scrollWheel(1);
+        return true;
+    }
     if (e == Event::Escape || keys::isHelp(e) || e == Event::Character("q")) {
         session.closeModal();
         return true;

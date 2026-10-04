@@ -617,6 +617,88 @@ TEST_CASE("wbe2e a local connect is refused while a transaction is open, and wor
     CHECK(rig.s().table()->rows.at(0).at(0).text == "0");
 }
 
+TEST_CASE("wbe2e the footer fits 80 columns and keeps F1 and ^Q", "[wbe2e]") {
+    E2e rig;
+    for (int width : {60, 70, 80, 100, 120}) {
+        auto lines = rig.screen(width, 24);
+        const std::string& footer = lines[23];
+        INFO(width << ": " << footer);
+        CHECK(footer.find("F1 Madad") != std::string::npos);
+        CHECK(footer.find("^Q Bahar") != std::string::npos);
+        CHECK(footer.find("F5 Chalao") != std::string::npos);
+    }
+    auto wide = rig.screen(120, 24)[23];
+    for (const char* label : {"^S CSV", "^O Connect", "^L Log saaf", "Agli"}) CHECK(wide.find(label) != std::string::npos);
+}
+
+TEST_CASE("wbe2e Home and End as tmux and rxvt send them, in the editor and the tree", "[wbe2e]") {
+    E2e rig;
+    rig.type("abc");
+    rig.press(Event::Special("\x1b[1~"));
+    rig.type("x");
+    CHECK(rig.s().editor().text() == "xabc");
+    rig.press(Event::Special("\x1b[4~"));
+    rig.type("y");
+    CHECK(rig.s().editor().text() == "xabcy");
+    rig.press(Event::Special("\x1b[7~"));
+    rig.type("z");
+    CHECK(rig.s().editor().text() == "zxabcy");
+    rig.press(Event::Special("\x1b[8~"));
+    rig.type("w");
+    CHECK(rig.s().editor().text() == "zxabcyw");
+    rig.run("BANAO TABLE t (a ANK);");
+    rig.press(Event::Tab);   // the tree
+    rig.press(Event::Special("\x1b[4~"));
+    CHECK(rig.s().tree().selected() == static_cast<int>(rig.s().tree().rows().size()) - 1);
+    rig.press(Event::Special("\x1bOH"));
+    CHECK(rig.s().tree().selected() == 0);
+}
+
+TEST_CASE("wbe2e C1 control characters never reach the screen", "[wbe2e]") {
+    E2e rig;
+    rig.s().logLine(LogKind::Plain, "a\xC2\x9B" "31mb\xC2\x85" "c \xC2\xA0 \xC3\xA9");
+    Screen screen(1, 1);
+    auto lines = rig.screen(kW, kH, &screen);
+    INFO(dump(lines));
+    for (const auto& line : lines) {
+        CHECK(line.find("\xC2\x9B") == std::string::npos);
+        CHECK(line.find("\xC2\x85") == std::string::npos);
+    }
+    CHECK(has(lines, "a 31mb c"));
+    CHECK(has(lines, "\xC3\xA9"));   // ordinary non-ASCII text is untouched
+}
+
+TEST_CASE("wbe2e clicks after the window got too small reach nothing, and the wheel scrolls the help", "[wbe2e]") {
+    E2e rig;
+    auto click = [](int x, int y) {
+        Mouse mouse;
+        mouse.button = Mouse::Left;
+        mouse.motion = Mouse::Pressed;
+        mouse.x = x;
+        mouse.y = y;
+        return Event::Mouse("", mouse);
+    };
+    rig.screen(120, 40);
+    rig.screen(40, 10);   // too small: the message replaces the panels
+    rig.press(click(60, 12));   // where the results panel used to be
+    CHECK(rig.ui->focus() == Panel::Editor);
+    rig.screen(120, 40);
+    rig.press(click(60, 12));
+    CHECK(rig.ui->focus() == Panel::Results);
+
+    rig.press(Event::F1);
+    auto before = rig.screen(120, 40);
+    Mouse wheel;
+    wheel.button = Mouse::WheelDown;
+    wheel.motion = Mouse::Pressed;
+    wheel.x = 50;
+    wheel.y = 20;
+    CHECK(rig.press(Event::Mouse("", wheel)));
+    auto after = rig.screen(120, 40);
+    CHECK(before != after);
+    CHECK(rig.s().modal() == Modal::Help);
+}
+
 TEST_CASE("wbe2e a Tab inside a bracketed paste is text, a typed Tab moves the focus", "[wbe2e]") {
     E2e rig;
     rig.press(Event::Special(keys::kPasteStart));

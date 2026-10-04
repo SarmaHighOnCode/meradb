@@ -18,21 +18,34 @@ Color rgbColor(int rgb) {
                       static_cast<std::uint8_t>(rgb & 255));
 }
 
-// Control characters would reach the terminal as commands (ESC) or break the column arithmetic (tab): show a space.
+// Control characters would reach the terminal as commands (ESC, and the C1 set U+0080..U+009F, whose UTF-8 form is
+// C2 80..C2 9F: U+009B is a CSI) or break the column arithmetic (tab): show a space (one for each C1 character).
+bool isC1At(const std::string& s, std::size_t i) {
+    return static_cast<unsigned char>(s[i]) == 0xC2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) >= 0x80 &&
+           static_cast<unsigned char>(s[i + 1]) <= 0x9F;
+}
 std::string printable(const std::string& s) {
     bool clean = true;
-    for (char c : s) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (u < 0x20 || u == 0x7f) {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const unsigned char u = static_cast<unsigned char>(s[i]);
+        if (u < 0x20 || u == 0x7f || isC1At(s, i)) {
             clean = false;
             break;
         }
     }
     if (clean) return s;
-    std::string out = s;
-    for (char& c : out) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (u < 0x20 || u == 0x7f) c = ' ';
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const unsigned char u = static_cast<unsigned char>(s[i]);
+        if (u < 0x20 || u == 0x7f) {
+            out += ' ';
+        } else if (isC1At(s, i)) {
+            out += ' ';
+            ++i;
+        } else {
+            out += s[i];
+        }
     }
     return out;
 }

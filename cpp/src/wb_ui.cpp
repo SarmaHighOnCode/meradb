@@ -156,13 +156,29 @@ Element WorkbenchUi::Impl::headerRow(int w) {
 }
 
 Element WorkbenchUi::Impl::footerRow(int w) {
-    struct Item { const char* key; const char* what; };
-    static const Item items[] = {{"F5", "Chalao"},      {"F6", "Samjhao"},   {"^\xE2\x86\x91", "Pichli"},
-                                 {"^\xE2\x86\x93", "Agli"}, {"^S", "CSV"},   {"^O", "Connect"},
-                                 {"^L", "Log saaf"},    {"F1", "Madad"},     {"^Q", "Bahar"}};
+    // Like Textual's footer, what does not fit is left out; the least useful labels go first so that F1 and ^Q (how to
+    // get help and how to leave) always show. `drop` is the level at which a label gives way (0 = never).
+    struct Item { const char* key; const char* what; int drop; };
+    static const Item items[] = {{"F5", "Chalao", 0},      {"F6", "Samjhao", 0},  {"^\xE2\x86\x91", "Pichli", 0},
+                                 {"^\xE2\x86\x93", "Agli", 2}, {"^S", "CSV", 4},    {"^O", "Connect", 3},
+                                 {"^L", "Log saaf", 1}, {"F1", "Madad", 0},    {"^Q", "Bahar", 0}};
+    auto widthOf = [&](int dropLevel) {
+        int total = 1;   // the leading blank
+        bool firstItem = true;
+        for (const Item& item : items) {
+            if (item.drop != 0 && item.drop <= dropLevel) continue;
+            if (!firstItem) total += 2;
+            firstItem = false;
+            total += string_width(item.key) + 1 + string_width(item.what);
+        }
+        return total;
+    };
+    int dropLevel = 0;
+    while (dropLevel < 4 && widthOf(dropLevel) > w) ++dropLevel;
     Line line;
     bool first = true;
     for (const Item& item : items) {
+        if (item.drop != 0 && item.drop <= dropLevel) continue;
         if (!first) appendSegment(line, "  ", Style());
         first = false;
         appendSegment(line, item.key, fgStyle(palette::kCyan, true));
@@ -178,6 +194,10 @@ Element WorkbenchUi::Impl::footerRow(int w) {
 
 Element WorkbenchUi::Impl::layout(int w, int h) {
     if (w < WorkbenchUi::kMinWidth || h < WorkbenchUi::kMinHeight) {
+        tree->forgetBox();   // nothing is drawn, so a click must not reach an invisible panel
+        results->forgetBox();
+        log->forgetBox();
+        editor->forgetBox();
         Element message = text(kTooSmall);
         return center(message);
     }
@@ -265,7 +285,7 @@ bool WorkbenchUi::Impl::dispatch(const Event& e) {
 }
 
 bool WorkbenchUi::Impl::handle(const Event& e) {
-    const bool handled = dispatch(e);
+    const bool handled = dispatch(keys::normalize(e));
     if (const std::optional<Panel> request = session.takeFocusRequest()) focus = *request;
     return handled;
 }

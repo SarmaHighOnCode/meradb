@@ -30,6 +30,7 @@ public:
     void setFocused(bool focused) { focused_ = focused; }
     bool focused() const { return focused_; }
     const ftxui::Box& box() const { return box_; }   // where the panel was drawn last frame (mouse hit-tests)
+    void forgetBox() { box_ = ftxui::Box{0, -1, 0, -1}; }   // the panel is not on screen: nothing can hit it
     bool Focusable() const override { return true; }
     // Mouse support: a wheel step (-1 up, +1 down) or a left click at a screen position inside box().
     virtual void scrollWheel(int /*direction*/) {}
