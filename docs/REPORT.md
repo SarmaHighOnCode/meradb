@@ -40,7 +40,7 @@ verified by 183 automated tests.
 The whole system was then ported to **C++**, which is the version submitted for the course
 (Chapter 10). The C++ version reads and writes the same data files and speaks the same network
 protocol, and it is checked against the Python version by differential testing, in addition to
-about 780 automated tests.
+about 780 automated tests (783 on Windows, 781 on Linux).
 
 ## 1. Introduction
 
@@ -338,7 +338,7 @@ FTXUI for the workbench) are downloaded by CMake itself with `FetchContent`; not
 installed by hand. The engine, server and shell form one static library (`meradb_core`) that does
 not depend on FTXUI; the workbench is a second library (`meradb_workbench`), and both are linked
 into one program, `meradb_cli`. The option `-DMERADB_WORKBENCH=OFF` leaves the workbench out.
-The code compiles with `-Wall -Wextra` (`/W4` for MSVC) without warnings. Two build-time steps
+The code compiles with `-Wall -Wextra` (`/W4` for MSVC) without warnings (verified with MinGW-w64 g++ 16.1 and, on Linux, g++ 15 and clang 21). Two build-time steps
 are worth knowing: `docs/LANGUAGE.md` is turned into a byte array and compiled into the program
 (it is shown in the workbench help), and on Windows a small patch is applied to the downloaded
 FTXUI source so that emoji can be typed. `build.ps1` and `build.sh` wrap the CMake commands.
@@ -482,8 +482,8 @@ Ctrl+S, Ctrl+O, F1, Ctrl+L, Ctrl+Q) and Hinglish labels. Two design points:
 ### 10.12 What was verified where
 | Platform / toolchain | Status |
 |----------------------|--------|
-| Windows 11, MinGW-w64 g++ (Release and Debug) | Built with `build.ps1` (Release); all 780 `ctest` tests passed; warning free |
-| Linux (POSIX code paths, g++/clang) | See `docs/CPP.md` for the results |
+| Windows 11, MinGW-w64 g++ (Release and Debug) | Built with `build.ps1` (Release); all 783 `ctest` tests passed (3 skipped); no warnings with g++ 16.1 |
+| Linux (Ubuntu under WSL), g++ 15 and clang 21 | All `ctest` tests passed; no warnings with those versions; see `docs/CPP.md` |
 | macOS | **Not yet verified by the author** |
 | Windows, MSVC / Visual Studio | **Not yet verified by the author** (this includes the depth checks on MSVC's smaller default stack) |
 

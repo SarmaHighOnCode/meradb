@@ -14,7 +14,7 @@ files, same network protocol):
 
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![C++ tests](https://img.shields.io/badge/C%2B%2B%20ctest-780%20tests-brightgreen)
+![C++ tests](https://img.shields.io/badge/C%2B%2B%20ctest-783%20tests-brightgreen)
 ![Python tests](https://img.shields.io/badge/python%20tests-183%20passing-brightgreen)
 
 ```sql
@@ -101,9 +101,14 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
 
 - **CMake 3.20 or newer**: [cmake.org/download](https://cmake.org/download/)
 - **A C++17 compiler**, one of: MinGW-w64 g++, MSVC (Visual Studio 2019 or newer), g++ or clang
+  (what has actually been built and tested is listed under [Run the tests](#run-the-tests))
+- **On Debian / Ubuntu**, one line installs the compiler, CMake and Python (Python is only for the tests):
+  `sudo apt-get install -y build-essential cmake python3`
 - **Git** and **internet access on the first build**: CMake downloads three libraries by itself
   (nlohmann/json, Catch2 for the tests, and FTXUI for the workbench). Nothing else is installed
-  by hand.
+  by hand. A first build takes several minutes (about 5 minutes with 20 cores, including the
+  downloads); later builds only recompile what changed. The licences of these libraries are listed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Python is optional**. Only the cross-check tests (C++ against the Python engine) use it, and
   they are left out of the test run if Python is not found.
 
@@ -203,7 +208,11 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
    friendly error messages on purpose, so the exit code is 1; that is expected.
 3. `meradb_cli run examples/rdbms_lab_coverage.mdb`: a longer script that covers a standard
    first DBMS course syllabus topic by topic.
-4. `meradb_cli start`, then `meradb_cli shell`: type
+4. `meradb_cli start`, then `meradb_cli shell`. The server listens on port 6372. If that port is
+   busy, choose another one: `meradb_cli start --port 6373`, and give the same port to the clients
+   (`meradb_cli shell --port 6373`), or set `MERADB_PORT=6373` once in the terminal and both
+   commands use it. (The short form `-p` exists for the client commands only, not for `start`.)
+   In the shell type
    `BANAO TABLE students (id INT MUKHYA KUNJI, naam TEXT ZAROORI, cgpa FLOAT);`, a
    `DAALO MEIN students MAAN (1, 'Ravi', 8.4), (2, 'Priya', 9.1);` and
    `DIKHAO naam SE students JAHAN cgpa > 9;` (the output is shown in
@@ -218,18 +227,29 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
 ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
 ```
 
-There are about 780 tests: unit tests for every layer, and the cross-checks that compare the
+There are 783 tests (781 on Linux, where three pseudo-terminal tests run and the workbench
+comparison is skipped without Textual): unit tests for every layer, and the cross-checks that compare the
 C++ program with the Python engine (these need Python, and the workbench comparison also
 needs the `textual` package, otherwise it is reported as skipped). A full run takes a
-couple of minutes (all 780 passed on Windows with MinGW).
+couple of minutes. What has been built and run so far:
+
+| Platform / compiler | Result |
+|---------------------|--------|
+| Windows 11, MinGW-w64 g++ 16.1 | 783 tests, all passed (3 skipped: the pseudo-terminal tests), no warnings |
+| Linux (Ubuntu under WSL), g++ 15.2 | 781 tests, all passed (1 skipped without Textual), no warnings |
+| Linux (Ubuntu under WSL), clang 21 | all passed, no warnings |
+| macOS, Windows with MSVC | not built yet |
+
+"No warnings" means with `-Wall -Wextra` on exactly those compiler versions.
 
 ### More about the C++ version
 
 [docs/CPP.md](docs/CPP.md) has the details: the module layout, how it is verified against
 Python, the shell and workbench, the manual terminal checklist, and the **list of known
-divergences** from the Python engine (all small and deliberate). Platforms: the Windows MinGW
-build is the one built and tested so far. For Linux see `docs/CPP.md`; macOS and the MSVC
-build have not been verified yet.
+divergences** from the Python engine (all small and deliberate). Platforms verified: Windows with
+MinGW-w64 g++ 16.1, and Linux with g++ 15 and clang 21 (under WSL); macOS and MSVC have not been
+built yet. The libraries the build downloads are credited in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 
@@ -796,7 +816,7 @@ docs/            documentation
 cpp/
   include/meradb/   headers (one per Python module, plus the shell and workbench)
   src/              sources: engine, storage, server, client, shell, workbench
-  tests/            ~780 ctest tests: unit tests, golden files, comparison scripts
+  tests/            783 ctest tests: unit tests, golden files, comparison scripts
   cmake/            helper scripts for the build
 build.ps1, build.sh build helpers (Windows / POSIX)
 ```
@@ -831,4 +851,5 @@ engine.execute("BANAO TABLE t (x INT); DAALO MEIN t MAAN (1);")
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it works inside: storage format byte by byte, planner, indexes, joins, transactions, concurrency
 - [docs/ROADMAP.md](docs/ROADMAP.md): how the project was built, week by week
 - [docs/REPORT.md](docs/REPORT.md): project report
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the libraries the C++ build downloads, with their licences
 - [docs/CPP.md](docs/CPP.md): the C++ port (build instructions, layout, verification, known divergences, status)

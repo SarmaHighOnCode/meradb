@@ -90,7 +90,8 @@ cmake -S cpp -B cpp/build
 cmake --build cpp/build
 ```
 
-The build uses `-Wall -Wextra` (`/W4` on MSVC) and is warning-free.
+The build uses `-Wall -Wextra` (`/W4` on MSVC) and is warning-free with MinGW-w64 g++ 16.1 (Windows) and with
+g++ 15 and clang 21 (Linux). Other compiler versions may report warnings that these did not.
 
 ## Run the tests
 
@@ -290,7 +291,7 @@ cmake --build ~/b-rel -j
 ctest --test-dir ~/b-rel -j4 --output-on-failure
 ```
 
-Results (all builds are warning-free with `-Wall -Wextra`):
+Results (all builds are warning-free with `-Wall -Wextra` on the compilers named in the table):
 
 | Compiler / config | Tests |
 |---|---|
