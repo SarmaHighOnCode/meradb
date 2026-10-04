@@ -31,6 +31,7 @@ const char* keysHelpMarkdown() {
 | **Ctrl+P / Ctrl+N** | History: pichli / agli (jab Ctrl+Up / Ctrl+Down terminal se na aaye) |
 | **Shift+Arrows / Home / End** | Text select karo; F5 / F6 sirf select kiya hua hissa chalate hain |
 | **Ctrl+A** | Editor ka poora text select karo |
+| **q** (madad mein) | Madad band karo, F1 / Esc ki tarah |
 | **PageUp / PageDown** | Results, log, tree aur madad mein scroll karo |
 | **Mouse** | Panel par click karo (focus), wheel se scroll |
 )MD";

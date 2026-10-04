@@ -208,7 +208,7 @@ for a bigger terminal.
 | Ctrl+Up / Ctrl+Down | previous / next query from the history (kept in memory only, consecutive duplicates collapse); the editor gets the focus |
 | Ctrl+S | save the last result table to `exports/meradb-YYYYmmdd-HHMMSS.csv` in the current directory |
 | Ctrl+O | connect dialog: Host, Port, Password (hidden), Database, buttons Connect / Local mode / Cancel; Enter connects, Esc cancels |
-| F1, Esc | open / close the help (these keys plus `docs/LANGUAGE.md`); PageUp / PageDown scroll it |
+| F1, Esc, `q` | open / close the help (`q` only closes it, as in Python; these keys plus `docs/LANGUAGE.md`); PageUp / PageDown scroll it |
 | Ctrl+L | clear the log |
 | Ctrl+Q | quit |
 | Tab, Shift+Tab | next / previous panel |
@@ -591,6 +591,11 @@ These are deliberate and small.
 - **Workbench: needs a terminal; no dependency message**: with stdin or stdout not a terminal it prints one
   line and exits 1; FTXUI is linked in, so the "install Textual" message and the automatic Python fallback do
   not exist. The window needs at least 60 x 24 cells.
+- **Workbench: known limits, left as they are**: every key press redraws the whole screen (about 7 KB of output per
+  key at 120 x 40, without synchronized-update markers); it is instant on a local terminal but could flicker over a
+  slow SSH or classic-console link. At the minimum size the log (10 rows) and the editor (9 rows) are fixed, as in
+  Python, so at 60 x 24 or 80 x 24 the Results panel shows the header and about one row: use a taller window
+  (about 40 rows) to see results comfortably.
 - **Platform coverage**: only the MinGW (Windows) build has been compiled and run so far. The POSIX
   socket and process code paths were written and reviewed but not yet built, and the MSVC build, including
   the depth-32 recursion check on MSVC's smaller default stack, is still to be verified. The terminal

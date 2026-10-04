@@ -64,7 +64,11 @@ def scenario_lifecycle():
         code, out, err = meradb("run", script, "--data", data)  # no --port: found through the pid file
         check("run finds the server through the pid file", "LOCAL mode" not in err, out + err)
 
-        code, out, err = meradb("start", "--data", tempfile.mkdtemp(), "--port", port)
+        other = tempfile.mkdtemp()  # a second folder for the busy-port start; removed below (it used to be left behind)
+        try:
+            code, out, err = meradb("start", "--data", other, "--port", port)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
         check("start on a busy port refuses", code == 1 and err.startswith("Port " + port + " par pehle se kuch aur chal raha hai."), out + err)
 
         code, out, err = meradb("stop", "--data", data)
