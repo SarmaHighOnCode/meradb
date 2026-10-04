@@ -482,7 +482,7 @@ Ctrl+S, Ctrl+O, F1, Ctrl+L, Ctrl+Q) and Hinglish labels. Two design points:
 ### 10.12 What was verified where
 | Platform / toolchain | Status |
 |----------------------|--------|
-| Windows 11, MinGW-w64 g++ (Release and Debug) | Built; the full `ctest` suite was run here; warning free |
+| Windows 11, MinGW-w64 g++ (Release and Debug) | Built with `build.ps1` (Release); all 780 `ctest` tests passed; warning free |
 | Linux (POSIX code paths, g++/clang) | See `docs/CPP.md` for the results |
 | macOS | **Not yet verified by the author** |
 | Windows, MSVC / Visual Studio | **Not yet verified by the author** (this includes the depth checks on MSVC's smaller default stack) |
