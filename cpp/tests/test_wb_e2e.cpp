@@ -748,3 +748,19 @@ TEST_CASE("wbe2e a Tab inside a bracketed paste is text, a typed Tab moves the f
     CHECK(rig.ui->focus() == Panel::Tree);
     CHECK(rig.s().editor().text() == "a    b\nc");
 }
+
+TEST_CASE("wbe2e a character outside the BMP is one editor character, runs, shows in the result and backspaces whole", "[wbe2e]") {
+    E2e rig;
+    const std::string emoji = "\xF0\x9F\x98\x80";   // what the patched Windows input loop delivers for a surrogate pair
+    rig.run("BANAO TABLE t (id INT, s TEXT);");
+    rig.run("DAALO MEIN t (id, s) MAAN (1, 'a" + emoji + "b');");
+    rig.run("DIKHAO * SE t;");
+    auto lines = rig.screen();
+    INFO(dump(lines));
+    CHECK(has(lines, "a" + emoji + "b"));
+    rig.press(keys::ctrl('A'));
+    rig.type("x" + emoji);
+    CHECK(rig.s().editor().text() == "x" + emoji);
+    rig.press(Event::Backspace);
+    CHECK(rig.s().editor().text() == "x");
+}

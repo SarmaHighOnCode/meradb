@@ -69,11 +69,13 @@ if(TARGET meradb_workbench)
     test_wb_panels.cpp
     test_wb_window.cpp
     test_wb_form.cpp
+    test_wb_input.cpp
     test_wb_dialogs.cpp
     test_wb_bridge.cpp
     test_wb_e2e.cpp
   )
   target_link_libraries(meradb_wb_tests PRIVATE meradb_workbench meradb_core Catch2::Catch2WithMain)
+  target_include_directories(meradb_wb_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../ftxui_patch)
   target_compile_definitions(meradb_wb_tests PRIVATE MERADB_LANGUAGE_MD="${CMAKE_CURRENT_SOURCE_DIR}/../../docs/LANGUAGE.md")
   catch_discover_tests(meradb_wb_tests)
 

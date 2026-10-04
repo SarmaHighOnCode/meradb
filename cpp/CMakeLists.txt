@@ -26,6 +26,11 @@ if(MERADB_WORKBENCH)
     URL https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v5.0.0.tar.gz
   )
   FetchContent_MakeAvailable(ftxui)
+  if(WIN32)
+    # FTXUI 5 drops emoji typed on Windows (it converts the two UTF-16 halves of a key event separately).
+    include(cmake/patch_ftxui.cmake)
+    meradb_patch_ftxui_input(${ftxui_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ftxui_patch/ftxui_win_input.h)
+  endif()
 endif()
 
 if(MSVC)

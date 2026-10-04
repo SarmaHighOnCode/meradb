@@ -547,6 +547,15 @@ These are deliberate and small.
   `ESC[200~` and `ESC[201~` as pasted: a Tab there is inserted into the editor (the editor stores a Tab as four
   spaces, Python keeps the tab character) and never moves the focus. A terminal without bracketed paste
   (the classic Windows console) delivers a pasted Tab as a typed one, which moves the focus.
+- **Workbench: characters outside the BMP (emoji) on Windows**: the Windows console hands over a typed or pasted
+  character as UTF-16 units, one key event each, and a pseudo console (Windows Terminal, VS Code) sends an emoji as
+  an Alt+numpad key sequence whose two halves ride on the key-up of Alt. FTXUI 5.0 reads only key-downs and converts
+  every unit on its own, so it dropped the emoji. At configure time (Windows only) `cmake/patch_ftxui.cmake` edits the
+  downloaded FTXUI source: its input loop passes the units through `ftxui_patch::SurrogateJoiner`
+  (`cpp/ftxui_patch/ftxui_win_input.h`, unit-tested in `test_wb_input.cpp`), which joins a high and a low half into
+  one UTF-8 character and drops an orphan half. The edit is idempotent and fails the configure if the FTXUI source is
+  not the expected v5.0.0 (also for a copy given with `FETCHCONTENT_SOURCE_DIR_FTXUI`, which is edited in place).
+  Showing emoji from the database never needed it. POSIX terminals send UTF-8 and need nothing.
 - **Workbench: CSV failure and cell newlines**: a CSV that cannot be written is logged in red
   (`CSV save nahi hua: <reason>`; Python would crash with a traceback). A `\n` or `\r` inside a cell is shown as
   `↵` and a tab as a space, so a table row stays one line; the CSV keeps the raw text.
