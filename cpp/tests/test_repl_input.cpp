@@ -31,12 +31,20 @@ std::string drain(const std::string& input, std::string* prompts = nullptr, cons
 
 }  // namespace
 
-TEST_CASE("shell input: a line ends at LF, CRLF or a lone CR", "[shell]") {
+#ifdef _WIN32
+TEST_CASE("shell input: a line ends at LF, CRLF or a lone CR (Windows, as Python's stdin)", "[shell]") {
     CHECK(drain("a\nb\r\nc\rd\n\ne") == "a|b|c|d||e|EOF");
     CHECK(drain("a\r\n\r\nb\r\n") == "a||b|EOF");
     CHECK(drain("a\r") == "a|EOF");
     CHECK(drain("\r\r\n\n") == "|||EOF");
 }
+#else
+TEST_CASE("shell input: a line ends at LF only (POSIX, as Python's stdin); a CR stays in the line", "[shell]") {
+    CHECK(drain("a\nb\r\nc\rd\n\ne") == "a|b\r|c\rd||e|EOF");
+    CHECK(drain("a\r\n\r\nb\r\n") == "a\r|\r|b\r|EOF");
+    CHECK(drain("a\r") == "a\r|EOF");
+}
+#endif
 
 TEST_CASE("shell input: a last line without a terminator still counts", "[shell]") {
     CHECK(drain("x") == "x|EOF");

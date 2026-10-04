@@ -26,10 +26,14 @@ ReadStatus StreamLineSource::read(const std::string& prompt, std::string& line) 
         if (c == std::istream::traits_type::eof()) break;
         any = true;
         if (c == '\n') return ReadStatus::Line;
+#ifdef _WIN32
+        // Python's stdin translates "\r\n" and a lone "\r" to "\n" on Windows only; on POSIX it splits at "\n"
+        // alone and leaves a "\r" in the line.
         if (c == '\r') {
             if (in_.peek() == '\n') in_.get();
             return ReadStatus::Line;
         }
+#endif
         line.push_back(static_cast<char>(c));
     }
     return any ? ReadStatus::Line : ReadStatus::Eof;

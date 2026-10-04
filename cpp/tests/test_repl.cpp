@@ -432,6 +432,11 @@ TEST_CASE("shell loop: every recorded Python transcript is reproduced exactly", 
     REQUIRE(count > 20);
     for (int i = 0; i < count; ++i) {
         const auto& transcript = all[i];
+#ifndef _WIN32
+        // recorded on Windows, where Python's stdin turns a lone CR into a line break; on POSIX it does not
+        // (shell_diff.py compares the live shells for this script on every platform)
+        if (std::string(transcript.name) == "lone_cr") continue;
+#endif
         DYNAMIC_SECTION(transcript.name) {
             TempDir dir;
             LocalBackend backend(dir.file("data"));
