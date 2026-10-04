@@ -118,3 +118,73 @@ TEST_CASE("wbform ConnectForm builds the request like tui.py _choice", "[wbform]
     CHECK_FALSE(r.password.has_value());
     CHECK_FALSE(r.database.has_value());
 }
+
+TEST_CASE("wbform a field that gets the focus selects its text; typing replaces it", "[wbform]") {
+    ConnectForm form("127.0.0.1", "6372");
+    CHECK(form.field(0).selected());          // the first field starts with the focus
+    CHECK_FALSE(form.field(1).selected());
+    form.next();
+    REQUIRE(form.active() == 1);
+    CHECK(form.field(1).selected());
+    form.field(1).insert("47831");
+    CHECK(form.field(1).text() == "47831");   // 6372 replaced, not appended to
+    CHECK_FALSE(form.field(1).selected());
+    form.field(1).insert("0");
+    CHECK(form.field(1).text() == "478310");  // the selection is gone after the first character
+    // Empty fields have nothing to select; the password field too.
+    form.next();
+    CHECK_FALSE(form.field(2).selected());
+    form.field(2).insert("pw");
+    CHECK(form.field(2).text() == "pw");
+    // Coming back selects again (the cursor was somewhere in the middle).
+    form.previous();
+    form.previous();
+    REQUIRE(form.active() == 0);
+    CHECK(form.field(0).selected());
+    form.field(0).left();                     // a cursor key ends the selection: Left goes to the start
+    CHECK_FALSE(form.field(0).selected());
+    CHECK(form.field(0).cursor() == 0);
+    form.field(0).insert("x");
+    CHECK(form.field(0).text() == "x127.0.0.1");
+    form.next();
+    form.previous();
+    CHECK(form.field(0).selected());
+    form.field(0).right();                    // Right goes to the end
+    CHECK(form.field(0).cursor() == form.field(0).length());
+    CHECK_FALSE(form.field(0).selected());
+    form.next();
+    form.previous();
+    form.field(0).home();
+    CHECK_FALSE(form.field(0).selected());
+    CHECK(form.field(0).cursor() == 0);
+    form.next();
+    form.previous();
+    form.field(0).end();
+    CHECK_FALSE(form.field(0).selected());
+    CHECK(form.field(0).cursor() == form.field(0).length());
+}
+
+TEST_CASE("wbform Backspace and Delete remove a selection; a rejected character keeps it", "[wbform]") {
+    ConnectForm form("example.org", "7000");
+    form.field(0).backspace();
+    CHECK(form.field(0).text().empty());
+    form.previous();   // buttons wrap
+    form.setActive(0);
+    form.field(0).insert("abc");
+    form.setActive(1);
+    form.setActive(0);
+    CHECK(form.field(0).selected());
+    form.field(0).del();
+    CHECK(form.field(0).text().empty());
+    form.setActive(1);
+    CHECK(form.field(1).selected());
+    form.field(1).insert("xyz");              // nothing a digits-only field accepts: the selected text stays
+    CHECK(form.field(1).text() == "7000");
+    CHECK(form.field(1).selected());
+    form.field(1).insert("\t");
+    CHECK(form.field(1).text() == "7000");
+    form.setActive(1);                        // no change of focus: the selection is not renewed or lost
+    CHECK(form.field(1).selected());
+    form.field(1).setText("12");
+    CHECK_FALSE(form.field(1).selected());
+}

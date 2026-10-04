@@ -30,6 +30,13 @@ Line fieldLine(const LineEdit& edit, bool active, int width) {
         return i;
     }();
     Line line;
+    if (active && edit.selected()) {
+        // The whole text is selected (it was just focused): drawn inverse; typing replaces it, a cursor key ends it.
+        Style selection = fgStyle(palette::kText);
+        selection.inverse = true;
+        appendSegment(line, shown, selection);
+        return clipLine(line, std::max(0, displayColumn(shown, edit.cursor()) - width), width);
+    }
     appendSegment(line, shown.substr(0, at), fgStyle(palette::kText));
     int skip = 0;
     if (active) {

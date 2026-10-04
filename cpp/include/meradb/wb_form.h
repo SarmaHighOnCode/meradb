@@ -19,18 +19,24 @@ public:
     int length() const;
     bool isPassword() const { return password_; }
     void insert(const std::string& utf8);    // control characters ignored; with digitsOnly only 0-9 are kept
+                                             // (the selected text, if any, is replaced; nothing kept = nothing replaced)
     void backspace();
     void del();
     void left();
     void right();
     void home();
     void end();
-    void setText(const std::string& text);   // cursor to the end
+    void setText(const std::string& text);   // cursor to the end, nothing selected
+    // Textual's Input selects its whole text when it gets the focus (select_on_focus): the next character typed, Backspace or
+    // Delete replaces / removes it, Left / Home go to the start, Right / End to the end, and every one of them ends the selection.
+    void selectAll();                        // no effect on an empty field
+    bool selected() const { return selected_; }
     bool digitsOnly = false;                 // the Port field: only 0-9 are accepted (Textual: type="integer")
 private:
     std::string text_;
     bool password_;
     int cursor_ = 0;
+    bool selected_ = false;                  // the whole text is selected
 };
 
 enum class FormAction { None, Connect, Local, Cancel };
@@ -52,6 +58,7 @@ public:
     FormAction escape() const { return FormAction::Cancel; }
     ConnectRequest request(bool local) const;   // makeConnectRequest(local, host, port, password, database)
 private:
+    void focusChanged();
     std::array<LineEdit, 4> fields_;
     int active_ = 0;
 };

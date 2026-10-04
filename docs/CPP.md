@@ -250,7 +250,11 @@ header row. The log gets `<n> row(s) CSV mein save: <absolute path>`. A failure 
 (`CSV save nahi hua: <reason>`).
 
 **Connecting.** The dialog starts with the current server's host and port (127.0.0.1 and 6372 for a local
-backend). Connect opens a connection with the values; Local mode opens the data folder of the `--data`
+backend). As in Textual's `Input`, a field selects its whole text when it gets the focus (the Host field when the
+dialog opens, then each field you Tab to): the next character typed replaces it, Backspace / Delete clear it, Left /
+Home go to the start, Right / End to the end, and each of those ends the selection (a character the Port field
+refuses, such as a letter, changes nothing). The Pilot scenario `connect_dialog_select_on_focus` compares this with
+Python key by key. Connect opens a connection with the values; Local mode opens the data folder of the `--data`
 option. A failure logs `Connect nahi hua: <reason>` in bold red and changes nothing; success logs
 `Connected: <description>` in bold green, refreshes the tree and header, and closes the old backend (which
 rolls its transaction back).
@@ -330,9 +334,9 @@ with its worker thread and the real window against a temp data folder (and a rea
 the connect dialog): typing a script, the log and table colours, selection-aware F5 / F6, history, the tree,
 the transaction marker, quitting with a transaction open, Ctrl+Q behind a slow statement, the CSV bytes, the
 connect dialog both ways, the help screen, every size and Unicode alignment. `workbench_diff.py` drives both
-workbenches through `cpp/tests/workbench_scenarios.json` (11 scenarios: start-up, DDL / DML / SELECT, errors,
+workbenches through `cpp/tests/workbench_scenarios.json` (12 scenarios: start-up, DDL / DML / SELECT, errors,
 history and explain, selection, the tree, transactions, CSV, clearing the log, Unicode, connecting to local
-mode): the Python one with Textual's `Pilot` (`workbench_pilot.py`), the C++ one through the `wb_probe`
+mode, the connect dialog's select-on-focus): the Python one with Textual's `Pilot` (`workbench_pilot.py`), the C++ one through the `wb_probe`
 program, and compares what each shows (header, editor, history, results title and cells with their colour
 kind, log entries with their kind, every tree node, the newest CSV) after normalising folders and timings.
 It skips (ctest skip code 77) when Textual is not installed. The highlighter is compared line by line with
@@ -695,6 +699,7 @@ sequences) and note it in the pull request.
 | W18 | Any | `meradb_cli workbench < /dev/null`, `meradb_cli workbench \| cat` | One line on stderr (`Workbench ke liye terminal chahiye ...`), exit code 1, nothing else |
 | W19 | Any | `TERM=dumb meradb_cli workbench`, `NO_COLOR=1` | Not supported / ignored: note what happens (FTXUI decides); the program must not corrupt the terminal |
 | W20 | Any, with a light colour scheme (a white terminal background) | Start, run a `DIKHAO` with 4+ rows, move the results cursor, select editor text with Shift+arrows, Tab through the panels | Zebra rows, cursor rows and the selection are readable (light text on the dark tint); the focused panel's amber border and inverse title are easy to see |
+| W21 | Any | `Ctrl+O`, type `47831` straight away (Host is selected, so it replaces `127.0.0.1`); `Tab` to Port and type `47831`; `Shift+Tab` back and press Right | Each field's text is drawn inverse when it gets the focus and is replaced by what you type; Port shows `47831`, not `637247831`; Right ends the selection |
 
 Results of these go in the pull request, not in the repository.
 

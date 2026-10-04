@@ -115,10 +115,12 @@ TEST_CASE("wbui dialog typing, hidden password, Tab and Escape", "[wbui]") {
     CHECK(screenHas(lines, "******"));
     CHECK_FALSE(screenHas(lines, "secret"));
     rig.press(Event::TabReverse);
-    rig.type("ab5");   // the port takes digits only
+    rig.type("ab5");   // the port takes digits only, and its selected 6372 is replaced by the first digit typed
     lines = rig.screen(120, 40);
-    CHECK(screenHas(lines, "63725"));
-    CHECK_FALSE(screenHas(lines, "ab5"));
+    INFO(dumpLines(lines));
+    CHECK_FALSE(screenHas(lines, "63725"));
+    CHECK_FALSE(screenHas(lines, "ab5"));   // (the header still shows the old server's 127.0.0.1:6372)
+    CHECK(rig.s().modal() == Modal::Connect);
     CHECK(rig.press(Event::Escape));
     CHECK(rig.s().modal() == Modal::None);
     CHECK(probe.count() == 0);

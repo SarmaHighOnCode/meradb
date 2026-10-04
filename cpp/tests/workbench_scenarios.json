@@ -159,5 +159,32 @@
     {"set_text": "DIKHAO * SE t;"},
     {"run": true},
     {"snapshot": "after_connect"}
+  ]},
+  {"name": "connect_dialog_select_on_focus", "steps": [
+    {"dialog_open": true},
+    {"dialog_snapshot": "opened"},
+    {"dialog_keys": ["x", "y"]},
+    {"dialog_snapshot": "host_replaced"},
+    {"dialog_keys": ["tab"]},
+    {"dialog_snapshot": "port_focused"},
+    {"dialog_keys": ["a", "4", "7", "8", "3", "1"]},
+    {"dialog_snapshot": "port_typed"},
+    {"dialog_keys": ["tab", "tab"]},
+    {"dialog_snapshot": "database_focused"},
+    {"dialog_keys": ["d", "b", "shift+tab", "shift+tab", "shift+tab"]},
+    {"dialog_snapshot": "host_again"},
+    {"dialog_keys": ["left", "A"]},
+    {"dialog_snapshot": "after_left"},
+    {"dialog_keys": ["tab", "shift+tab", "right", "Z"]},
+    {"dialog_snapshot": "after_right"},
+    {"dialog_keys": ["tab", "shift+tab", "home", "H", "tab", "shift+tab", "end", "E"]},
+    {"dialog_snapshot": "after_home_end"},
+    {"dialog_keys": ["tab", "shift+tab", "backspace"]},
+    {"dialog_snapshot": "after_backspace"},
+    {"dialog_keys": ["q", "tab", "shift+tab", "delete", "tab", "tab"]},
+    {"dialog_snapshot": "after_delete"},
+    {"dialog_keys": ["s", "e", "c", "tab", "shift+tab", "left", "left", "backspace"]},
+    {"dialog_snapshot": "password_edit"},
+    {"dialog_close": true}
   ]}
 ]

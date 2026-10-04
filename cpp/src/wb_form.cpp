@@ -45,11 +45,22 @@ void LineEdit::insert(const std::string& utf8) {
         kept += c;
     }
     if (kept.empty()) return;
+    if (selected_) {
+        text_.clear();
+        cursor_ = 0;
+        selected_ = false;
+    }
     text_.insert(byteOf(text_, cursor_), kept);
     cursor_ += codePoints(kept);
 }
 
 void LineEdit::backspace() {
+    if (selected_) {
+        text_.clear();
+        cursor_ = 0;
+        selected_ = false;
+        return;
+    }
     if (cursor_ <= 0) return;
     const std::size_t from = byteOf(text_, cursor_ - 1);
     const std::size_t to = byteOf(text_, cursor_);
@@ -58,21 +69,47 @@ void LineEdit::backspace() {
 }
 
 void LineEdit::del() {
+    if (selected_) {
+        text_.clear();
+        cursor_ = 0;
+        selected_ = false;
+        return;
+    }
     if (cursor_ >= length()) return;
     const std::size_t from = byteOf(text_, cursor_);
     const std::size_t to = byteOf(text_, cursor_ + 1);
     text_.erase(from, to - from);
 }
 
-void LineEdit::left() { cursor_ = std::max(0, cursor_ - 1); }
-void LineEdit::right() { cursor_ = std::min(length(), cursor_ + 1); }
-void LineEdit::home() { cursor_ = 0; }
-void LineEdit::end() { cursor_ = length(); }
+void LineEdit::left() {
+    if (selected_) cursor_ = 1;   // the selection ends at the start; the step below makes it 0
+    selected_ = false;
+    cursor_ = std::max(0, cursor_ - 1);
+}
+void LineEdit::right() {
+    if (selected_) cursor_ = length() - 1;   // ... and at the end
+    selected_ = false;
+    cursor_ = std::min(length(), cursor_ + 1);
+}
+void LineEdit::home() {
+    selected_ = false;
+    cursor_ = 0;
+}
+void LineEdit::end() {
+    selected_ = false;
+    cursor_ = length();
+}
 
 void LineEdit::setText(const std::string& text) {
     text_.clear();
     cursor_ = 0;
+    selected_ = false;
     insert(text);
+}
+
+void LineEdit::selectAll() {
+    selected_ = !text_.empty();
+    cursor_ = length();
 }
 
 ConnectForm::ConnectForm(const std::string& host, const std::string& port) {
@@ -82,11 +119,27 @@ ConnectForm::ConnectForm(const std::string& host, const std::string& port) {
     fields_[1].setText(port);
     fields_[2] = LineEdit("", true);
     fields_[3] = LineEdit();
+    fields_[0].selectAll();   // the first field starts with the focus
 }
 
-void ConnectForm::next() { active_ = (active_ + 1) % (kFields + kButtons); }
-void ConnectForm::previous() { active_ = (active_ + kFields + kButtons - 1) % (kFields + kButtons); }
-void ConnectForm::setActive(int index) { active_ = std::max(0, std::min(kFields + kButtons - 1, index)); }
+// A field that gets the focus selects its whole text, as Textual's Input does (select_on_focus).
+void ConnectForm::focusChanged() {
+    if (active_ < kFields) fields_[static_cast<std::size_t>(active_)].selectAll();
+}
+void ConnectForm::next() {
+    active_ = (active_ + 1) % (kFields + kButtons);
+    focusChanged();
+}
+void ConnectForm::previous() {
+    active_ = (active_ + kFields + kButtons - 1) % (kFields + kButtons);
+    focusChanged();
+}
+void ConnectForm::setActive(int index) {
+    const int target = std::max(0, std::min(kFields + kButtons - 1, index));
+    const bool changed = target != active_;
+    active_ = target;
+    if (changed) focusChanged();
+}
 
 FormAction ConnectForm::enter() const {
     if (active_ < kFields) return FormAction::Connect;

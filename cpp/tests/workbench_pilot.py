@@ -70,6 +70,17 @@ def observe(app, logged):
     return out
 
 
+def observe_dialog(app):
+    """The connect dialog's four inputs: value, selection (start, end) and which widget has the focus."""
+    from textual.widgets import Input
+
+    inputs = [app.screen.query_one("#" + name, Input) for name in ("host", "port", "password", "database")]
+    return {
+        "focus": app.focused.id if app.focused is not None else None,
+        "fields": [{"text": i.value, "selection": [i.selection.start, i.selection.end]} for i in inputs],
+    }
+
+
 async def run(scenario, data_dir):
     from meradb.engine import Engine
     from meradb.tui import MeraDBApp, QueryEditor
@@ -86,8 +97,16 @@ async def run(scenario, data_dir):
     async with app.run_test(size=(220, 60)) as pilot:
         await pilot.pause()
         for step in scenario["steps"]:
-            editor = app.query_one(QueryEditor)
-            if "set_text" in step:
+            editor = None if any(k.startswith("dialog_") for k in step) else app.query_one(QueryEditor)
+            if "dialog_open" in step:
+                await pilot.press("ctrl+o")
+            elif "dialog_keys" in step:
+                await pilot.press(*step["dialog_keys"])
+            elif "dialog_snapshot" in step:
+                snaps[step["dialog_snapshot"]] = observe_dialog(app)
+            elif "dialog_close" in step:
+                await pilot.press("escape")
+            elif "set_text" in step:
                 editor.text = step["set_text"]
             elif "select" in step:
                 r1, c1, r2, c2 = step["select"]

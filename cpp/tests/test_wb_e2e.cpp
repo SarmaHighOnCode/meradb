@@ -833,3 +833,27 @@ TEST_CASE("wbe2e the focused panel is marked by an amber border and an inverse t
     CHECK_FALSE(screen.PixelAt(logCol, log).inverted);
     CHECK(fgOf(screen, logCol, log) == rgbFg(palette::kPink));
 }
+TEST_CASE("wbe2e Ctrl+O selects each field's text on focus, so typing replaces it", "[wbe2e]") {
+    E2e rig;
+    rig.press(keys::ctrl('O'));
+    rig.screen();
+    CHECK(rig.press(Event::Tab));   // Host -> Port; Port shows 6372, selected
+    Screen screen(1, 1);
+    auto lines = rig.screen(kW, kH, &screen);
+    INFO(dump(lines));
+    const int row = findRow(lines, "6372");
+    REQUIRE(row >= 0);
+    const int col = cellColumn(lines[static_cast<std::size_t>(row)], "6372");
+    for (int i = 0; i < 4; ++i) CHECK(screen.PixelAt(col + i, row).inverted);   // drawn as a selection
+    rig.type("47831");
+    lines = rig.screen();
+    CHECK(has(lines, "47831"));
+    CHECK_FALSE(has(lines, "637247831"));
+    CHECK_FALSE(has(lines, "6372"));
+    // Back on Host: selected again; a cursor key ends the selection, then typing inserts.
+    rig.press(Event::TabReverse);
+    rig.press(Event::ArrowRight);
+    rig.type("9");
+    lines = rig.screen();
+    CHECK(has(lines, "127.0.0.19"));
+}

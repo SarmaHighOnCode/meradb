@@ -4,6 +4,8 @@
 //   wb_probe <scenarios.json> <name> --data <folder> --cwd <folder>
 #include "wb_test_util.h"
 #include "meradb/backend.h"
+#include "meradb/wb_dialogs.h"
+#include "meradb/wb_form.h"
 #include "meradb/wb_session.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -93,6 +95,34 @@ void treeEnter(Session& session, const std::vector<std::string>& path) {
     throw std::runtime_error("no visible tree row for the path");
 }
 
+// The connect dialog as Textual's names for its keys address it: "tab", "shift+tab", "left", "right", "home", "end",
+// "backspace", "delete", "space", or one character.
+ftxui::Event dialogKey(const std::string& name) {
+    if (name == "tab") return ftxui::Event::Tab;
+    if (name == "shift+tab") return ftxui::Event::TabReverse;
+    if (name == "left") return ftxui::Event::ArrowLeft;
+    if (name == "right") return ftxui::Event::ArrowRight;
+    if (name == "home") return ftxui::Event::Home;
+    if (name == "end") return ftxui::Event::End;
+    if (name == "backspace") return ftxui::Event::Backspace;
+    if (name == "delete") return ftxui::Event::Delete;
+    if (name == "space") return ftxui::Event::Character(" ");
+    return ftxui::Event::Character(name);
+}
+
+// Same shape as observe_dialog() in workbench_pilot.py. A selected field is [0, length] (Textual: start 0, end length),
+// otherwise the cursor twice.
+json dialogSnapshot(const ConnectForm& form) {
+    static const char* const ids[] = {"host", "port", "password", "database", "server", "local", "cancel"};
+    json fields = json::array();
+    for (int i = 0; i < ConnectForm::kFields; ++i) {
+        const LineEdit& f = form.field(i);
+        const int a = f.selected() ? 0 : f.cursor();
+        fields.push_back(json{{"text", f.text()}, {"selection", json::array({a, f.cursor()})}});
+    }
+    return json{{"focus", ids[form.active()]}, {"fields", fields}};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -128,8 +158,19 @@ int main(int argc, char** argv) {
                 if (!poster.pumpIdle(session)) throw std::runtime_error("the session did not become idle");
             };
             settle();
+            std::unique_ptr<ConnectForm> form;   // the connect dialog, between dialog_open and dialog_close
             for (const json& step : scenario->at("steps")) {
-                if (step.contains("set_text")) {
+                if (step.contains("dialog_open")) {
+                    const ConnectDefaults defaults = session.connectDefaults();
+                    form.reset(new ConnectForm(defaults.host, defaults.port));
+                } else if (step.contains("dialog_keys")) {
+                    for (const std::string& key : step["dialog_keys"].get<std::vector<std::string>>())
+                        handleConnectEvent(*form, dialogKey(key), session);
+                } else if (step.contains("dialog_snapshot")) {
+                    snaps[step["dialog_snapshot"].get<std::string>()] = dialogSnapshot(*form);
+                } else if (step.contains("dialog_close")) {
+                    form.reset();
+                } else if (step.contains("set_text")) {
                     session.editor().setText(step["set_text"].get<std::string>());
                 } else if (step.contains("select")) {
                     const auto& s = step["select"];
