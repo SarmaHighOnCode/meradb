@@ -10,7 +10,7 @@ using namespace wbtest;
 
 TEST_CASE("wbbridge queues posts until the loop runs, then forwards them in order", "[wbbridge]") {
     std::vector<int> seen;
-    UiBridge bridge([&seen](UiBridge::Task task) { task(); });
+    UiBridge bridge([](UiBridge::Task task) { task(); });
     bridge.post([&seen] { seen.push_back(1); });
     bridge.post([&seen] { seen.push_back(2); });
     CHECK(seen.empty());
@@ -25,7 +25,7 @@ TEST_CASE("wbbridge queues posts until the loop runs, then forwards them in orde
 
 TEST_CASE("wbbridge drops everything after close", "[wbbridge]") {
     int ran = 0;
-    UiBridge bridge([&ran](UiBridge::Task task) { task(); });
+    UiBridge bridge([](UiBridge::Task task) { task(); });
     bridge.post([&ran] { ++ran; });
     bridge.close();
     bridge.start();

@@ -33,8 +33,12 @@ __declspec(noinline)
 __attribute__((noinline))
 #endif
 std::uintptr_t stackPosition() {
+#if defined(__GNUC__) || defined(__clang__)
+    return reinterpret_cast<std::uintptr_t>(__builtin_frame_address(0));
+#else
     volatile char probe = 0;
     return reinterpret_cast<std::uintptr_t>(&probe);
+#endif
 }
 
 // Lowest address of the current thread's stack from the OS, or 0 when it cannot be asked.

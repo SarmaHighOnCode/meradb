@@ -57,8 +57,8 @@ public:
     Utf8Console& operator=(const Utf8Console&) = delete;
 
 private:
-    unsigned savedOutput_ = 0;  // 0 = left alone
-    unsigned savedInput_ = 0;
+    [[maybe_unused]] unsigned savedOutput_ = 0;  // 0 = left alone (Windows only)
+    [[maybe_unused]] unsigned savedInput_ = 0;
 };
 
 // Reads one line from the terminal WITHOUT echoing it (a password prompt, like
@@ -119,8 +119,8 @@ public:
     bool enable();
 
 private:
-    unsigned savedMode_ = 0;
-    bool changed_ = false;
+    [[maybe_unused]] unsigned savedMode_ = 0;  // Windows only
+    [[maybe_unused]] bool changed_ = false;
 };
 
 // While a guard exists, Ctrl+C does not end the process: it only sets a flag that the shell reads (and,
