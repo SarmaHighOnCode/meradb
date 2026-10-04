@@ -150,6 +150,17 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME wb_cli_smoke
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wb_cli_smoke.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(wb_cli_smoke PROPERTIES TIMEOUT 120)
+  # Pseudo-terminal tests: skip (exit 77) where Python has no pty module (Windows).
+  add_test(NAME pty_shell
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pty_shell.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(pty_shell PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  if(TARGET wb_keyprobe)
+    add_test(NAME pty_keys
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pty_keys.py $<TARGET_FILE:wb_keyprobe>)
+    add_test(NAME pty_workbench
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pty_workbench.py $<TARGET_FILE:meradb_cli>)
+    set_tests_properties(pty_keys pty_workbench PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  endif()
   if(TARGET wb_probe)
     # Skips (exit 77) when Python has no Textual.
     add_test(NAME workbench_diff

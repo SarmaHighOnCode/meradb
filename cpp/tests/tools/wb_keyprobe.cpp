@@ -6,6 +6,7 @@
 //   wb_keyprobe --guard   with the workbench's sys::TerminalModeGuard: Ctrl+C, Ctrl+S, Ctrl+Q, Ctrl+O and Ctrl+R must
 //                         show up as bytes 03 13 11 0F 12 and must neither end nor freeze the probe
 #include "meradb/sys_compat.h"
+#include "meradb/wb_keys.h"
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -39,6 +40,27 @@ std::string nameOf(const Event& e) {
         if (e == k.event) return std::string(" = ") + k.name;
     return "";
 }
+
+// What the workbench does with the event (wb_keys.h), so a terminal's keys can be checked against the tables.
+std::string meaningOf(const Event& raw) {
+    using namespace meradb::wb;
+    const Event e = keys::normalize(raw);
+    struct Named { keys::Action action; const char* name; };
+    const Named actions[] = {{keys::Action::Run, "Run"}, {keys::Action::Explain, "Explain"},
+                             {keys::Action::HistoryPrev, "HistoryPrev"}, {keys::Action::HistoryNext, "HistoryNext"},
+                             {keys::Action::Export, "Export"}, {keys::Action::Connect, "Connect"},
+                             {keys::Action::ClearLog, "ClearLog"}, {keys::Action::Help, "Help"},
+                             {keys::Action::Quit, "Quit"}, {keys::Action::Interrupt, "Interrupt"},
+                             {keys::Action::SelectAll, "SelectAll"}};
+    for (const auto& a : actions)
+        if (keys::matches(a.action, e)) return std::string(" -> action ") + a.name;
+    if (const keys::EditorKey* k = keys::findEditorKey(e)) {
+        static const char* moves[] = {"Left", "Right", "Up", "Down", "Home", "End", "DocStart", "DocEnd",
+                                      "PageUp", "PageDown", "WordLeft", "WordRight"};
+        return std::string(" -> editor ") + moves[static_cast<int>(k->move)] + (k->extendSelection ? " +select" : "");
+    }
+    return "";
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -60,7 +82,7 @@ int main(int argc, char** argv) {
             return true;
         }
         std::string line = "bytes: " + hex(e.input()) + (e.is_character() ? "[character] " : "") +
-                           (e.is_mouse() ? "[mouse] " : "") + nameOf(e);
+                           (e.is_mouse() ? "[mouse] " : "") + nameOf(e) + meaningOf(e);
         seen.push_front(line);
         if (seen.size() > 20) seen.pop_back();
         return true;
