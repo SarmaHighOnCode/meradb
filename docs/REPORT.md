@@ -34,8 +34,13 @@ The system includes:
 MeraDB runs as a **client–server** system: a background server on TCP port 6372,
 a command-line shell, and a full-screen "workbench" modelled on MySQL Workbench. It supports the
 complete set of DDL and DML commands, plus FOREIGN KEY, CHECK, a DATE type, VARCHAR(n)/
-NUMBER(p,s) length limits, RENAME and output column aliases, and is verified by 183
-automated tests.
+NUMBER(p,s) length limits, RENAME and output column aliases, and the Python version is
+verified by 183 automated tests.
+
+The whole system was then ported to **C++**, which is the version submitted for the course
+(Chapter 10). The C++ version reads and writes the same data files and speaks the same network
+protocol, and it is checked against the Python version by differential testing, in addition to
+about 780 automated tests.
 
 ## 1. Introduction
 
@@ -88,6 +93,10 @@ designed deliberately, and the result stays easy to read.
 | Library (workbench UI only) | Textual 8.x |
 | OS | Windows, Linux or macOS |
 | Hardware | Any machine that runs Python; a few MB of disk |
+
+These are the requirements of the Python version. The C++ version needs CMake 3.20 or newer and
+a C++17 compiler instead (see section 10.3); Python is then needed only for the optional
+cross-check tests.
 
 ## 4. System design
 
@@ -190,7 +199,8 @@ In total, MeraDB is about 4,800 lines of Python, plus about 1,400 lines of tests
 
 ## 6. Testing
 
-MeraDB has **183 automated tests** (`python -m unittest`):
+The Python version of MeraDB has **183 automated tests** (`python -m unittest`). The C++
+version has its own, larger suite, described in section 10.6:
 
 | Test file | Tests | What it checks |
 |-----------|-------|----------------|
@@ -270,6 +280,220 @@ The Hinglish syntax makes a query's structure easy to see, and the modular desig
 (separate tokenizer, parser, planner, executor and storage) mirrors production systems
 used in industry.
 
+<!-- ===================== BEGIN CHAPTER 10: C++ IMPLEMENTATION ===================== -->
+
+## 10. C++ implementation
+
+> Chapters 1 to 9 describe the first implementation, written in Python. This chapter
+> describes the second one, written in C++, which is the version submitted for the course.
+> The Python version was kept and is used as the reference to check the C++ version against.
+> The source is in `cpp/`; the detailed technical notes are in `docs/CPP.md`.
+
+### 10.1 Motivation
+The course requires the project to be written in C++. The Python version already worked, so the
+task became a *port*: rewrite every layer in C++ and keep the behaviour the same. This had
+a useful side effect. Because the Python engine was already finished, it could be used as an
+answer key: for any statement, the C++ engine must print exactly what the Python engine prints.
+That is a much stronger test than writing expected values by hand.
+
+The goal was **compatibility in three places**:
+1. the same Hinglish language and the same output text (including error messages);
+2. the same **files on disk**, so a data folder written by one version can be opened by the other;
+3. the same **network protocol**, so a Python client can talk to a C++ server and the other way round.
+
+### 10.2 Architecture: Python module to C++ module
+The layers of Chapter 4 were kept one for one. Each Python module has a C++ header and source
+file with the same job (headers in `cpp/include/meradb/`, sources in `cpp/src/`):
+
+| Python module | C++ module | Purpose |
+|---------------|------------|---------|
+| `tokenizer.py` | `tokenizer` | Characters to tokens |
+| `ast_nodes.py`, `parser.py` | `ast`, `parser` | Syntax tree, recursive-descent parser |
+| `planner.py` | `planner` | Name binding, index vs. scan, join strategy |
+| `engine.py` | `engine` (`Instance`, `Engine`) | Executor, sessions, transactions, recovery |
+| `evaluator.py`, `aggregates.py` | `evaluator`, `aggregates` | Expressions, NULL logic, aggregates |
+| `storage.py`, `table.py`, `catalog.py`, `datatypes.py` | `storage`, `table`, `catalog`, `datatypes` | Binary heap files, hash indexes, schemas, types |
+| `users.py` | `users`, `crypto` | Users and privileges; SHA-256 / PBKDF2 written in the project |
+| `protocol.py` | `protocol`, `pyjson` | Wire format; JSON written the way Python writes it |
+| `server.py`, `client.py` | `server`, `client` | TCP server and client library |
+| `cli.py` | `cli`, `server_control`, `main` | The `start`, `stop`, `status`, `run` commands |
+| `repl.py` | `repl`, `repl_text`, `cli_format` | The interactive shell |
+| `highlight.py`, `tui.py` | `highlight`, `wb_*` files | Syntax colours; the full-screen workbench |
+
+A few files have no Python counterpart: `net_compat` (Windows sockets vs. POSIX sockets),
+`sys_compat` (environment, time, terminal handling) and `stack_guard` (section 10.7). Platform
+specific headers are included only in these files, so the rest of the code is portable.
+
+Two C++ specific design choices: syntax-tree nodes are owned by `std::unique_ptr` (no raw
+`new` or `delete` anywhere), and a database value is a `Value` class built on `std::variant`.
+Errors are C++ exceptions that carry the same `[Stage Galti] message` text as Python.
+
+In total the C++ code is about 19,000 lines in `cpp/src` and `cpp/include`, plus about 23,000
+lines of tests and test data (much of the latter is generated "golden" data, see 10.6).
+
+### 10.3 Build system
+The project is built with **CMake 3.20 or newer** and needs a C++17 compiler (MinGW-w64 g++,
+MSVC, g++ or clang). The libraries it uses (nlohmann/json for the catalog, Catch2 for tests,
+FTXUI for the workbench) are downloaded by CMake itself with `FetchContent`; nothing is
+installed by hand. The engine, server and shell form one static library (`meradb_core`) that does
+not depend on FTXUI; the workbench is a second library (`meradb_workbench`), and both are linked
+into one program, `meradb_cli`. The option `-DMERADB_WORKBENCH=OFF` leaves the workbench out.
+The code compiles with `-Wall -Wextra` (`/W4` for MSVC) without warnings. Two build-time steps
+are worth knowing: `docs/LANGUAGE.md` is turned into a byte array and compiled into the program
+(it is shown in the workbench help), and on Windows a small patch is applied to the downloaded
+FTXUI source so that emoji can be typed. `build.ps1` and `build.sh` wrap the CMake commands.
+Exact commands are in the README.
+
+### 10.4 Byte-compatibility with the Python version
+Matching the files and the protocol *exactly* needed care in a few places:
+- **Storage.** The heap-file layout of section 4.3 (magic header, status byte, length, tagged
+  values) was copied byte for byte, including the tombstones and the atomic rename.
+- **JSON.** `catalog.json`, `users.json` and every network message are JSON. The C++ code has its
+  own JSON reader and writer (`pyjson`) that formats numbers, escapes and key order the way
+  Python's `json` module does, so the files are identical.
+- **Passwords.** User passwords are stored as PBKDF2-HMAC-SHA256 hashes. The C++ side has its own
+  SHA-256, HMAC and PBKDF2 (`crypto`), so a password hashed by one version verifies in the other.
+- **Python behaviours.** Several small Python behaviours had to be reproduced on purpose:
+  what `str.strip()`, `lower()` and `int()` do with unusual characters, which characters count as
+  whitespace, how `repr()` writes a string, and how Python compares and hashes values. These are
+  in `pytext` and `pyvalue`.
+- **Bugs kept on purpose.** A few things in the Python engine look like bugs (for example, `ALTER`
+  drops composite constraints from the catalog). They are copied, because the goal was identical
+  data, and they are listed in `docs/CPP.md` so that both versions can be fixed together.
+
+### 10.5 How compatibility was verified
+Compatibility is not claimed from reading the code; it is tested by running both versions.
+Each of the following checks is also registered with `ctest` (they need Python):
+
+1. **Golden files.** `gen_golden.py` runs scripts through the Python engine and records every
+   statement's message, error text, columns and rows. The C++ unit tests replay the same scripts
+   and compare. The same idea is used for the shell (banner, prompts, `.help` text, colour codes,
+   31 recorded transcripts) and for the syntax highlighter.
+2. **Differential testing on the example scripts.** `cross_engine_diff.py` runs
+   `examples/demo.mdb` and `examples/rdbms_lab_coverage.mdb` through the Python engine and the C++
+   program on fresh data folders and compares the output and the exit code, once directly and
+   once through a C++ server.
+3. **Fuzzing.** `fuzz_triggers.py` generates random trigger and stored-procedure scripts from a
+   seed and compares both engines (100 seeds in the test suite). Random shell sessions and
+   thousands of random tokenizer inputs were compared during development as well.
+4. **Interop matrix.** `interop_check.py` starts a Python server and a C++ server and connects a
+   Python client and a C++ client to each of them (all four pairs), plus raw protocol messages and
+   logins with passwords and per-user privileges. `shell_diff.py` does the same for the interactive
+   shell, piping the same scripts into both shells.
+5. **Interchange of data folders.** `interchange_check.py` lets the two versions work on one data
+   folder in turn (one builds it with tables, triggers, procedures and users, one uses it, one
+   verifies it), for all 8 combinations. Every combination must print what the all-Python run
+   printed and end with the same `catalog.json` and equivalent users, and the Python side must
+   accept the passwords the C++ side hashed.
+6. **Workbench comparison.** `workbench_diff.py` drives the Python workbench (with Textual's test
+   driver) and the C++ workbench through the same 12 scenarios (start-up, queries, errors, history,
+   selection, the schema tree, transactions, CSV export, Unicode, the connect dialog) and compares
+   what each screen shows. It is skipped when Textual is not installed.
+
+### 10.6 Test strategy and counts
+`ctest` registers about **780 tests** (Chapter 6 counts only the 183 Python tests). They are in
+three groups:
+- **Unit tests** (Catch2) for every layer: tokenizer, parser, planner, evaluator, aggregates,
+  storage, catalog, tables, the engine (DDL, DML, SELECT, views, EXPLAIN, users, triggers,
+  procedures), protocol and JSON, crypto, server and client, shell, and the workbench pieces (text
+  handling, editor, tree, worker thread, session, dialogs, whole window driven by synthetic key
+  presses).
+- **End-to-end tests** with real objects: a real engine on a temporary data folder, a real server on
+  a free port, the real workbench session with its worker thread, and `cli_lifecycle.py`, which
+  starts, queries and stops real server processes.
+- **Differential tests** against the Python version, as listed in 10.5.
+
+Tests that need Python are not registered if Python is not found. The terminal itself (how the
+shell and the workbench look and react in a real window) cannot be tested by a program; for that
+`docs/CPP.md` contains a manual checklist.
+
+### 10.7 Server: threads and locking
+The C++ server follows the design of section 4.8. It starts **one thread per connection**. Each
+connection owns its own `Engine` object (its session: current database and transaction), and it
+is used only from that thread. This matters, because a transaction must be finished by the thread
+that started it. All sessions share **one `Instance`**, which means one lock and one index cache,
+so statements run one at a time (serializable isolation, as in Python). A statement that has to
+wait for another session's open transaction gives up after 10 seconds with the message
+"Database busy hai". The threads check a stop flag regularly instead of waiting for ever in
+`recv()`, so stopping the server always finishes. A client that disconnects inside a transaction
+is rolled back, and so are all open transactions when the server is stopped. The start-up code
+refuses to open a data folder that another process is already serving (the `meradb.pid` file).
+
+### 10.8 Safety features for hostile input
+A network client can send any text, and deeply nested queries such as `((((...))))` make a
+recursive-descent parser recurse until the stack overflows and the whole server crashes. Python
+avoids a crash by raising `RecursionError`, but C++ would simply die. Therefore the C++ version
+has several guards:
+- a **depth cap**: one statement may have at most 400 operator/nesting units, statements inside
+  statements (trigger and procedure bodies) at most 32 levels, and views over views at most 32;
+- a **stack-byte guard** (`stack_guard`): every recursive function measures how many bytes of
+  stack have been used since it was entered and refuses past a budget of 512 KB or half of the
+  stack the thread really has, whichever is smaller (the operating system is asked for the real
+  size once per thread);
+- a cap of 512 nested levels when decoding JSON from the network;
+- a limit of 32 levels for triggers that fire each other (Python reports a `RecursionError`).
+
+These produce a normal error message (`Query bahut gehri (nested) hai ...`) instead of a crash.
+Ordinary scripts never come near the limits.
+
+### 10.9 Interactive shell and workbench
+The **shell** (`meradb_cli shell`) behaves like the Python shell: same banner, prompts, `.help`
+text, dot-commands, colours and exit codes, in local mode and through a server. As in the Python
+shell, line editing is whatever the terminal provides.
+
+The **workbench** (`meradb_cli workbench`) is the C++ counterpart of the Textual workbench. It
+is built with **FTXUI**, a C++ terminal UI library that is linked in statically, and has the same
+layout (schema tree, results table, log, query editor), key bindings (F5, F6, Ctrl+Up/Down,
+Ctrl+S, Ctrl+O, F1, Ctrl+L, Ctrl+Q) and Hinglish labels. Two design points:
+- All database calls of a session run on **one worker thread**, so the screen never freezes
+  during a slow statement, and a transaction's statements stay on the thread that began it. Keys
+  pressed in the meantime are queued.
+- Ctrl+C does not quit the workbench (it only logs a hint); Ctrl+Q waits for the running
+  statement, rolls back an open transaction and restores the terminal.
+
+📷 *Screenshot: the C++ workbench (`meradb_cli workbench`) with a JOIN + GROUP BY result.*
+📷 *Screenshot: the C++ shell (`meradb_cli shell`) showing the banner and a query.*
+
+### 10.10 Deliberate divergences from the Python version
+`docs/CPP.md` lists every known difference. The main ones are:
+- **Depth and stack limits** (section 10.8) instead of Python's `RecursionError`.
+- **INT is 64-bit** in C++ and arithmetic that overflows is reported as an error; Python integers
+  have no limit.
+- **Identifiers** may contain only ASCII letters, digits and `_` in C++; Python accepts any
+  Unicode letter. Text in strings and data can be any Unicode text.
+- **Sorting a mix of types** (for example TEXT against INT) gives an error message in C++, while
+  Python raises an unhandled exception.
+- **Server shutdown** rolls back open transactions cleanly; Python leaves that to crash recovery.
+- **Command line**: option abbreviations (`--dat`) are not accepted; `--help` is laid out for 80
+  columns.
+- **Ctrl+C during a statement**: the shell lets the running statement finish, then exits with
+  code 130, instead of abandoning it half-way.
+- **Workbench**: smaller differences in text selection, wrapping, colours and some extra keys,
+  because FTXUI and Textual are different libraries. The workbench is designed for dark terminals.
+
+### 10.11 Limitations
+- Everything in Chapter 8 still applies (hash indexes only, one global lock, whole-database
+  snapshots for transactions, passwords sent without encryption, and so on).
+- The workbench has no multiple editor tabs and no mouse text selection inside the editor.
+  Every key press redraws the whole screen, which could flicker on a very slow remote link.
+- The terminal behaviour of the shell and the workbench is covered by a manual checklist, not by
+  automatic tests.
+
+### 10.12 What was verified where
+| Platform / toolchain | Status |
+|----------------------|--------|
+| Windows 11, MinGW-w64 g++ (Release and Debug) | Built; the full `ctest` suite was run here; warning free |
+| Linux (POSIX code paths, g++/clang) | See `docs/CPP.md` for the results |
+| macOS | **Not yet verified by the author** |
+| Windows, MSVC / Visual Studio | **Not yet verified by the author** (this includes the depth checks on MSVC's smaller default stack) |
+
+The terminal-specific code (console input, Ctrl+C handling, the workbench's terminal-mode guard)
+was run on Windows only. Real-terminal checks of the workbench's key delivery were not done by a
+person on Linux, macOS or the classic Windows console; the manual checklist in `docs/CPP.md` is
+the place to record them.
+
+<!-- ===================== END CHAPTER 10: C++ IMPLEMENTATION ===================== -->
+
 ## References
 
 1. R. Nystrom, *Crafting Interpreters*, 2021. https://craftinginterpreters.com
@@ -290,6 +514,8 @@ meradb shell                        interactive command-line client
 meradb workbench                    full-screen client
 meradb run FILE.mdb                 run a script
 ```
+
+The C++ program is called `meradb_cli` and takes the same commands and options.
 
 ## Appendix B: Sample session
 
