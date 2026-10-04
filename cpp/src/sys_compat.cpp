@@ -676,6 +676,20 @@ ReadStatus readTerminalLine(std::string& line) {
         sigset_t* mask;
         ~Restore() { pthread_sigmask(SIG_SETMASK, mask, nullptr); }
     } restore{&original};
+    // The terminal driver flushes its input queue when Ctrl+C is typed. Data that made pselect() report "readable"
+    // can therefore be gone by the time read() runs, and a blocking read() would then wait with SIGINT still
+    // blocked (the interrupt would be lost until the next key). Reading without blocking and going back to
+    // pselect() on EAGAIN closes that window. The flag lives on the open file description, so it is put back.
+    const int oldFlags = ::fcntl(STDIN_FILENO, F_GETFL);
+    const bool madeNonBlocking = oldFlags >= 0 && !(oldFlags & O_NONBLOCK) &&
+                                 ::fcntl(STDIN_FILENO, F_SETFL, oldFlags | O_NONBLOCK) == 0;
+    struct RestoreFlags {
+        bool active;
+        int flags;
+        ~RestoreFlags() {
+            if (active) ::fcntl(STDIN_FILENO, F_SETFL, flags);
+        }
+    } restoreFlags{madeNonBlocking, oldFlags};
     // Python raises OSError out of input() here and dies with a traceback; one line on stderr is the C++ equivalent.
     const auto failed = [](int error) {
         std::cerr << "OSError: [Errno " << error << "] " << std::strerror(error) << '\n';
@@ -697,7 +711,7 @@ ReadStatus readTerminalLine(std::string& line) {
         char c = 0;
         const auto got = ::read(STDIN_FILENO, &c, 1);
         if (got < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             return failed(errno);
         }
         if (got == 0) return line.empty() ? ReadStatus::Eof : ReadStatus::Line;
