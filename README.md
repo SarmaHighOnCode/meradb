@@ -220,8 +220,8 @@ ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
 
 There are about 780 tests: unit tests for every layer, and the cross-checks that compare the
 C++ program with the Python engine (these need Python, and the workbench comparison also
-needs the `textual` package, otherwise it is reported as skipped). The first full run takes a
-few minutes.
+needs the `textual` package, otherwise it is reported as skipped). A full run takes a
+couple of minutes (all 780 passed on Windows with MinGW).
 
 ### More about the C++ version
 
