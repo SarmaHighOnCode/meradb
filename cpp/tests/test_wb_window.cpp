@@ -110,7 +110,7 @@ TEST_CASE("wbui window Tab cycles the focus and the border shows it", "[wbui]") 
     CHECK(rig.ui->focus() == Panel::Editor);
     Screen screen(1, 1);
     auto lines = rig.screen(120, 40, &screen);
-    CHECK(fgOf(screen, 32, 30) == rgbFg(palette::kYellow));   // the editor's corner
+    CHECK(fgOf(screen, 32, 30) == rgbFg(palette::kFocus));   // the editor's corner
     CHECK(fgOf(screen, 32, 20) == rgbFg(palette::kPink));     // the log's
     CHECK(fgOf(screen, 32, 1) == rgbFg(palette::kCyan));      // the results'
     CHECK(fgOf(screen, 0, 1) == rgbFg(palette::kPurple));     // the schema's
@@ -118,7 +118,7 @@ TEST_CASE("wbui window Tab cycles the focus and the border shows it", "[wbui]") 
     CHECK(rig.press(Event::Tab));
     CHECK(rig.ui->focus() == Panel::Tree);
     rig.screen(120, 40, &screen);
-    CHECK(fgOf(screen, 0, 1) == rgbFg(palette::kYellow));
+    CHECK(fgOf(screen, 0, 1) == rgbFg(palette::kFocus));
     CHECK(fgOf(screen, 32, 30) == rgbFg(palette::kGreen));
     CHECK(rig.press(Event::Tab));
     CHECK(rig.ui->focus() == Panel::Results);

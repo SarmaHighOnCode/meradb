@@ -151,7 +151,7 @@ Element WorkbenchUi::Impl::headerRow(int w) {
     parts.push_back(filler());
     if (!busy.empty()) parts.push_back(lineToElement(right));
     Element row = hbox(std::move(parts));
-    row = bgcolor(rgb(kBand), row);
+    row = bgcolor(rgb(kBand), color(rgb(palette::kText), row));
     return row | size(HEIGHT, EQUAL, 1);
 }
 
@@ -188,7 +188,7 @@ Element WorkbenchUi::Impl::footerRow(int w) {
     appendSegment(shown, " ", Style());
     for (const Segment& seg : line) shown.push_back(seg);
     Element row = lineToElement(clipLine(shown, 0, w));
-    row = bgcolor(rgb(kBand), row);
+    row = bgcolor(rgb(kBand), color(rgb(palette::kText), row));
     return row | size(HEIGHT, EQUAL, 1);
 }
 

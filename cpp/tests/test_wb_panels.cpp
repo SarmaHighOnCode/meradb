@@ -117,8 +117,8 @@ TEST_CASE("wbui panelFrame draws a titled border in the accent colour", "[wbui]"
     Screen focused = Screen::Create(Dimension::Fixed(20), Dimension::Fixed(4));
     lines = wbtest::renderLines(panelFrame("Log", text("hi"), true, palette::kPink), 20, 4, &focused);
     CHECK(lines[0].rfind("┏", 0) == 0);   // heavy
-    CHECK(wbtest::fgOf(focused, 0, 0) == wbtest::rgbFg(palette::kYellow));
-    CHECK(wbtest::fgOf(focused, 19, 3) == wbtest::rgbFg(palette::kYellow));
+    CHECK(wbtest::fgOf(focused, 0, 0) == wbtest::rgbFg(palette::kFocus));
+    CHECK(wbtest::fgOf(focused, 19, 3) == wbtest::rgbFg(palette::kFocus));
 }
 
 TEST_CASE("wbui tree panel draws, navigates and activates", "[wbui]") {

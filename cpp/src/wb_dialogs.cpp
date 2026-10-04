@@ -73,6 +73,7 @@ Element connectBody(const ConnectForm& form, int w) {
         const bool active = form.active() == i;
         Element field = lineToElement(fieldLine(form.field(i), active, fieldWidth));
         field = field | size(WIDTH, EQUAL, fieldWidth);
+        field = color(Color::RGB(0xf8, 0xf8, 0xf2), field);   // light text on the dark tint, whatever the terminal's own colours
         field = bgcolor(Color::RGB(active ? 0x44 : 0x2f, active ? 0x47 : 0x31, active ? 0x5a : 0x42), field);
         Elements fieldParts;
         fieldParts.push_back(text("  "));

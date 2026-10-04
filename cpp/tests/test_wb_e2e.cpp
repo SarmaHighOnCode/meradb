@@ -764,3 +764,72 @@ TEST_CASE("wbe2e a character outside the BMP is one editor character, runs, show
     rig.press(Event::Backspace);
     CHECK(rig.s().editor().text() == "x");
 }
+namespace {
+// Every cell with a background of its own (zebra rows, cursor rows, selection, header / footer band, dialog fields) must also
+// have a foreground of its own: otherwise the terminal's default foreground is used, which is dark on a light theme.
+int tintedCellsWithoutForeground(Screen& screen, int w, int h, int* tinted = nullptr) {
+    int bad = 0, count = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const Pixel& p = screen.PixelAt(x, y);
+            if (p.background_color == Color::Default) continue;
+            ++count;
+            if (p.foreground_color == Color::Default && !p.inverted) ++bad;
+        }
+    if (tinted) *tinted = count;
+    return bad;
+}
+}  // namespace
+
+TEST_CASE("wbe2e every tinted cell has an explicit foreground (light terminal backgrounds)", "[wbe2e]") {
+    E2e rig;
+    rig.run("BANAO TABLE t (id INT, s TEXT);");
+    rig.run("DAALO MEIN t (id, s) MAAN (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');");
+    rig.run("DIKHAO * SE t;");
+    rig.press(keys::ctrl('A'));
+    rig.type("DIKHAO *\nSE t;");
+    rig.press(keys::ctrl('A'));   // a selection over two lines
+    const Panel order[] = {Panel::Editor, Panel::Results, Panel::Tree, Panel::Log};
+    for (Panel p : order) {
+        rig.ui->setFocus(p);
+        Screen screen(1, 1);
+        auto lines = rig.screen(kW, kH, &screen);
+        INFO(dump(lines));
+        int tinted = 0;
+        CHECK(tintedCellsWithoutForeground(screen, kW, kH, &tinted) == 0);
+        CHECK(tinted > 100);   // the header, the footer, zebra rows and a cursor row at least
+    }
+    rig.ui->setFocus(Panel::Results);
+    rig.press(Event::ArrowDown);
+    rig.press(Event::ArrowDown);
+    Screen screen(1, 1);
+    rig.screen(kW, kH, &screen);
+    CHECK(tintedCellsWithoutForeground(screen, kW, kH) == 0);
+    rig.press(keys::ctrl('O'));   // the connect dialog: tinted fields
+    Screen dialog(1, 1);
+    auto lines = rig.screen(kW, kH, &dialog);
+    INFO(dump(lines));
+    CHECK(has(lines, "Host"));
+    CHECK(tintedCellsWithoutForeground(dialog, kW, kH) == 0);
+}
+
+TEST_CASE("wbe2e the focused panel is marked by an amber border and an inverse title", "[wbe2e]") {
+    E2e rig;
+    rig.ui->setFocus(Panel::Editor);
+    Screen screen(1, 1);
+    auto lines = rig.screen(kW, kH, &screen);
+    const int top = findRow(lines, "Query  [F5");
+    REQUIRE(top >= 0);
+    const int col = cellColumn(lines[static_cast<std::size_t>(top)], "Query");
+    CHECK(screen.PixelAt(col, top).inverted);                                   // the title: terminal colours swapped
+    CHECK(screen.PixelAt(col, top).foreground_color == Color::Default);
+    CHECK(fgOf(screen, col - 2, top) == rgbFg(palette::kFocus));                // the border keeps its colour
+    CHECK(screen.PixelAt(col - 2, top).bold);
+    CHECK(palette::kFocus != palette::kYellow);                                 // pale yellow vanishes on white
+    // An unfocused panel: no inverse, its own accent colour.
+    const int log = findRow(lines, " Log ");
+    REQUIRE(log >= 0);
+    const int logCol = cellColumn(lines[static_cast<std::size_t>(log)], "Log");
+    CHECK_FALSE(screen.PixelAt(logCol, log).inverted);
+    CHECK(fgOf(screen, logCol, log) == rgbFg(palette::kPink));
+}

@@ -127,9 +127,17 @@ public:
             t->ComputeRequirement();
             t->SetBox(Box{box_.x_min + 1, box_.x_max - 1, box_.y_min, box_.y_min});
             t->Render(screen);
+            // The focused panel's title is drawn inverse in the terminal's own colours: visible on any theme.
+            const bool focusTitle = rgb_ == palette::kFocus;
+            const int titleEnd = box_.x_min + string_width(" " + printable(title_) + " ");   // last cell of the title
             for (int x = box_.x_min + 1; x < box_.x_max; ++x) {
                 Pixel& p = screen.PixelAt(x, box_.y_min);
-                p.foreground_color = color;
+                if (focusTitle && x <= titleEnd) {
+                    p.foreground_color = Color::Default;
+                    p.inverted = true;
+                } else {
+                    p.foreground_color = color;
+                }
                 p.bold = heavy_;
             }
         }
@@ -183,7 +191,11 @@ private:
 int boxWidth(const Box& b) { return b.x_max - b.x_min + 1; }
 int boxHeight(const Box& b) { return b.y_max - b.y_min + 1; }
 
-Element rowWithBackground(Element row, int rgb) { return bgcolor(rgbColor(rgb), std::move(row)); }
+// A tinted row: the tint is dark, so every cell gets an explicit light foreground first (a segment's own colour wins). Without it
+// the terminal's default foreground is used, which is dark on a light theme.
+Element rowWithBackground(Element row, int rgb) {
+    return bgcolor(rgbColor(rgb), color(rgbColor(palette::kText), std::move(row)));
+}
 
 }  // namespace
 
@@ -197,6 +209,7 @@ Element lineToElement(const Line& line) {
         Element e = text(printable(seg.text));
         const Style& s = seg.style;
         if (s.fg >= 0) e = color(rgbColor(s.fg), e);
+        else if (s.bg >= 0) e = color(rgbColor(palette::kText), e);   // a tinted cell never relies on the terminal's foreground
         if (s.bg >= 0) e = bgcolor(rgbColor(s.bg), e);
         if (s.bold) e = bold(e);
         if (s.dim) e = dim(e);
@@ -210,7 +223,7 @@ Element lineToElement(const Line& line) {
 }
 
 Element panelFrame(const std::string& title, Element content, bool focused, int accentRgb) {
-    return std::make_shared<FrameNode>(title, focused ? palette::kYellow : accentRgb, focused, std::move(content),
+    return std::make_shared<FrameNode>(title, focused ? palette::kFocus : accentRgb, focused, std::move(content),
                                        std::function<Element(int, int)>(), nullptr);
 }
 
@@ -246,7 +259,7 @@ public:
 
     Element Render() override {
         const bool focused = focused_;
-        return sizedFrame("Schema", focused ? palette::kYellow : palette::kPurple, focused, &box_,
+        return sizedFrame("Schema", focused ? palette::kFocus : palette::kPurple, focused, &box_,
                           [this, focused](int w, int h) { return body(w, h, focused); });
     }
 
@@ -323,7 +336,7 @@ public:
     Element Render() override {
         const bool focused = focused_;
         const std::string title = resultsTitle(session_.table());
-        return sizedFrame(title, focused ? palette::kYellow : palette::kCyan, focused, &box_,
+        return sizedFrame(title, focused ? palette::kFocus : palette::kCyan, focused, &box_,
                           [this, focused](int w, int h) { return body(w, h, focused); });
     }
 
@@ -434,7 +447,7 @@ public:
 
     Element Render() override {
         const bool focused = focused_;
-        return sizedFrame("Log", focused ? palette::kYellow : palette::kPink, focused, &box_,
+        return sizedFrame("Log", focused ? palette::kFocus : palette::kPink, focused, &box_,
                           [this](int w, int h) { return body(w, h); });
     }
 
@@ -537,7 +550,7 @@ public:
 
     Element Render() override {
         const bool focused = focused_;
-        return sizedFrame("Query  [F5 = chalao, F6 = samjhao]", focused ? palette::kYellow : palette::kGreen, focused,
+        return sizedFrame("Query  [F5 = chalao, F6 = samjhao]", focused ? palette::kFocus : palette::kGreen, focused,
                           &box_, [this, focused](int w, int h) { return body(w, h, focused); });
     }
 

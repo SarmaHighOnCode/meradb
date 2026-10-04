@@ -197,7 +197,7 @@ line on stderr (`Workbench ke liye terminal chahiye ...`) and exit 1, before any
 **Layout** (the same as `tui.py`): a header line with the title and `<host:port or local (...)>  |  db:
 <db>[  |  TRANSACTION (PAKKA / WAPAS)]`; on the left the `Schema` tree (32 columns wide); on the right the
 `Results` table, a `Log` (10 rows) and the `Query  [F5 = chalao, F6 = samjhao]` editor (9 rows); a footer
-with the main keys. The focused panel has a heavy yellow border; Tab / Shift+Tab cycle schema tree, results,
+with the main keys. The focused panel has a heavy amber border and an inverse title; Tab / Shift+Tab cycle schema tree, results,
 log, editor, and it starts in the editor. The smallest supported window is 60 x 24; below that a message asks
 for a bigger terminal.
 
@@ -529,7 +529,12 @@ These are deliberate and small.
 - **Workbench: colours**: the Dracula values of `highlight.RICH_STYLES` and `tui.py` as RGB; Rich's names
   (`green`, `red`, `yellow`, `dim`) are mapped to fixed RGB values (`#50fa7b`, `#ff5555`, `#f1fa8c`), and the
   editor uses the same table as the log echo, not Textual's `dracula` TextArea theme. Weaker terminals get
-  FTXUI's 256 / 16 colour approximation.
+  FTXUI's 256 / 16 colour approximation. Python paints a whole dark theme; the C++ workbench leaves the terminal's own
+  background alone and is designed for dark terminals. For light ones: every tinted cell (zebra rows, the tree and
+  result cursor rows, the editor selection, the header / footer band, the dialog fields) has an explicit light
+  foreground, so it stays readable, and the focused panel is marked by an amber border (`#df7a00`, where Python uses
+  yellow, which vanishes on white) plus an inverse title in the terminal's own colours. The pale Dracula pastels on
+  untinted cells (strings, messages, `KHALI`) are weak on a white background; no terminal-background query is made.
 - **Workbench: highlighting**: `highlight.cpp` is a hand-written scanner equivalent to `highlight.py`'s
   regex, checked line by line against Python (the golden corpus is every line of both example scripts plus edge
   lines; 20,000 random lines were also compared in review). Python's `\d` and `\b` are Unicode-aware; the
@@ -686,9 +691,10 @@ sequences) and note it in the pull request.
 | W14 | Any | Stop the server (`meradb stop`) while connected, run a statement, then `Ctrl+O` -> Connect again | A red error line and `Ctrl+O se dobara connect karo.`; the UI stays alive; reconnect works |
 | W15 | Any | A table with 20,000 rows: `DIKHAO * SE big;`, scroll with arrows / PageDown / End, Right / Left | Smooth; memory reasonable; the title shows `Results -- 20000 row(s)` |
 | W16 | Any | Paste 5,000 characters over 100 lines into the editor | Responsive; all lines present; a Tab inside the pasted text is inserted (as four spaces) on terminals with bracketed paste and does not move the focus; a typed Tab still moves the focus, as in Python |
-| W17 | Any | Mouse: click each panel, wheel over the log and results; drag over text with and without Shift | The clicked panel gets the yellow border; the wheel scrolls; the terminal's own selection works only with Shift held (mouse tracking is on) |
+| W17 | Any | Mouse: click each panel, wheel over the log and results; drag over text with and without Shift | The clicked panel gets the heavy amber border and inverse title; the wheel scrolls; the terminal's own selection works only with Shift held (mouse tracking is on) |
 | W18 | Any | `meradb_cli workbench < /dev/null`, `meradb_cli workbench \| cat` | One line on stderr (`Workbench ke liye terminal chahiye ...`), exit code 1, nothing else |
 | W19 | Any | `TERM=dumb meradb_cli workbench`, `NO_COLOR=1` | Not supported / ignored: note what happens (FTXUI decides); the program must not corrupt the terminal |
+| W20 | Any, with a light colour scheme (a white terminal background) | Start, run a `DIKHAO` with 4+ rows, move the results cursor, select editor text with Shift+arrows, Tab through the panels | Zebra rows, cursor rows and the selection are readable (light text on the dark tint); the focused panel's amber border and inverse title are easy to see |
 
 Results of these go in the pull request, not in the repository.
 

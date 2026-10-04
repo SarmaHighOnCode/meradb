@@ -26,6 +26,9 @@ namespace palette {  // tui.py / highlight.py (Dracula)
 constexpr int kPink = 0xff79c6, kString = 0xf1fa8c, kPurple = 0xbd93f9, kComment = 0x6272a4, kCyan = 0x8be9fd,
               kGreen = 0x50fa7b, kOrange = 0xffb86c, kRed = 0xff5555, kYellow = 0xf1fa8c, kText = 0xf8f8f2,
               kBackground = 0x282a36, kCurrentLine = 0x44475a, kStripe = 0x2f3142;
+// The focused panel's border (Python: yellow). Pale yellow vanishes on a light background, so this amber has contrast on both
+// light and dark ones; the focused title is also drawn inverse, which stands out on any theme.
+constexpr int kFocus = 0xdf7a00;
 }
 Style fgStyle(int rgb, bool bold = false, bool dim = false, bool italic = false);
 
