@@ -11,17 +11,17 @@ installed the Python workbench is put through the same exit and restore checks.
 
 Exits 77 (ctest: skipped) where there is no pty (Windows).
 """
-import fcntl
 import os
 import shutil
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
 import time
 
-import ptyutil
+import ptyutil   # exits 77 (skip) where there is no pty
+import fcntl
+import struct
 from ptyutil import Checker, Pty, Screen, clean_env, flags, python_env
 
 CLI = sys.argv[1]
