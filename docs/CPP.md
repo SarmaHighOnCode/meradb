@@ -1,4 +1,4 @@
-# MeraDB in C++ (Phases 1-3: engine, server, client, shell)
+# MeraDB in C++ (Phases 1-4: engine, server, client, shell, workbench)
 
 `cpp/` contains a C++17 port of MeraDB. It mirrors the Python implementation in
 `meradb/` layer for layer: the same Hinglish grammar, the same error wording, the same
@@ -38,7 +38,22 @@ Phase 3 (the interactive shell):
 - `run` shares the shell's code path: coloured results on a terminal, and a dropped connection prints
   its error on stdout and the next file still runs, as in Python.
 
-Not yet (Phases 4-5): the workbench and the polish pass. `workbench` prints a note and exits 1.
+Phase 4 (the full-screen workbench):
+- `meradb_cli workbench` (also `tui` and `--tui`) opens the same screen as `python -m meradb workbench`: a
+  header with `host:port  |  db: <db>` and a `TRANSACTION (PAKKA / WAPAS)` marker, the schema tree, the
+  results table (`KHALI`, `SACH` / `JHOOTH`, right-aligned numbers, `Results -- N row(s)`), the log (echo of
+  each statement with syntax colours, green messages, red errors, `(x.x ms)`), a multi-line query editor with
+  line numbers and syntax highlighting, and the footer. Every key binding, Hinglish label and message of
+  `tui.py` is kept: F5 / Ctrl+R run (the selection if there is one), F6 explains, Ctrl+Up / Ctrl+Down walk
+  the query history, Ctrl+S writes a CSV, Ctrl+O opens the connect dialog (server or Local mode), F1 opens
+  the help (the key table plus `docs/LANGUAGE.md`), Ctrl+L clears the log, Ctrl+Q quits.
+- Statements never block the screen: each session has ONE worker thread that runs every database call (so a
+  transaction's statements stay on the thread that started it), and keys pressed meanwhile are queued. A busy
+  label shows `[chal raha hai]` / `[chal raha hai +N]`.
+- Ctrl+C never kills the workbench (it logs a hint); Ctrl+Q waits for a running statement, rolls an open
+  transaction back and leaves the terminal as it found it. See "The workbench".
+
+Not yet (Phase 5): the final polish pass.
 
 ## Prerequisites
 
@@ -46,7 +61,11 @@ Not yet (Phases 4-5): the workbench and the polish pass. `workbench` prints a no
 - A C++17 compiler: MinGW-w64 g++, MSVC (Visual Studio 2019 or newer), or g++/clang
   on Linux and macOS
 - Network access on the first configure: nlohmann/json and Catch2 are downloaded
-  automatically by CMake (`FetchContent`). Nothing else needs installing.
+  automatically by CMake (`FetchContent`), and so is [FTXUI](https://github.com/ArthurSonzogni/FTXUI)
+  v5.0.0 (the terminal UI library of the workbench; statically linked). Nothing else needs installing.
+- `-DMERADB_WORKBENCH=OFF` builds without FTXUI (nothing is fetched for it); `workbench` then prints a
+  note and exits 1, and everything else is unchanged. `-DFETCHCONTENT_SOURCE_DIR_FTXUI=<dir>` builds from an
+  unpacked copy of the v5.0.0 tarball instead of downloading it (an offline checkout).
 
 ## Build
 
@@ -92,7 +111,10 @@ meradb_cli server  [-D <dir>] [--host 127.0.0.1] [--port 6372] [--password pw] [
 meradb_cli start   [same options]      # background; log in <data>/server.log
 meradb_cli status | stop [--force] [-D <dir>] [-W]
 meradb_cli shell  [-D <dir>] [--local] [-H host] [-p port] [-U user] [-W] [-d database]   # also: no command at all
+meradb_cli workbench [same options as shell]   # also: tui, --tui
 ```
+
+`workbench` needs a terminal on both stdin and stdout.
 
 `meradb_cli x.mdb` means `run x.mdb`. `--data` is accepted as a long form of `-D`. `run` connects
 to a server if one answers (the port of the data folder's `meradb.pid`, `MERADB_HOST` /
@@ -164,6 +186,92 @@ statement; 2 for a bad option (a usage error, the same in both shells); 1 when t
 terminal itself fails (one line `OSError: [Errno N] ...` on stderr where Python prints a traceback). Errors inside statements never change the exit code of the shell; `run` returns 1 if
 any statement failed.
 
+### The workbench
+
+`meradb_cli workbench` (aliases `tui` and `--tui`) connects exactly like the shell (a server if one answers,
+otherwise the local data folder with a note on stderr; `-U` / `-W` / `MERADB_USER` / `MERADB_PASSWORD` log in;
+`-d` picks the database; a bad option is a usage error, exit 2) and then takes over the terminal. It is built
+on [FTXUI](https://github.com/ArthurSonzogni/FTXUI) and needs a terminal on stdin AND stdout: otherwise one
+line on stderr (`Workbench ke liye terminal chahiye ...`) and exit 1, before anything is opened.
+
+**Layout** (the same as `tui.py`): a header line with the title and `<host:port or local (...)>  |  db:
+<db>[  |  TRANSACTION (PAKKA / WAPAS)]`; on the left the `Schema` tree (32 columns wide); on the right the
+`Results` table, a `Log` (10 rows) and the `Query  [F5 = chalao, F6 = samjhao]` editor (9 rows); a footer
+with the main keys. The focused panel has a heavy yellow border; Tab / Shift+Tab cycle schema tree, results,
+log, editor, and it starts in the editor. The smallest supported window is 60 x 24; below that a message asks
+for a bigger terminal.
+
+| Key | Does |
+|---|---|
+| F5, Ctrl+R | run the editor text, or only the selection if there is one |
+| F6 | `SAMJHAO` the single statement in the editor (or in the selection); a message if there is not exactly one |
+| Ctrl+Up / Ctrl+Down | previous / next query from the history (kept in memory only, consecutive duplicates collapse); the editor gets the focus |
+| Ctrl+S | save the last result table to `exports/meradb-YYYYmmdd-HHMMSS.csv` in the current directory |
+| Ctrl+O | connect dialog: Host, Port, Password (hidden), Database, buttons Connect / Local mode / Cancel; Enter connects, Esc cancels |
+| F1, Esc | open / close the help (these keys plus `docs/LANGUAGE.md`); PageUp / PageDown scroll it |
+| Ctrl+L | clear the log |
+| Ctrl+Q | quit |
+| Tab, Shift+Tab | next / previous panel |
+| Enter in the tree | column: insert its name at the editor cursor; table: `DIKHAO * SE <table> SIRF 100;`; database: `ISTEMAL <db>;` |
+| Right / Left in the tree | expand (or step to the first child) / collapse (or step to the parent) |
+| Ctrl+P / Ctrl+N | history, for terminals that do not deliver Ctrl+Up / Ctrl+Down (extra) |
+| Shift+arrows / Home / End, Ctrl+A | select text in the editor; Ctrl+A selects all (extra) |
+| PageUp / PageDown, mouse wheel | scroll the focused panel (extra) |
+| mouse click | focus the clicked panel (extra) |
+
+**Statements run on a worker thread.** Every database call of a session (statements, the schema refresh,
+connecting, closing) runs on ONE worker thread, in order; results come back to the screen as posted
+closures. So the screen never freezes, a transaction's statements always run on the thread that began it, and
+keys pressed while a statement runs are accepted and queued in order (a second F5 queues a second run). The
+header shows `[chal raha hai]`, or `[chal raha hai +N]` with N more waiting. The log echo of a statement
+appears when it starts.
+
+**Ctrl+Q while a statement runs.** Statements that have not started are dropped, the running one finishes (a
+statement is never abandoned half-way), the backend is closed on the worker (which rolls an open transaction
+back), and then the screen closes. The header says `[band ho raha hai ...]` meanwhile; a second Ctrl+Q does
+nothing. Exit code 0.
+
+**Ctrl+C never quits.** While the workbench runs, the terminal modes that turn keys into signals or flow
+control are switched off (`ISIG`, `IXON` and `IEXTEN` on POSIX, `ENABLE_PROCESSED_INPUT` on Windows), so
+Ctrl+C, Ctrl+S, Ctrl+Q and Ctrl+O reach the program as ordinary keys. Ctrl+C logs `Bahar niklne ke liye
+Ctrl+Q dabao.` in yellow and nothing else happens. The modes are restored on every exit path. If a signal
+still ends the screen (SIGTERM, a hang-up, a terminal that ignores the mode change), the program waits for
+the worker and closes the backend, so an open transaction is rolled back cleanly. A hard kill, a closed
+window or Ctrl+Break leaves it to crash recovery at the next start, as with Python's workbench. Ctrl+C will
+not reach the workbench at all if it was started from a launcher that disabled Ctrl+C for its children (some
+IDE run buttons and task runners do): start it from a normal terminal window.
+
+**Mouse.** Mouse tracking is on (clicks focus a panel, the wheel scrolls), so the terminal's own text
+selection needs the Shift key held while dragging (or your terminal's equivalent modifier).
+
+**CSV.** Ctrl+S follows Python's `csv.writer` defaults exactly: `\r\n` line ends, minimal quoting, a lone
+empty field in a one-column row written as `""`, `KHALI` written as an empty field, UTF-8 without a BOM, a
+header row. The log gets `<n> row(s) CSV mein save: <absolute path>`. A failure to write is logged in red
+(`CSV save nahi hua: <reason>`).
+
+**Connecting.** The dialog starts with the current server's host and port (127.0.0.1 and 6372 for a local
+backend). Connect opens a connection with the values; Local mode opens the data folder of the `--data`
+option. A failure logs `Connect nahi hua: <reason>` in bold red and changes nothing; success logs
+`Connected: <description>` in bold green, refreshes the tree and header, and closes the old backend (which
+rolls its transaction back).
+
+**Help.** The help screen is the key table of `tui.py` plus an "extra keys" table, then
+`docs/LANGUAGE.md`, drawn by a small Markdown renderer (headings, tables, lists, code, bold, inline code).
+The language reference is embedded into the binary at build time (`cmake/embed_file.cmake`).
+
+**Colours.** The Dracula RGB values of `highlight.RICH_STYLES` and `tui.py` (`#ff79c6` keywords, `#f1fa8c`
+strings, `#bd93f9` numbers, `#6272a4` comments, `#8be9fd` types, `#50fa7b` functions and messages, `#ffb86c`
+PK / UQ, `#ff5555` errors). They are truecolor where the terminal has it; FTXUI down-converts to 256 or 16
+colours on weaker terminals.
+
+**Exit codes.** 0 after a normal quit; 1 when there is no terminal, the backend cannot be opened, or the
+build has no workbench (`-DMERADB_WORKBENCH=OFF`: `workbench` prints `abhi C++ version mein nahi hai`);
+2 for a usage error. FTXUI is linked statically, so Python's "install Textual" path does not exist.
+
+**What is not tested automatically.** The terminal itself: the real byte sequences a terminal sends for
+Shift+arrows and Ctrl+Up, the terminal-mode guard on POSIX, the mouse, and how the screen looks. See the
+manual checklist (start with the key probe).
+
 ## Server notes
 
 One thread per connection; each connection owns its engine session (current database,
@@ -192,6 +300,9 @@ python cpp/tests/gen_shell_golden.py       # regenerate golden_shell.h (banner, 
 python cpp/tests/gen_shell_help.py         # regenerate src/shell_help_data.inc from repl.py's help tables
 python cpp/tests/gen_shell_transcripts.py  # regenerate golden_transcripts.h (what Python's shell prints per script)
 python cpp/tests/gen_lower_table.py        # regenerate the Unicode lower-case tables (needs Python 3.12 / Unicode 15.0)
+python cpp/tests/workbench_diff.py --probe cpp/build/tests/wb_probe   # the workbench against Python's, scenario by scenario (needs Textual)
+python cpp/tests/gen_highlight_golden.py   # regenerate golden_highlight.h (what highlight.py colours, line by line)
+python cpp/tests/gen_word_table.py         # regenerate word_table.inc (Python's \w, for number boundaries in the highlighter)
 ```
 
 `cross_engine_diff.py` runs a script through the Python engine and the C++ CLI on fresh data
@@ -211,6 +322,21 @@ hostile input. The generated `golden_*.h` / `.inc` files hold what Python itself
 tests compare the banner, prompts, `.help` text and colour codes byte for byte, and replay all 31 recorded
 Python transcripts through `repl::run`. The terminal itself (line editing, Ctrl+C on a console, colour in a
 real window) cannot be driven from a test; see "Manual terminal checklist".
+
+The workbench is checked at three levels. Unit tests per piece (`wbtext`, `wbeditor`, `wbtree`, `wbworker`,
+`wbsession`, `wbhelp`, `wbform`, `highlight`), and the whole window rendered into an FTXUI screen and driven
+by synthetic key events against a scripted backend (`wbui`). `wbe2e` runs the real engine, the real session
+with its worker thread and the real window against a temp data folder (and a real server on a free port for
+the connect dialog): typing a script, the log and table colours, selection-aware F5 / F6, history, the tree,
+the transaction marker, quitting with a transaction open, Ctrl+Q behind a slow statement, the CSV bytes, the
+connect dialog both ways, the help screen, every size and Unicode alignment. `workbench_diff.py` drives both
+workbenches through `cpp/tests/workbench_scenarios.json` (11 scenarios: start-up, DDL / DML / SELECT, errors,
+history and explain, selection, the tree, transactions, CSV, clearing the log, Unicode, connecting to local
+mode): the Python one with Textual's `Pilot` (`workbench_pilot.py`), the C++ one through the `wb_probe`
+program, and compares what each shows (header, editor, history, results title and cells with their colour
+kind, log entries with their kind, every tree node, the newest CSV) after normalising folders and timings.
+It skips (ctest skip code 77) when Textual is not installed. The highlighter is compared line by line with
+`highlight.py` (`golden_highlight.h`).
 
 ## Layout
 
@@ -236,15 +362,22 @@ Headers are in `cpp/include/meradb/`, sources in `cpp/src/`, tests in `cpp/tests
 | `client.py`                         | `client.h` / `client.cpp`, `backend.h`            |
 | `cli.py` (server, start, stop, status, run, shell) | `cli.h` / `cli.cpp`, `server_control.h` / `server_control.cpp`, `main.cpp` |
 | `repl.py` (the shell)               | `repl.h` / `repl.cpp` (loop, dot-commands, `runText` / `runFile`, line sources), `repl_text.h` / `repl_text.cpp` + `shell_help_data.inc` (banner, prompts, help), `cli_format.h` / `cli_format.cpp` (results, colour) |
-| `repl.py` colour helpers, `str` methods | `term_style.h` / `term_style.cpp` (`term::Style`, colour detection), `pytext.h` / `pytext.cpp` + `lower_table.inc` (Python's `strip` / `split` / `ljust` / `lower` semantics) |
+| `repl.py` colour helpers, `str` methods | `term_style.h` / `term_style.cpp` (`term::Style`, colour detection), `pytext.h` / `pytext.cpp` + `lower_table.inc` (Python's `strip` / `split` / `ljust` / `lower` / `int()` semantics) |
+| `highlight.py`                      | `highlight.h` / `highlight.cpp` + `word_table.inc` (in `meradb_core`: a lenient scanner sharing the tokenizer's keyword list) |
+| `tui.py` (the workbench)            | `workbench.h` / `workbench.cpp` (`runWorkbench`: the FTXUI loop and the bridge from the worker to the screen), `wb_session.h` / `wb_session.cpp` (`MeraDBApp` without widgets: every action, the log, history, the quit protocol), `wb_worker.h` / `wb_worker.cpp` (the one thread per session), `wb_text.h` / `wb_text.cpp` (styles, log, cells, CSV, clipping, history, scrolling), `wb_editor.h` / `wb_editor.cpp` (`QueryEditor`: text buffer, selection, highlighted rows), `wb_tree.h` / `wb_tree.cpp` (the schema tree and `refresh_schema`), `wb_panels.h` / `wb_panels.cpp` (the four panels), `wb_ui.h` / `wb_ui.cpp` (the window, key routing, focus), `wb_keys.h` (every key binding; the only place that knows event bytes), `wb_form.h` / `wb_form.cpp` + `wb_dialogs.h` / `wb_dialogs.cpp` (`ConnectScreen`, `HelpScreen`), `wb_markdown.h` / `wb_markdown.cpp` + `wb_help.h` / `wb_help.cpp` (`KEYS_HELP` + the embedded `docs/LANGUAGE.md`) |
+| (build helper)                      | `cmake/embed_file.cmake` turns `docs/LANGUAGE.md` into a byte array at build time |
 
 Supporting files with no Python counterpart: `pyvalue.h` / `pyvalue.cpp`
 (Python-compatible equality and hashing of values) and `ordered_map.h`.
 
 Also without a Python counterpart: `net_compat.h` / `net_compat.cpp` (Winsock / BSD sockets)
 and `sys_compat.h` / `sys_compat.cpp` (environment, time, random bytes, process spawning, and
-the terminal: line reading, Ctrl+C, ANSI switch-on): the only places that include platform headers
+the terminal: line reading, Ctrl+C, ANSI switch-on, and `sys::TerminalModeGuard`, which switches off
+Ctrl+C and flow control for the workbench): the only places that include platform headers
 (apart from `stack_guard.cpp`, which asks the OS for the thread's stack limits).
+
+The workbench is a separate static library, `meradb_workbench`, so `meradb_core` does not depend on FTXUI:
+`cli.cpp` reaches it through a function-pointer hook (`setWorkbenchRunner`) that `main.cpp` sets.
 
 Design notes: syntax-tree nodes are owned by `std::unique_ptr` (no raw `new` or
 `delete`); values are a `Value` class over `std::variant`; errors are C++
@@ -314,8 +447,8 @@ These are deliberate and small.
   options (`--dat` for `--data`); the C++ command line requires the full option name. Glued
   short options (`-DDIR`, `-D=DIR`, `-p7`) and bundles (`-WD DIR`), and the error for a value
   given to a flag (`--local=1`), do match Python.
-- **Command-line integers**: `-p` / `--port` read the text like Python's `int()` for ASCII
-  input (surrounding blanks, a sign, `1_0`); Unicode digits (`-p ٣`) and numbers beyond a
+- **Command-line integers**: `-p` / `--port` read the text like Python's `int()` (surrounding
+  blanks, a sign, `1_0`, decimal digits of any script such as `-p ٣`); numbers beyond a
   32-bit `int` are rejected as `invalid int value`, where Python converts them and fails
   later. A port outside 0-65535 or an unresolvable host is reported in the program's own words
   rather than the operating system's.
@@ -378,12 +511,70 @@ These are deliberate and small.
   the platform's own text, which differs from Python's (`[WinError 10054] ...` vs a bare message). The
   words before it match. For `File nahi khuli:` the `[Errno N]` number and text match Python for a
   missing file, a directory and an invalid name.
+- **Workbench: editor selection**: Shift+arrows / Home / End, Ctrl+Shift+Left / Right and Ctrl+A
+  select, and F5 / F6 use the selection as in Python. There is no mouse selection and there are no
+  clipboard commands; the terminal's own paste works (it arrives as typed characters) and, because mouse
+  tracking is on, the terminal's own text selection needs Shift held. Textual's `TextArea` has all of those.
+  The Shift+arrow byte sequences are matched in `wb_keys.h`; `wb_keyprobe` shows what a given terminal sends.
+- **Workbench: layout and wrapping**: the editor scrolls horizontally instead of wrapping lines, and the
+  log wraps by characters, not at words (Textual wraps both softly / at words); the schema tree draws
+  `▼` / `▶` expanders instead of guide lines; a `KHALI` cell is dim only (FTXUI has no italic); of the zebra
+  stripes, even rows keep the terminal's own background and only odd rows are tinted; the help is a dialog
+  titled `Madad`; table rows and code lines in the help are not wrapped to the window width.
+- **Workbench: help text embedded at build time**: `docs/LANGUAGE.md` is compiled into the binary
+  (a built program has no reliable path to the repository), so editing the file needs a rebuild; a
+  configure that does not find the file embeds `*(docs/LANGUAGE.md nahi mila)*` and adding the file later
+  needs a reconfigure. Python reads the file each time the help opens. The Markdown rendering is a small
+  subset written for these two documents.
+- **Workbench: colours**: the Dracula values of `highlight.RICH_STYLES` and `tui.py` as RGB; Rich's names
+  (`green`, `red`, `yellow`, `dim`) are mapped to fixed RGB values (`#50fa7b`, `#ff5555`, `#f1fa8c`), and the
+  editor uses the same table as the log echo, not Textual's `dracula` TextArea theme. Weaker terminals get
+  FTXUI's 256 / 16 colour approximation.
+- **Workbench: highlighting**: `highlight.cpp` is a hand-written scanner equivalent to `highlight.py`'s
+  regex, checked line by line against Python (the golden corpus is every line of both example scripts plus edge
+  lines; 20,000 random lines were also compared in review). Python's `\d` and `\b` are Unicode-aware; the
+  scanner uses a generated table of Python's `\w` characters (Unicode 15.0) for the boundaries of a number, so
+  `5€` or `5😀` are numbers as in Python. One difference remains, and one line is dropped from the golden
+  corpus for it (`cpp/tests/gen_highlight_golden.py`, `DROP`: the line `5٣`): a non-ASCII decimal digit
+  (Arabic-Indic and the like) counts as a digit in Python but only as a word character in the C++ scanner,
+  so `5٣` is not coloured as a number.
+- **Workbench: extra keys**: `Ctrl+P` / `Ctrl+N` (history, because not every terminal delivers Ctrl+Up /
+  Ctrl+Down), `Ctrl+A` (select all), PageUp / PageDown, and the mouse subset (click focuses a panel, the wheel
+  scrolls; a click in the editor only focuses it and does not place the cursor). Listed in the help.
+- **Workbench: CSV failure and cell newlines**: a CSV that cannot be written is logged in red
+  (`CSV save nahi hua: <reason>`; Python would crash with a traceback). A `\n` or `\r` inside a cell is shown as
+  `↵` and a tab as a space, so a table row stays one line; the CSV keeps the raw text.
+- **Workbench: log cap**: the log keeps at most 20,000 lines (oldest dropped); Python's `RichLog` is
+  unbounded. A single log entry larger than the cap is kept whole (older entries go, the newest is never
+  truncated); Python has no such case.
+- **Workbench: tree cursor kept; local-to-local connect**: after a refresh the selected row stays on the
+  same node (Python resets to the top after every statement). Connecting to Local mode while the current
+  backend is also a local engine builds the new engine first and closes the old one after; and a local
+  connect is refused while a local transaction is open (red `Connect nahi hua: ek transaction khula hai --
+  pehle PAKKA ya WAPAS karo, phir Local mode`, nothing changes), because a second engine on the same folder
+  runs crash recovery, which would undo the first one's open transaction. Python opens the second engine
+  regardless.
+- **Workbench: Ctrl+C never quits; Ctrl+Q waits for a running statement**: Python (Textual) quits on Ctrl+Q
+  at once and only hints at it for Ctrl+C. Here a running statement is never abandoned half-way, queued
+  statements are dropped, an open transaction is rolled back before the screen closes, and Ctrl+C is turned
+  into a log hint by switching off the terminal's signal handling for the run. A hard kill, a closed window or
+  Ctrl+Break are left to crash recovery at the next start, as with Python.
+- **Workbench: statements run on a worker thread**: keys pressed while a statement runs are queued (Python
+  blocks its screen instead, with the same effect on ordering); a statement's echo line appears when it starts,
+  with the database current at that moment; F6 parses on the worker, so its history entry and echo appear when
+  the job completes; the connect dialog's port is read like Python's `int()`, with the same
+  `invalid literal for int() with base 10: '...'` text for a non-number.
+- **Workbench: needs a terminal; no dependency message**: with stdin or stdout not a terminal it prints one
+  line and exits 1; FTXUI is linked in, so the "install Textual" message and the automatic Python fallback do
+  not exist. The window needs at least 60 x 24 cells.
 - **Platform coverage**: only the MinGW (Windows) build has been compiled and run so far. The POSIX
   socket and process code paths were written and reviewed but not yet built, and the MSVC build, including
   the depth-32 recursion check on MSVC's smaller default stack, is still to be verified. The terminal
   primitives of the shell (`ReadConsoleW`, the console control handler, `sigaction` / `pselect`,
   `read` on stdin) have been compiled on MinGW only (the POSIX branch not even that), and none of them has
-  been run against a real terminal by a test.
+  been run against a real terminal by a test. The workbench (FTXUI on MinGW) was also driven once through a
+  Windows pseudo-console by hand, but `sys::TerminalModeGuard` on POSIX and FTXUI on MSVC, Linux and macOS are
+  unbuilt, and the workbench's keys and colours have not been checked in a real terminal window by a person.
 
 ## Python behaviours mirrored on purpose
 
@@ -441,8 +632,50 @@ macOS: the same commands in any terminal; `export NO_COLOR=1`.
 Rows 6, 7, 15 and 16 (Ctrl+C) will not react if the shell was started from a launcher that disabled Ctrl+C
 for its children (some IDE run buttons and task runners do): start it from a normal terminal window.
 
-A slow statement: create two tables of 3,000 rows each and run a cross join of them (`DIKHAO * SE a, b;`),
-or any statement that takes a few seconds.
+A slow statement: create two tables of 3,000 rows each and run a cross join of them
+(`DIKHAO GINO(*) SE a MILAO b PAR 1 = 1;`), or any statement that takes a few seconds.
+
+### Workbench
+
+Build `cpp/build`, then start the C++ and Python workbenches side by side on separate empty data folders:
+
+```
+cpp/build/meradb_cli workbench --local -D <empty folder 1>
+python -m meradb workbench --local -D <empty folder 2>
+```
+
+**Key probe (do this first, once per terminal).** `cpp/build/tests/wb_keyprobe` shows the bytes FTXUI
+receives for each key. Run it, press F1 F5 F6, Ctrl+Up / Ctrl+Down, Shift+Left / Right / Up / Down / Home /
+End, Ctrl+Left / Right, Ctrl+S / R / O / L / Q / P / N / A / C, Esc, Tab, Shift+Tab and PageUp / PageDown,
+and press `x` to leave. Then run `wb_keyprobe --guard` (the workbench's terminal-mode guard): Ctrl+C, Ctrl+S,
+Ctrl+Q, Ctrl+O and Ctrl+R must show up as bytes `03 13 11 0F 12` and must neither end nor freeze the probe.
+Compare what arrives with the tables in `cpp/include/meradb/wb_keys.h`; if a terminal sends something else
+for a key (for example Shift+arrows), add its bytes to that table (nothing else in the workbench knows byte
+sequences) and note it in the pull request.
+
+| # | Terminal | Check | Expect |
+|---|---|---|---|
+| W1 | Windows Terminal | `meradb_cli workbench --local -D <empty folder>` next to `python -m meradb workbench --local -D <other empty folder>` | Same layout, titles, footer labels and start-up log lines; colours close to the Python screen |
+| W2 | Windows Terminal | Resize the window: larger, smaller than 60 x 24, back | Layout follows; the too-small message appears and disappears; no leftover characters |
+| W3 | Windows Terminal | Type a two-line statement, `F5`; `Ctrl+R`; select one line with Shift+arrows and `F5`; `Ctrl+A`, `F6` | Results, log and highlighting as in Python; only the selection runs |
+| W4 | Windows Terminal, classic console | `Ctrl+Up` / `Ctrl+Down`, `Ctrl+P` / `Ctrl+N`, `F1`, `Esc`, `Tab` / `Shift+Tab`, `PageUp/PageDown`, `Ctrl+S`, `Ctrl+O`, `Ctrl+L` | Every key does what the help screen says; note any key a terminal does not deliver (use `wb_keyprobe`) |
+| W5 | Windows Terminal | Type `'é😀नमस्ते日本'` in a string, INSERT, SELECT | Text intact in the editor, log and table; columns stay aligned; Backspace removes a whole emoji |
+| W6 | Any | Ctrl+C in the editor; then `SHURU;`, an INSERT, Ctrl+C again | A yellow hint each time; nothing quits; the transaction is still open (header marker) |
+| W7 | Any | `SHURU;`, an INSERT, Ctrl+Q; restart the workbench; `DIKHAO * SE t;` | Exit code 0, terminal restored; the row is not there (rolled back); no `RECOVERY` note |
+| W8 | Any | A slow statement (cross join of two 3,000-row tables, see above): while it runs resize, press `F1`, `Ctrl+L`, queue a second `F5`; then press `Ctrl+Q` | The screen stays responsive, the busy label shows `[chal raha hai +1]`; Ctrl+Q shows `[band ho raha hai ...]`, waits, then exits cleanly; the queued second statement does not run |
+| W9 | Windows Terminal | Close the window with the X during a transaction; start again | Same as Python: a `RECOVERY: ...` note on stderr at the next start and the transaction rolled back |
+| W10 | Classic console (`conhost`, `WT_SESSION` and `TERM` unset) | Start, use it, quit | Colours and keys work (F-keys, arrows); after exit later commands print normally and the code page / console modes are as before |
+| W11 | Linux (xterm / gnome-terminal / tmux) | Start, `Ctrl+S` in the editor, `Ctrl+Q`; afterwards `stty -a` | Ctrl+S does not freeze the terminal; Ctrl+Q quits; `isig` and `ixon` are back on afterwards |
+| W12 | macOS Terminal.app and iTerm2 | Same keys; `F5` / `F6` may need "Use function keys" settings; `Ctrl+O` | Note which terminals send what; the aliases (Ctrl+R, Ctrl+P / N) work everywhere |
+| W13 | Any | `Ctrl+O` -> Connect to a running C++ server and to a Python server; wrong port; wrong password; `Local mode` | Header shows `host:port`; failures are a red `Connect nahi hua: ...` and the old connection stays; statements work in all combinations |
+| W14 | Any | Stop the server (`meradb stop`) while connected, run a statement, then `Ctrl+O` -> Connect again | A red error line and `Ctrl+O se dobara connect karo.`; the UI stays alive; reconnect works |
+| W15 | Any | A table with 20,000 rows: `DIKHAO * SE big;`, scroll with arrows / PageDown / End, Right / Left | Smooth; memory reasonable; the title shows `Results -- 20000 row(s)` |
+| W16 | Any | Paste 5,000 characters over 100 lines into the editor | Responsive; all lines present; Tab inside is not inserted |
+| W17 | Any | Mouse: click each panel, wheel over the log and results; drag over text with and without Shift | The clicked panel gets the yellow border; the wheel scrolls; the terminal's own selection works only with Shift held (mouse tracking is on) |
+| W18 | Any | `meradb_cli workbench < /dev/null`, `meradb_cli workbench \| cat` | One line on stderr (`Workbench ke liye terminal chahiye ...`), exit code 1, nothing else |
+| W19 | Any | `TERM=dumb meradb_cli workbench`, `NO_COLOR=1` | Not supported / ignored: note what happens (FTXUI decides); the program must not corrupt the terminal |
+
+Results of these go in the pull request, not in the repository.
 
 ## Next phases
 
@@ -454,12 +687,14 @@ or any statement that takes a few seconds.
   `lower`), `openBackend` (the shell's connection logic), `Backend` (`LocalBackend` / `Connection`),
   `protocol::kProgramVersion`. History was deliberately left out of the shell (Python has none); if the
   workbench wants a query history it is new in both programs and belongs to the workbench alone.
-- **Phase 4, workbench**: `Backend::schemaTree()` already returns the JSON the sidebar needs
-  (both local and remote); FTXUI panels; a query must run off the UI thread, but a
-  transaction's statements must all run on ONE thread, so use a dedicated worker thread per
-  session, never a pool. Use the help reference rows for a help pane, `runText` / `formatResult` for an
-  output pane, `term::Style` where raw ANSI is needed (FTXUI draws its own colours), the tokenizer for
-  syntax highlighting (`highlight.py`'s job). Do not use `ConsoleLineSource` or `sys::InterruptGuard`
+- **Phase 4, workbench**: done (see "The workbench"). Phase 5 should reuse or check: the key probe
+  (`cpp/build/tests/wb_keyprobe`, with `--guard`) on every terminal, because the Shift+arrow and Ctrl+arrow
+  byte sequences are the part of the workbench that only a real terminal can confirm (the table in
+  `wb_keys.h` is the one place to change); the generators `gen_highlight_golden.py` and `gen_word_table.py`;
+  and the Pilot comparison (`workbench_diff.py`: add a scenario to `workbench_scenarios.json` for any new
+  behaviour). Verify FTXUI v5.0.0 and `sys::TerminalModeGuard` on Linux, macOS and MSVC (unbuilt so far), and
+  fill in the findings of the manual checklist W1-W19 (the Windows-console results especially: classic
+  console key delivery, the code page after exit). Do not use `ConsoleLineSource` or `sys::InterruptGuard`
   inside the full-screen UI: FTXUI owns the terminal and its keys.
 - **Phase 5, polish**: `docs/REPORT.md`; the final test and documentation pass; grow the divergence list
   above; consider Unicode identifiers (ICU or a small generated table of letter ranges) if full parity is

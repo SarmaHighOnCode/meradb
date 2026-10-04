@@ -638,8 +638,8 @@ A C++17 port lives in `cpp/`. It shares the Python engine's grammar, output, on-
 and wire protocol, and is checked against it (example scripts, a client/server interop matrix,
 data folders passed between the engines, a trigger/procedure fuzz). It has the full engine,
 users and privileges, triggers, stored procedures, the TCP server, the `run` / `start` /
-`stop` / `status` commands and the interactive shell (`meradb_cli shell`); the workbench is
-Python-only for now.
+`stop` / `status` commands, the interactive shell (`meradb_cli shell`) and the full-screen workbench
+(`meradb_cli workbench`, built with FTXUI; build option `MERADB_WORKBENCH`, default ON).
 See [docs/CPP.md](docs/CPP.md) for build instructions and status.
 
 ### Use from Python
