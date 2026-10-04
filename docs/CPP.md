@@ -83,7 +83,7 @@ cmake -S cpp -B cpp/build -G "Visual Studio 17 2022"
 cmake --build cpp/build --config Release
 ```
 
-Linux / macOS:
+Linux / macOS (Linux is verified, macOS is not; see "POSIX (Linux) build"):
 
 ```
 cmake -S cpp -B cpp/build
@@ -272,9 +272,103 @@ colours on weaker terminals.
 build has no workbench (`-DMERADB_WORKBENCH=OFF`: `workbench` prints `abhi C++ version mein nahi hai`);
 2 for a usage error. FTXUI is linked statically, so Python's "install Textual" path does not exist.
 
-**What is not tested automatically.** The terminal itself: the real byte sequences a terminal sends for
-Shift+arrows and Ctrl+Up, the terminal-mode guard on POSIX, the mouse, and how the screen looks. See the
-manual checklist (start with the key probe).
+**What is not tested automatically.** On Linux the key byte sequences, the terminal-mode guard, SIGHUP, paste and
+the restored terminal are checked on a pseudo-terminal (`pty_*.py`, see "POSIX (Linux) build"). Not covered: what
+a particular terminal program really sends, the Windows consoles, macOS, the mouse, and how the screen looks. See
+the manual checklist (start with the key probe).
+
+## POSIX (Linux) build
+
+Verified on Ubuntu (WSL2) with g++ 15.2, clang++ 21 and CMake 4.2, Python 3.14. Nothing but the compilers, CMake,
+make and Python is needed (FTXUI, nlohmann/json and Catch2 are fetched). Build in a native Linux folder, not on a
+mounted Windows drive (slow):
+
+```
+sudo apt-get install -y g++ cmake make python3        # clang++ optionally
+cmake -S cpp -B ~/b-rel -DCMAKE_BUILD_TYPE=Release -DMERADB_WORKBENCH=ON      # or Debug; or -DMERADB_WORKBENCH=OFF
+cmake --build ~/b-rel -j
+ctest --test-dir ~/b-rel -j4 --output-on-failure
+```
+
+Results (all builds are warning-free with `-Wall -Wextra`):
+
+| Compiler / config | Tests |
+|---|---|
+| g++ 15, Release, workbench ON | 780 passed, 1 skipped (`workbench_diff` needs Textual) |
+| g++ 15, Debug, workbench ON | 780 passed, 1 skipped |
+| g++ 15, Release and Debug, workbench OFF | 612 passed (no workbench tests, `pty_shell` included) |
+| clang++ 21, Release, workbench ON | 780 passed, 1 skipped |
+| g++ 15 Release with `workbench_diff` (venv with Textual) | 12 of 12 scenarios match Python's Pilot run |
+
+An AddressSanitizer + UBSan build also ran the suite: no memory error or undefined behaviour was reported
+anywhere. The `stack_guard` / `hardening` tests that deliberately measure the real stack (and the queries that run
+under the same budget) fail or hang under ASan, whose bigger frames and fake stacks break those measurements; that is
+a property of the sanitizer, not of the code, so do not use ASan to run those tests.
+
+**Bugs the Linux build found (all fixed).**
+- `test_parser_ddl.cpp` kept a pointer into a temporary statement list and dereferenced it after the list was gone
+  (a segfault on glibc, silent luck on MinGW).
+- The shell split piped stdin at a lone `\r` and at `\r\n` on every platform. Python does that on Windows only (see
+  "Known divergences"), so the Linux shell now splits at `\n` only; `shell_diff_local` and `ws_text_diff` caught it.
+- GCC 15's `-Wmaybe-uninitialized` fired on a braced `Row` in `test_evaluator.cpp`; clang's `-Wreturn-stack-address`,
+  `-Wunused-private-field` and `-Wunused-lambda-capture` fired in `stack_guard.cpp`, `sys_compat.h` and
+  `test_wb_bridge.cpp`; and `patch_ftxui.cmake` had a missing space in one `set()` (a CMake author warning).
+- `cli_args_diff.py` compared argparse help text, whose layout Python 3.13 changed; it now skips that part there.
+
+No bug was found in the POSIX terminal, socket, process-spawn or `stack_guard` code themselves; they passed at
+once. The 781 test count differs from Windows (780 passed + 3 skipped of 783, with Textual installed) by the three `pty_*`
+tests that Windows skips and the `workbench_diff` that Linux skips without Textual.
+
+**Pseudo-terminal tests** (`cpp/tests/ptyutil.py` is the harness: a child on a real pty with its own session and
+controlling terminal, termios access, and a small VT screen model for the workbench). They need Python's `pty`; on
+Windows they print `SKIP` and exit 77, which ctest reports as skipped.
+
+```
+python3 cpp/tests/pty_shell.py     ~/b-rel/meradb_cli
+python3 cpp/tests/pty_keys.py      ~/b-rel/tests/wb_keyprobe
+python3 cpp/tests/pty_workbench.py ~/b-rel/meradb_cli     # also drives the Python workbench if Textual is installed
+```
+
+- `pty_shell.py` runs every interaction through the C++ shell and `python -m meradb shell` on identical ptys and
+  compares the transcripts: two-line statements and the continuation prompt, a pasted block, Ctrl+D at an empty
+  prompt, Ctrl+C at a prompt / on a continuation line / after half a typed line (`^C`, `Phir milenge!`, exit 0),
+  Backspace, Ctrl+U, Ctrl+W, Backspace over multi-byte characters (with IUTF8, as terminal emulators set it),
+  Unicode round trip, and the fully coloured session (byte for byte the same as Python's). Only C++: Ctrl+C
+  during a statement (the cross join of two 1,500-row tables finishes and prints, then exit 130, nothing after;
+  Python also exits 130), 30 tries of Ctrl+C racing with Enter (no hang, exit 0 or 130), colour on a tty and none
+  with `NO_COLOR` or piped stdio, and `-W` against a password-protected server (no echo, echo restored, a wrong
+  password exits 1 without a banner).
+- `pty_keys.py` feeds `wb_keyprobe --guard` the xterm, rxvt, tmux, Linux-console and application-mode sequences of
+  F1, F5, F6, Ctrl+arrows, Shift+arrows, Ctrl+Shift+arrows, Home / End (six spellings), PageUp / PageDown,
+  Ctrl+Home / End, Tab, Shift+Tab, Escape and the control keys Ctrl+R P N S O L Q C A, and checks both the bytes
+  FTXUI delivers and what `wb_keys.h` makes of them (the probe prints `-> action Run`, `-> editor Left +select`,
+  ...). Every sequence reaches the workbench as one event and maps as the table intends; FTXUI itself rewrites
+  `ESC [ 11 ~` to F1 and `ESC O H` / `ESC O F` to Home / End before the table sees them. The guard keeps the probe
+  alive and unfrozen through Ctrl+C, Ctrl+S, Ctrl+Q, Ctrl+O and Ctrl+R, and ISIG / IXON / ICANON / ECHO are back
+  afterwards.
+- `pty_workbench.py` starts `workbench --local` on a temp folder, rebuilds the screen from the output and checks:
+  the start-up screen, a typed query and F5 (results title, rows, log, schema tree), Ctrl+S (the terminal does not
+  freeze; a CSV line is logged; typing still works), Ctrl+C (hint, still running), bracketed paste with a Tab (four
+  spaces inserted, focus unchanged), resize to 100 x 30, below the minimum and back, an open transaction, Ctrl+Q
+  (exit 0, rolled back, ISIG / IXON / ICANON / ECHO / IEXTEN restored, alternate screen, mouse and paste modes
+  switched off, cursor shown), SIGHUP and SIGTERM with a transaction open (exit, terminal restored, clean rollback,
+  no `RECOVERY` note on the next start) and SIGKILL (a `RECOVERY` note on the next start and the row gone).
+
+**Differences found against Python on a Linux terminal** (also in "Known divergences"): Ctrl+D after typed text
+needs one press fewer in C++; piped `\r` handling follows each platform's Python; the argparse help layout is the
+3.12 one. Everything else compared above was identical.
+
+**Manual checklist, what the Linux runs cover.** Verified on Linux by the tests above (the manual run need not
+repeat them): shell rows 2 (prompts, continuation), 3 (editing keys are the kernel's, compared with Python),
+4 (Unicode typed, erased and echoed), 6, 9, 10, 11 (all of it, with the Ctrl+D difference), 12, 16, and 7 (Ctrl+C
+during a statement: exit 130, result printed); row 1 only for the colour bytes (not how it looks). Workbench rows
+W3 (typing and F5; the selection keys are covered by the key table, not by looking at the highlight), W4 (all key
+bytes), W6 (hint; the open transaction marker stays), W7, W9 (the Linux equivalent is SIGHUP: clean rollback; a
+hard kill gives the `RECOVERY` note), W11 (Ctrl+S, Ctrl+Q and the restored modes), W16 (a Tab in a paste; not the
+5,000-character size), W18 (`wb_cli_smoke`), and W2 in part (resize and the too-small message). Still to do on
+other systems or by a person: rows 1 (look), 5, 8, 13, 14, 15 (Windows consoles), W1, W5, W8 (resize while a
+statement runs), W10, W12 (macOS), W13, W14, W15, W17 (mouse), W19, W20 (light colour scheme), W21, and all of
+macOS (nothing was compiled there; the `__APPLE__` branches of `executablePath` and `stack_guard` are untested).
 
 ## Server notes
 
@@ -305,6 +399,9 @@ python cpp/tests/gen_shell_help.py         # regenerate src/shell_help_data.inc 
 python cpp/tests/gen_shell_transcripts.py  # regenerate golden_transcripts.h (what Python's shell prints per script)
 python cpp/tests/gen_lower_table.py        # regenerate the Unicode lower-case tables (needs Python 3.12 / Unicode 15.0)
 python cpp/tests/workbench_diff.py --probe cpp/build/tests/wb_probe   # the workbench against Python's, scenario by scenario (needs Textual)
+python cpp/tests/pty_shell.py cpp/build/meradb_cli            # POSIX only: the shell on a pseudo-terminal, next to Python's
+python cpp/tests/pty_workbench.py cpp/build/meradb_cli        # POSIX only: the workbench on a pseudo-terminal
+python cpp/tests/pty_keys.py cpp/build/tests/wb_keyprobe      # POSIX only: terminal key sequences against wb_keys.h
 python cpp/tests/gen_highlight_golden.py   # regenerate golden_highlight.h (what highlight.py colours, line by line)
 python cpp/tests/gen_word_table.py         # regenerate word_table.inc (Python's \w, for number boundaries in the highlighter)
 ```
@@ -596,14 +693,21 @@ These are deliberate and small.
   slow SSH or classic-console link. At the minimum size the log (10 rows) and the editor (9 rows) are fixed, as in
   Python, so at 60 x 24 or 80 x 24 the Results panel shows the header and about one row: use a taller window
   (about 40 rows) to see results comfortably.
-- **Platform coverage**: only the MinGW (Windows) build has been compiled and run so far. The POSIX
-  socket and process code paths were written and reviewed but not yet built, and the MSVC build, including
-  the depth-32 recursion check on MSVC's smaller default stack, is still to be verified. The terminal
-  primitives of the shell (`ReadConsoleW`, the console control handler, `sigaction` / `pselect`,
-  `read` on stdin) have been compiled on MinGW only (the POSIX branch not even that), and none of them has
-  been run against a real terminal by a test. The workbench (FTXUI on MinGW) was also driven once through a
-  Windows pseudo-console by hand, but `sys::TerminalModeGuard` on POSIX and FTXUI on MSVC, Linux and macOS are
-  unbuilt, and the workbench's keys and colours have not been checked in a real terminal window by a person.
+- **Platform coverage**: the MinGW (Windows) and the Linux (g++ 15, see "POSIX (Linux) build") builds are
+  compiled and tested, and the Linux terminal code (`sigaction` / `pselect`, `read` on stdin, the termios guard,
+  SIGHUP, bracketed paste) is run against pseudo-terminals by `pty_*.py`. Still unverified: the MSVC build,
+  including the depth-32 recursion check on MSVC's smaller default stack; macOS (the `__APPLE__` branches); and
+  the workbench's keys and colours in a real terminal window looked at by a person.
+- **Shell: piped input on POSIX**: Python's stdin splits lines at `\n` only on POSIX (universal newlines are a
+  Windows-only translation of stdin), so a lone `\r` is not a line break there and `\r\n` leaves a `\r` at the end
+  of the line. The C++ shell does the same on POSIX (it translates on Windows only), so each matches its own
+  platform's Python.
+- **Shell: Ctrl+D after typed text** (POSIX terminal): the first Ctrl+D hands the typed text to the program; the C++
+  shell treats a second Ctrl+D as the end of that line (a continuation prompt follows), Python needs a third. A
+  Ctrl+D on an empty line ends both shells identically. The driver's own editing keys (Backspace, Ctrl+U, Ctrl+W,
+  with IUTF8 whole characters) behave the same in both.
+- **CLI help on Python 3.13+**: argparse changed its option layout in 3.13 (`-D, --data DATA`); the C++ help text
+  follows 3.12 and earlier, so `cli_args_diff.py` skips the help-wrapping comparison on 3.13 or newer.
 
 ## Python behaviours mirrored on purpose
 
@@ -730,9 +834,7 @@ Results of these go in the pull request, not in the repository.
 - **Phase 5, polish**: `docs/REPORT.md`; the final test and documentation pass; grow the divergence list
   above; consider Unicode identifiers (ICU or a small generated table of letter ranges) if full parity is
   wanted, which would also let the tokenizer escape every unprintable character like Python's `repr()`.
-  Verify the POSIX (Linux, macOS) and MSVC builds first thing and fix warnings (the code follows the
-  portability rules but those toolchains have not been run yet), including a Debug build under MSVC to
-  check the stack and depth guards on its smaller stack. The terminal primitives in `sys_compat`
-  (`readTerminalLine`, `InterruptGuard` / `InterruptGate`, `AnsiConsole`) are the part most in need of a
-  real run on Linux, macOS and a Visual Studio build; an optional pseudo-terminal test (Python's `pty`
-  module driving both shells) is the natural next check on POSIX.
+  Linux is done (see "POSIX (Linux) build", including the pseudo-terminal tests). Still to verify: the macOS
+  and MSVC builds and fix their warnings (the code follows the portability rules but those toolchains have not
+  been run yet), including a Debug build under MSVC to check the stack and depth guards on its smaller stack,
+  and the Windows-console and macOS rows of the manual checklist.
