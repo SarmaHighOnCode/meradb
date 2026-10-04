@@ -49,6 +49,13 @@ struct BridgeCloser {
     ~BridgeCloser() { bridge.close(); }
 };
 
+// Asks the terminal to wrap pasted text in ESC[200~ ... ESC[201~ (FTXUI 5 does not), so a pasted Tab can be told from a
+// typed one. Terminals that do not know the mode ignore it.
+struct BracketedPaste {
+    BracketedPaste() { std::cout << "\x1b[?2004h" << std::flush; }
+    ~BracketedPaste() { std::cout << "\x1b[?2004l" << std::flush; }
+};
+
 #ifndef _WIN32
 // SIGHUP (the terminal went away) ends the loop like Ctrl+Q does, so the code after it waits for the worker and closes
 // the backend, which rolls an open transaction back. (FTXUI itself only handles TERM, INT, SEGV, ILL, ABRT, FPE.)
@@ -104,6 +111,7 @@ int runWorkbench(std::unique_ptr<Backend> backend, const CliArgs& args) {
     ftxui::Component root = std::make_shared<RootWithStart>(ui.component(), [&bridge] { bridge.start(); });
     {
         sys::TerminalModeGuard guard;  // before Loop (see its header comment)
+        BracketedPaste paste;
 #ifndef _WIN32
         HangupHandler hangup(&screen);
 #endif

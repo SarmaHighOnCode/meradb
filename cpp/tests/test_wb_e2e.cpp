@@ -616,3 +616,23 @@ TEST_CASE("wbe2e a local connect is refused while a transaction is open, and wor
     REQUIRE(rig.s().table() != nullptr);
     CHECK(rig.s().table()->rows.at(0).at(0).text == "0");
 }
+
+TEST_CASE("wbe2e a Tab inside a bracketed paste is text, a typed Tab moves the focus", "[wbe2e]") {
+    E2e rig;
+    rig.press(Event::Special(keys::kPasteStart));
+    rig.type("a");
+    CHECK(rig.press(Event::Tab));
+    rig.type("b\nc");
+    rig.press(Event::Special(keys::kPasteEnd));
+    CHECK(rig.ui->focus() == Panel::Editor);
+    CHECK(rig.s().editor().text() == "a    b\nc");   // the editor stores a Tab as four spaces
+    // Outside a paste the Tab goes to the next panel.
+    CHECK(rig.press(Event::Tab));
+    CHECK(rig.ui->focus() == Panel::Tree);
+    // A paste into another panel is not typed anywhere, and its Tabs do not move the focus.
+    rig.press(Event::Special(keys::kPasteStart));
+    rig.press(Event::Tab);
+    rig.press(Event::Special(keys::kPasteEnd));
+    CHECK(rig.ui->focus() == Panel::Tree);
+    CHECK(rig.s().editor().text() == "a    b\nc");
+}

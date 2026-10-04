@@ -541,6 +541,12 @@ These are deliberate and small.
 - **Workbench: extra keys**: `Ctrl+P` / `Ctrl+N` (history, because not every terminal delivers Ctrl+Up /
   Ctrl+Down), `Ctrl+A` (select all), PageUp / PageDown, and the mouse subset (click focuses a panel, the wheel
   scrolls; a click in the editor only focuses it and does not place the cursor). Listed in the help.
+- **Workbench: paste and Tab**: in Python's workbench a typed Tab moves the focus (Textual's `TextArea` default)
+  while a pasted Tab is inserted, because Textual receives pastes as one event. FTXUI 5 has no paste event, so
+  the workbench switches on the terminal's bracketed-paste mode (`ESC[?2004h`) and treats what arrives between
+  `ESC[200~` and `ESC[201~` as pasted: a Tab there is inserted into the editor (the editor stores a Tab as four
+  spaces, Python keeps the tab character) and never moves the focus. A terminal without bracketed paste
+  (the classic Windows console) delivers a pasted Tab as a typed one, which moves the focus.
 - **Workbench: CSV failure and cell newlines**: a CSV that cannot be written is logged in red
   (`CSV save nahi hua: <reason>`; Python would crash with a traceback). A `\n` or `\r` inside a cell is shown as
   `↵` and a tab as a space, so a table row stays one line; the CSV keeps the raw text.
@@ -670,7 +676,7 @@ sequences) and note it in the pull request.
 | W13 | Any | `Ctrl+O` -> Connect to a running C++ server and to a Python server; wrong port; wrong password; `Local mode` | Header shows `host:port`; failures are a red `Connect nahi hua: ...` and the old connection stays; statements work in all combinations |
 | W14 | Any | Stop the server (`meradb stop`) while connected, run a statement, then `Ctrl+O` -> Connect again | A red error line and `Ctrl+O se dobara connect karo.`; the UI stays alive; reconnect works |
 | W15 | Any | A table with 20,000 rows: `DIKHAO * SE big;`, scroll with arrows / PageDown / End, Right / Left | Smooth; memory reasonable; the title shows `Results -- 20000 row(s)` |
-| W16 | Any | Paste 5,000 characters over 100 lines into the editor | Responsive; all lines present; Tab inside is not inserted |
+| W16 | Any | Paste 5,000 characters over 100 lines into the editor | Responsive; all lines present; a Tab inside the pasted text is inserted (as four spaces) on terminals with bracketed paste and does not move the focus; a typed Tab still moves the focus, as in Python |
 | W17 | Any | Mouse: click each panel, wheel over the log and results; drag over text with and without Shift | The clicked panel gets the yellow border; the wheel scrolls; the terminal's own selection works only with Shift held (mouse tracking is on) |
 | W18 | Any | `meradb_cli workbench < /dev/null`, `meradb_cli workbench \| cat` | One line on stderr (`Workbench ke liye terminal chahiye ...`), exit code 1, nothing else |
 | W19 | Any | `TERM=dumb meradb_cli workbench`, `NO_COLOR=1` | Not supported / ignored: note what happens (FTXUI decides); the program must not corrupt the terminal |

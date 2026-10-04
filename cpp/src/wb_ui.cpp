@@ -33,6 +33,7 @@ struct WorkbenchUi::Impl {
     std::unique_ptr<ConnectForm> form;   // exists while the connect dialog is open
     HelpDialog help;
     bool helpOpen = false;
+    bool pasting = false;   // between the bracketed-paste markers: a Tab is text, not "next panel"
 
     PanelView& panelOf(Panel p) {
         switch (p) {
@@ -224,6 +225,8 @@ bool WorkbenchUi::Impl::dispatch(const Event& e) {
         session.requestQuit();
         return true;
     }
+    if (e == Event::Special(keys::kPasteStart)) { pasting = true; return true; }
+    if (e == Event::Special(keys::kPasteEnd)) { pasting = false; return true; }
     if (session.quitting()) return true;
     syncModal();
     const Modal modal = session.modal();
@@ -251,6 +254,11 @@ bool WorkbenchUi::Impl::dispatch(const Event& e) {
     if (keys::isConnect(e)) { session.openConnectDialog(); return true; }
     if (keys::isClearLog(e)) { session.clearLog(); return true; }
     if (keys::isHelp(e)) { session.showHelp(); return true; }
+    if (e == Event::Tab && pasting) {
+        // Pasted text goes into the focused text box (Textual: a Paste event); a pasted Tab never moves the focus.
+        if (focus == Panel::Editor) session.editor().insert("\t");
+        return true;
+    }
     if (e == Event::Tab) { cycleFocus(1); return true; }
     if (e == Event::TabReverse) { cycleFocus(-1); return true; }
     return panelOf(focus).OnEvent(e);

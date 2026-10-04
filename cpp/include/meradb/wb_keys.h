@@ -17,6 +17,9 @@ inline ftxui::Event ctrl(char letter) { return ftxui::Event::Special(std::string
 inline const std::string kShiftUp = "\x1b[1;2A", kShiftDown = "\x1b[1;2B", kShiftRight = "\x1b[1;2C",
                          kShiftLeft = "\x1b[1;2D", kShiftHome = "\x1b[1;2H", kShiftEnd = "\x1b[1;2F";
 
+// Bracketed paste (DEC mode 2004, switched on by the workbench): a terminal wraps pasted text in these two sequences.
+inline const std::string kPasteStart = "\x1b[200~", kPasteEnd = "\x1b[201~";
+
 // ---- global bindings (they work whichever panel has the focus, as Python's priority bindings do) ----
 enum class Action { Run, Explain, HistoryPrev, HistoryNext, Export, Connect, ClearLog, Help, Quit, Interrupt, SelectAll };
 
