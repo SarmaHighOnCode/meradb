@@ -73,8 +73,8 @@ endforeach()
 
 # --- stb_image_write (public domain / MIT), one header, pinned to a commit: PNG screenshots ---
 FetchContent_Declare(
-  stb_image_write
+  stb
   URL https://raw.githubusercontent.com/nothings/stb/1ee679ca2ef753a528db5ba6801e1067b40481b8/stb_image_write.h
   DOWNLOAD_NO_EXTRACT TRUE
 )
-FetchContent_MakeAvailable(stb_image_write)
+FetchContent_MakeAvailable(stb)
