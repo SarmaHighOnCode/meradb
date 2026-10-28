@@ -3,6 +3,8 @@
 //
 // One frame:   ui.prepare(scale);  ImGui::NewFrame();  ui.draw();  ImGui::Render();
 #pragma once
+#include "meradb/gui_actions.h"
+#include "meradb/gui_dialogs.h"
 #include "meradb/gui_editor.h"
 #include "meradb/gui_fonts.h"
 #include "meradb/gui_grid.h"
@@ -25,7 +27,6 @@ std::string ellipsizeMiddle(const std::string& text, float maxWidth, const std::
 std::string connectionLabel(const std::string& description);
 
 // What a key does. The table is keyBindings(); the Madad window will list it.
-enum class Action { Run, Explain, Previous, Next, ExportCsv, ClearLog, Quit };
 struct KeyBinding {
     ImGuiKeyChord chord;   // ImGuiMod_Ctrl is the Cmd key on macOS (Dear ImGui swaps them there)
     Action action;
@@ -52,6 +53,7 @@ public:
     SchemaTree& schemaTree() { return tree_; }
     ResultsGrid& grid() { return grid_; }
     void perform(Action action);
+    ConnectDialog& connectDialog() { return connectDialog_; }
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
@@ -77,6 +79,7 @@ private:
     void drawResultsTab();
     void drawTabBarExtras(float tabY, float rightX);
     void rebuildLogCache();
+    bool overlayOpen() const;
     void handleShortcuts();
     void followRuns();
     void drawSplitters(float topH, float bodyH, float schemaW, float queryH, const ImVec2& display);
@@ -91,6 +94,8 @@ private:
     EditorWidget editor_;
     SchemaTree tree_;
     ResultsGrid grid_;
+    ConnectDialog connectDialog_;
+    bool overlayWasOpen_ = false;
     float schemaWidth_ = kSchemaWidth;
     float queryFraction_ = 0.42f;
     Tab activeTab_ = Tab::Results;

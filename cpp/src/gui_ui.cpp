@@ -73,6 +73,7 @@ const std::vector<KeyBinding>& keyBindings() {
         {ImGuiMod_Ctrl | ImGuiKey_DownArrow, Action::Next},
         {ImGuiMod_Ctrl | ImGuiKey_S, Action::ExportCsv},
         {ImGuiMod_Ctrl | ImGuiKey_L, Action::ClearLog},
+        {ImGuiMod_Ctrl | ImGuiKey_O, Action::Connect},
         {ImGuiMod_Ctrl | ImGuiKey_Q, Action::Quit},
     };
     return table;
@@ -108,6 +109,9 @@ void GuiUi::perform(Action action) {
             seenRevision_ = session_.log().revision();   // its message is not the end of a run: no tab switch
             break;
         case Action::ClearLog: session_.clearLog(); break;
+        case Action::Connect:
+            if (!session_.quitting()) session_.openConnectDialog();
+            break;
         case Action::Quit: session_.requestQuit(); break;
     }
 }
@@ -133,9 +137,11 @@ bool GuiUi::beginPanel(const char* id, const Rect& rect, std::uint32_t backgroun
     return open;
 }
 
+bool GuiUi::overlayOpen() const { return session_.modal() != wb::Modal::None; }
+
 void GuiUi::handleShortcuts() {
     ImGuiIO& io = ImGui::GetIO();
-    const bool dialog = session_.modal() != wb::Modal::None;
+    const bool dialog = overlayOpen();
     for (const KeyBinding& binding : keyBindings()) {
         if (!ImGui::IsKeyChordPressed(binding.chord)) continue;
         if (dialog && binding.action != Action::Quit) continue;
@@ -240,12 +246,20 @@ void GuiUi::draw() {
             tree_.setFocused(false);
         }
     }
+    if (overlayOpen()) {   // the keys belong to the overlay, not to the panels behind it
+        editor_.setFocused(false);
+        tree_.setFocused(false);
+    }
     drawTopBar({ImVec2(0, 0), ImVec2(display.x, topH)});
     drawSchema({ImVec2(0, topH), ImVec2(schemaW, bodyH)});
     drawQuery({ImVec2(schemaW, topH), ImVec2(rightW, queryH)});
     drawResults({ImVec2(schemaW, topH + queryH), ImVec2(rightW, bodyH - queryH)});
     drawStatusBar({ImVec2(0, display.y - statusH), ImVec2(display.x, statusH)});
     drawSplitters(topH, bodyH, schemaW, queryH, display);
+    connectDialog_.draw(session_, theme(), fonts_, scale_);
+    const bool overlay = overlayOpen();
+    if (overlayWasOpen_ && !overlay) editor_.setFocused(true);   // typing continues where it was
+    overlayWasOpen_ = overlay;
     ImGui::PopFont();
 }
 
@@ -283,7 +297,7 @@ void GuiUi::drawTopBar(const Rect& rect) {
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
         for (int i = 0; i < 2; ++i) {
             ImGui::SetCursorScreenPos(ImVec2(right - labelWidths[i], buttonY));
-            (void)ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH));   // opened in a later batch
+            if (ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH)) && i == 1) perform(Action::Connect);   // Madad: later
             right -= labelWidths[i] + px(8.0f);
         }
         ImGui::PopFont();

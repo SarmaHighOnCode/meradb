@@ -2,7 +2,7 @@
 //
 //   meradb_gui [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W] [-U USER] [--local] [--version]
 //
-// The same options with the same meaning as `meradb workbench` (they are parsed by parseCliArgs). Six more are
+// The same options with the same meaning as `meradb workbench` (they are parsed by parseCliArgs). Eight more are
 // accepted but not listed in --help; they exist for tests and screenshots:
 //   --screenshot FILE.png   draw with a hidden window, write the picture, exit 0
 //   --script TEXT           with --screenshot: run these statements first and wait until they are done
@@ -10,6 +10,8 @@
 //   --size WxH              window size in pixels, default 1280x800 (between 320x240 and 8192x8192)
 //   --editor TEXT           with --screenshot: put TEXT into the query editor (after the script ran)
 //   --expand-tables         with --screenshot: open every table in the schema tree
+//   --open connect|madad|palette   with --screenshot: open that dialog, window or the command menu
+//   --type TEXT             with --screenshot and --open palette: the text typed into its filter box
 #pragma once
 #include "meradb/cli.h"
 #include "meradb/gui_theme.h"
@@ -28,6 +30,8 @@ struct GuiOptions {
     std::optional<std::string> script;
     std::optional<ThemeMode> theme;
     std::optional<std::string> editorText;
+    std::optional<std::string> open;       // "connect", "madad" or "palette"
+    std::optional<std::string> typeText;
     bool expandTables = false;
     int width = 1280;
     int height = 800;

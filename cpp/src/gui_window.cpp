@@ -200,6 +200,10 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
                     if (row.key.kind == wb::NodeKey::Kind::Table && !row.expanded) session.tree().toggle(i);
                 }
             }
+            if (options.open) {
+                if (*options.open == "connect") session.openConnectDialog();
+                else if (*options.open == "madad") session.showHelp();
+            }
             if (exitCode == 0) {
                 OffscreenTarget target;
                 if (!target.create(gl, options.width, options.height)) {
