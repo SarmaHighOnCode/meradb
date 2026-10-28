@@ -66,10 +66,10 @@ Not yet (Phase 5): the final polish pass.
 - `-DMERADB_WORKBENCH=OFF` builds without FTXUI (nothing is fetched for it); `workbench` then prints a
   note and exits 1, and everything else is unchanged. `-DFETCHCONTENT_SOURCE_DIR_FTXUI=<dir>` builds from an
   unpacked copy of the v5.0.0 tarball instead of downloading it (an offline checkout).
-- `meradb_gui`, the desktop workbench window (work in progress), is built by default and also downloads GLFW 3.4,
+- `meradb_gui`, the desktop workbench window (see "Desktop workbench (meradb_gui)"), is built by default and also downloads GLFW 3.4,
   Dear ImGui 1.93.0, the Geist fonts and stb_image_write (see `THIRD_PARTY_NOTICES.md`). `-DMERADB_GUI=OFF` skips
   it, and on Linux it is skipped with one message when the X11 / OpenGL development files are missing. It works
-  with `-DMERADB_WORKBENCH=OFF` too (only FTXUI's small text-width library is still fetched for it).
+  with `-DMERADB_WORKBENCH=OFF` too (FTXUI is not needed for it).
 
 ## Build
 
@@ -282,6 +282,160 @@ the restored terminal are checked on a pseudo-terminal (`pty_*.py`, see "POSIX (
 a particular terminal program really sends, the Windows consoles, macOS, the mouse, and how the screen looks. See
 the manual checklist (start with the key probe).
 
+## Desktop workbench (meradb_gui)
+
+`meradb_gui` is a native desktop window: the graphical sibling of the terminal workbench. It is a **C++-only extra**
+(the Python program has no desktop app). It does what `meradb_cli workbench` does (schema tree, query editor with
+syntax colours, results grid, log, history, `SAMJHAO`, CSV export, connect dialog, language reference) in a window
+with a minimal black-and-white look (dark and light themes), and every label, button, tooltip and message is in
+Hinglish, with the same words as the terminal workbench.
+
+![The desktop workbench, dark theme](images/desktop-dark.png)
+
+![The desktop workbench, light theme](images/desktop-light.png)
+
+![A GROUP BY result in the grid](images/desktop-results.png)
+
+### Build and run
+
+It is built by default (`-DMERADB_GUI=ON`), next to `meradb_cli`, from the same CMake project. The first configure
+also downloads GLFW 3.4, Dear ImGui 1.93.0, the Geist fonts and stb_image_write (pinned, see
+`THIRD_PARTY_NOTICES.md`).
+
+| System | What to do |
+|---|---|
+| Windows (MinGW or MSVC) | Nothing extra. `cmake -S cpp -B cpp/build`, `cmake --build cpp/build`; the program is `cpp/build/meradb_gui.exe` (`cpp/build/Release/meradb_gui.exe` with MSVC). It has no console window, so double-clicking it from Explorer opens only the window. |
+| Linux | Install the X11 and OpenGL development files first: `sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev` (Debian / Ubuntu). Then the same two CMake commands. GLFW is built for X11 only, so on a Wayland desktop it runs through XWayland. If the packages are missing, configure prints one line (`MERADB_GUI skipped: missing ...`) and the rest still builds. |
+| macOS | The code has a macOS path (OpenGL 3.2 core, `defaults read` for the theme, `open` for folders) but it **has not been built yet**. |
+
+`-DMERADB_GUI=OFF` leaves the window out. `-DMERADB_WORKBENCH=OFF -DMERADB_GUI=ON` works too: the desktop window does
+not need FTXUI. It needs a screen and OpenGL 3.0; a machine without one gets an error message and exit code 3.
+
+### Command line and keys
+
+```
+meradb_gui [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W] [-U USER] [--local] [--version]
+meradb_cli gui [same options]          # starts meradb_gui from the same folder; says so if it is not there
+```
+
+The options mean the same as for `meradb_cli workbench`. Started with no options (a double-click) it connects to a
+running server on the default port, and otherwise opens the data folder directly (local mode). `-W` needs a
+terminal to type the password in, so it is refused when the program has no console (use `MERADB_PASSWORD` or the
+Connect dialog instead).
+
+| Key | Action |
+|---|---|
+| Ctrl+Enter, F5 | Chalao: run the selection, else all the text |
+| Ctrl+Shift+Enter, F6 | Samjhao (`SAMJHAO`, the query plan) |
+| Alt+Up / Alt+Down, Ctrl+Up / Ctrl+Down | Pichli / Agli: walk the history |
+| Ctrl+S | CSV: save the results |
+| Ctrl+O | Connect dialog |
+| F1 | Madad: the keys and the language reference |
+| Ctrl+K | Command menu: actions, every table, the last 20 queries |
+| Ctrl+L | Clear the log |
+| Ctrl+Q, closing the window | Bahar: waits for a running statement, rolls back an open transaction, then exits |
+| Ctrl+C / Ctrl+Shift+C on a results cell | Copy the cell / the row, tab separated |
+| Ctrl+Z, Ctrl+Y (Ctrl+Shift+Z) | Undo, redo in the editor |
+
+On macOS Ctrl means the Cmd key. The top bar has a Light / dark button; the first theme follows the system setting
+(Windows `AppsUseLightTheme`, macOS `AppleInterfaceStyle`, else dark).
+
+### Hidden test options
+
+Not in `--help`; they exist so the window can be tested and photographed without a person:
+
+| Option | Meaning |
+|---|---|
+| `--screenshot FILE.png` | draw with a hidden window, write the picture and exit 0 (3 if there is no usable display or OpenGL) |
+| `--script TEXT` | with `--screenshot`: run these statements first and wait until the worker is idle |
+| `--editor TEXT` | put this text into the editor |
+| `--theme light\|dark`, `--size WxH` | theme and size of the screenshot (default 1280x800) |
+| `--expand-tables` | open every database in the schema tree |
+| `--open connect\|madad\|palette`, `--type TEXT` | show a dialog, and type into its first field |
+
+The pictures in `docs/images/` were made like this (a temporary data folder with a small `college` database):
+
+```
+MERADB_DATA=<temp folder> meradb_gui --local -d college --theme dark --size 1280x800 --expand-tables \
+    --editor "<query>" --script "<query>" --screenshot desktop-dark.png
+```
+
+### Architecture
+
+- **`meradb_wbmodel`**: a static library with everything of the workbench that has no screen in it: `wb_text` (text
+  buffer, log, history, cells, CSV), `wb_editor`, `wb_tree` (the schema tree), `wb_worker`, `wb_session`, `wb_markdown`
+  and `wb_help` (with the embedded `docs/LANGUAGE.md`), and `wb_width` (character widths; our own tables, so the
+  library needs no FTXUI). The terminal workbench (`meradb_workbench`, FTXUI) and the window (`meradb_gui_lib`) both
+  link it, so the terminal workbench behaves as before.
+- **`wb::Session` is reused, not copied.** It is the controller of the terminal workbench: it owns the backend (a
+  server `Connection` or a `LocalBackend`), the query history, the log, the schema tree, the current result and the
+  quit protocol. The window is a second view over it (`gui_ui.cpp`), so connecting, history, CSV and `SAMJHAO`
+  behave exactly as in the terminal.
+- **One worker thread.** As in the terminal workbench every database call of a session runs on one `wb::Worker`
+  thread, so a slow statement never freezes the window and a transaction stays on its thread.
+- **The poster queue** (`gui_poster`). When the worker finishes it hands a closure to the session's `UiPoster`. The
+  window's poster pushes it into a mutex-protected queue and calls `glfwPostEmptyEvent()`; the main loop runs the
+  queued closures at the start of each frame. A token makes closures that arrive after the session is gone harmless.
+- **The idle loop** (`gui_window.cpp`). Dear ImGui is an immediate-mode library, so the whole UI is redrawn each
+  frame, but frames are drawn only when something happened: the loop sleeps in `glfwWaitEventsTimeout` (0.5 s when idle,
+  for the caret blink; 50 ms while a statement runs; 1 s when minimised), so an idle window uses almost no CPU.
+- **Widgets.** The editor, the results grid (`ImGuiListClipper`, so 100,000 rows stay smooth), the schema tree, the
+  Madad window with its small Markdown renderer, the Connect dialog and the Ctrl+K command menu are in `gui_*.cpp`,
+  drawn with Dear ImGui. The editor is our own widget over `wb::TextBuffer`; the highlighter is `highlight::spans`, the
+  same one the terminal workbench uses, run only for the visible lines.
+- **Platform code** is in `gui_platform.cpp` (open a folder, system theme) and `gui_window.cpp` (GLFW, OpenGL 3.0 /
+  GLSL 130; 3.2 core on macOS, IME position on Windows, the icon, scaling by the monitor's content scale).
+- **Tests.** About 120 Catch2 cases (`meradb_gui_tests`): unit tests for the theme, keys, undo, text-to-pixel mapping,
+  tree and menu filters, the Markdown parser (it must terminate on hostile input) and the poster; and headless UI
+  tests that run real frames of the whole UI without a window against a `LocalBackend` in a temporary data folder,
+  feeding keys and mouse through ImGui's input queue (Chalao, Samjhao, history, CSV, dialogs, quit with an open
+  transaction, no Dear ImGui ID conflicts). The `gui_screenshot` ctest runs `meradb_gui --screenshot` for both
+  themes and checks the picture; it is skipped (exit code 77) where there is no display. On a Linux machine
+  without a display run the suite under `xvfb-run` (`sudo apt-get install -y xvfb`).
+
+### Fonts and licences
+
+The interface uses **Geist** (Regular and Medium) and the editor, grid and log use **Geist Mono** (Regular), both
+SIL Open Font License 1.1, embedded unmodified in the program. Characters the Geist fonts lack (Devanagari, Chinese
+and Japanese, symbols, emoji) come from fonts that are already on the computer and are merged in when the window
+starts: on Windows Nirmala UI, Microsoft YaHei, Segoe UI Symbol and Segoe UI Emoji; on macOS Kohinoor, PingFang and Apple
+Symbols; on Linux the Noto fonts (`sudo apt-get install -y fonts-noto-core fonts-noto-cjk`). Missing files are skipped.
+Dear ImGui (MIT), GLFW (zlib) and stb_image_write (public domain / MIT) are the other libraries; the licence texts
+are in `third_party/licenses/` and the versions in `THIRD_PARTY_NOTICES.md`.
+
+### Known limits
+
+- **No complex text shaping.** Dear ImGui draws one glyph per code point, so Devanagari conjuncts and vowel signs are
+  shown unjoined (the letters are correct and copy correctly; the look is not what a word processor shows).
+- **IME position.** The input-method candidate window follows the caret on Windows only. On Linux and macOS GLFW has
+  no hook for it; the typed characters still arrive, the window just is not placed at the caret.
+- **macOS is not built yet** (see above). Linux is built and tested with g++ 15 on Ubuntu (WSL2) under Xvfb; the
+  window opens through X11 (XWayland on Wayland desktops).
+- **A huge string literal** (an unclosed quote in a very long line) makes the highlighter scan to its end on every
+  frame (about 1-2 ms per MB). Long ordinary lines are cheap: only the visible columns are drawn.
+- Not done on purpose: query tabs, several connections at once, editing cells in the grid, charts.
+
+### Manual checklist
+
+These need a person at the screen. Run them once after a change to the window and note the result in the pull
+request, not in the repository. Use a temporary data folder (`MERADB_DATA`), never the real one.
+
+| # | Check | Expect |
+|---|---|---|
+| G1 | High-DPI monitor (150% or 200%), then drag the window to a monitor with another scale (and back) | Text and controls are sharp and keep their proportions after the move; the minimum window size grows with the scale; nothing is blurry or cut off |
+| G2 | Click the Light / dark button; then change the system theme and start the program again | Both themes are complete (no dark patches in light); at start the theme follows the system |
+| G3 | IME with a Hindi (Devanagari) and a Chinese input method: type a word in the editor and in a dialog field | The characters arrive intact; on Windows the candidate window appears next to the caret; the characters show (unjoined for Devanagari, see the limits) |
+| G4 | Clipboard both ways: copy text from the editor and paste it into another program, and the other way round; Ctrl+C on a results cell, Ctrl+Shift+C on a row; copy a table name from the schema tree's right-click menu | The same text comes through; a row arrives tab separated |
+| G5 | Paste one line of about 2 MB (for example `DIKHAO '` + 2 million letters + `';`), then press End, scroll sideways, type | The window stays responsive; the caret and selection are in the right place |
+| G6 | A table with 100,000 rows (`DIKHAO * SE big;`), scroll the grid with the wheel and the scroll bar | Smooth; the Results header says `100000 row(s)` |
+| G7 | Connect to a C++ server (`meradb_cli start -D <folder> --port 47831`), stop it (`meradb_cli stop -D <folder>`), run a query in the window | The Log says what happened (the connection dropped, in Hinglish); the window stays alive; Ctrl+O, Connect to the restarted server works again |
+| G8 | `SHURU;`, `DAALO ...;`, then Ctrl+Q; start again and `DIKHAO * SE t;` | The TRANSACTION badge was shown; after the restart the row is not there (rolled back); no `RECOVERY` note |
+| G9 | Double-click `meradb_gui.exe` in Explorer | The window opens and no console window appears; the program icon shows in the title bar and the taskbar |
+| G10 | `meradb_cli gui` (and `meradb_cli gui --local -D <folder>`) from a terminal | The window opens and the terminal prompt returns at once; with `meradb_gui` removed from the folder it says clearly that it is not there |
+| G11 | Ctrl+K, type part of a table name, Enter; type `chal`, Enter; Esc | The palette filters as you type; Enter runs the item; Esc closes it |
+| G12 | Run a query, press Ctrl+S | A toast `N row(s) CSV mein save: <path>` appears at the bottom right and hides itself after a few seconds; `Folder kholo` opens the folder in Explorer / the file manager |
+| G13 | F1 and scroll the Madad window | The keys table and the language reference are readable, tables are drawn as tables, Esc closes it |
+
 ## POSIX (Linux) build
 
 Verified on Ubuntu (WSL2) with g++ 15.2, clang++ 21 and CMake 4.2, Python 3.14. Nothing but the compilers, CMake,
@@ -304,6 +458,13 @@ Results (all builds are warning-free with `-Wall -Wextra` on the compilers named
 | g++ 15, Release and Debug, workbench OFF | 612 passed (no workbench tests, `pty_shell` included) |
 | clang++ 21, Release, workbench ON | 780 passed, 1 skipped |
 | g++ 15 Release with `workbench_diff` (venv with Textual) | 12 of 12 scenarios match Python's Pilot run |
+
+The desktop window (`meradb_gui`) was built here too (g++ 15, Release, 899 tests passed, 1 skipped, no warnings with
+`-Wall -Wextra`). It needs `sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+libgl1-mesa-dev` (and `xvfb`, `fonts-noto-core`, `fonts-noto-cjk` for the screenshot test and the fallback fonts); the
+`gui_screenshot` test ran under `xvfb-run` and also on WSLg. A configure without the X11 files prints one
+`MERADB_GUI skipped: missing ...` line and builds the rest, and `-DMERADB_GUI=OFF` builds without it. See "Desktop
+workbench (meradb_gui)".
 
 An AddressSanitizer + UBSan build also ran the suite: no memory error or undefined behaviour was reported
 anywhere. The `stack_guard` / `hardening` tests that deliberately measure the real stack (and the queries that run
@@ -472,6 +633,7 @@ Headers are in `cpp/include/meradb/`, sources in `cpp/src/`, tests in `cpp/tests
 | `highlight.py`                      | `highlight.h` / `highlight.cpp` + `word_table.inc` (in `meradb_core`: a lenient scanner sharing the tokenizer's keyword list) |
 | `tui.py` (the workbench)            | `workbench.h` / `workbench.cpp` (`runWorkbench`: the FTXUI loop and the bridge from the worker to the screen), `wb_session.h` / `wb_session.cpp` (`MeraDBApp` without widgets: every action, the log, history, the quit protocol), `wb_worker.h` / `wb_worker.cpp` (the one thread per session), `wb_text.h` / `wb_text.cpp` (styles, log, cells, CSV, clipping, history, scrolling), `wb_editor.h` / `wb_editor.cpp` (`QueryEditor`: text buffer, selection, highlighted rows), `wb_tree.h` / `wb_tree.cpp` (the schema tree and `refresh_schema`), `wb_panels.h` / `wb_panels.cpp` (the four panels), `wb_ui.h` / `wb_ui.cpp` (the window, key routing, focus), `wb_keys.h` (every key binding; the only place that knows event bytes), `wb_form.h` / `wb_form.cpp` + `wb_dialogs.h` / `wb_dialogs.cpp` (`ConnectScreen`, `HelpScreen`), `wb_markdown.h` / `wb_markdown.cpp` + `wb_help.h` / `wb_help.cpp` (`KEYS_HELP` + the embedded `docs/LANGUAGE.md`) |
 | (build helper)                      | `cmake/embed_file.cmake` turns `docs/LANGUAGE.md` into a byte array at build time |
+| (desktop window, no Python counterpart) | `meradb_wbmodel` (the screen-free half of the workbench above, with `wb_width.h` / `wb_width.cpp`), `gui_*.h` / `gui_*.cpp` (`meradb_gui_lib`: theme, fonts, editor, grid, tree, dialogs, Markdown, poster, window, platform) and `gui_main.cpp` (`meradb_gui`); see "Desktop workbench (meradb_gui)" |
 
 Supporting files with no Python counterpart: `pyvalue.h` / `pyvalue.cpp`
 (Python-compatible equality and hashing of values) and `ordered_map.h`.
