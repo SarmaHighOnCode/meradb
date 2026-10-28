@@ -63,6 +63,7 @@ public:
     // The CSV toast: after an export a small card in the bottom-right corner with the log message and a Folder kholo
     // button; it hides itself after kToastSeconds (hovering it keeps it) and the message stays in the Log.
     static constexpr double kToastSeconds = 6.0;
+    bool quitOverlayShown() const { return quitOverlayShown_; }   // "band ho raha hai..." was drawn in the last frame
     bool toastVisible() const { return toastVisible_; }
     const std::string& toastMessage() const { return toastMessage_; }
     void setFolderOpener(std::function<void(const std::string&)> opener) { openFolder_ = std::move(opener); }
@@ -123,6 +124,8 @@ private:
     bool logFollow_ = true;
     bool badgeShown_ = false;
     void drawToast(const ImVec2& display, float statusHeight);
+    void drawQuitOverlay(const ImVec2& display);
+    bool quitOverlayShown_ = false;
     bool toastVisible_ = false;
     std::string toastMessage_, toastPath_;
     double toastShownAt_ = 0.0;

@@ -1,6 +1,7 @@
 // cpp/src/gui_ui.cpp -- see gui_ui.h.
 #include "meradb/gui_ui.h"
 #include "meradb/protocol.h"
+#include "imgui_internal.h"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -291,7 +292,47 @@ void GuiUi::draw() {
     if (overlayWasOpen_ && !overlay) editor_.setFocused(true);   // typing continues where it was
     overlayWasOpen_ = overlay;
     drawToast(display, statusH);
+    drawQuitOverlay(display);
     ImGui::PopFont();
+}
+
+// While the running statement finishes and the backend closes (an open transaction rolls back) the window stays alive
+// and answers events, but the rest of it is covered: nothing new can be started.
+void GuiUi::drawQuitOverlay(const ImVec2& display) {
+    quitOverlayShown_ = session_.quitting();
+    if (!quitOverlayShown_) return;
+    const Theme& th = theme();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(display);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, toVec4(th.background, 0.78f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
+    const bool open = ImGui::Begin("##quitting", nullptr, flags);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    if (open) {
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+        const char* text = "band ho raha hai...";
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize + 2.0f);
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        const float radius = px(8.0f);
+        const float total = radius * 2.0f + px(12.0f) + size.x;
+        const ImVec2 start((display.x - total) * 0.5f, display.y * 0.5f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 centre(start.x + radius, start.y);
+        const float t = static_cast<float>(ImGui::GetTime()) * 6.0f;
+        dl->PathArcTo(centre, radius, t, t + 4.4f, 20);
+        dl->PathStroke(toU32(th.text), px(2.0f));
+        dl->AddText(ImVec2(start.x + radius * 2.0f + px(12.0f), start.y - size.y * 0.5f), toU32(th.text), text);
+        ImGui::PopFont();
+        ImGui::PushFont(fonts_.ui, 12.0f);
+        const char* sub = "chalta statement khatam ho raha hai, khula transaction WAPAS hoga";
+        const float sw = ImGui::CalcTextSize(sub).x;
+        dl->AddText(ImVec2((display.x - sw) * 0.5f, start.y + px(22.0f)), toU32(th.faint), sub);
+        ImGui::PopFont();
+    }
+    ImGui::End();
 }
 
 void GuiUi::drawToast(const ImVec2& display, float statusH) {

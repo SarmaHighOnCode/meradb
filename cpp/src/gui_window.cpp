@@ -221,9 +221,16 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
                 }
             }
             session.requestQuit();
+            const auto quitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
             while (!leave) {   // the backend closes (an open transaction rolls back), then onExit fires
                 poster.drain();
-                if (!leave) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                if (leave) break;
+                if (std::chrono::steady_clock::now() > quitDeadline) {
+                    reporter.error("Screenshot: band hone mein 60 second se zyada lage.");
+                    exitCode = 1;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         } else {
             while (!leave) {
