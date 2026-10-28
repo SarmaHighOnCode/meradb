@@ -6,6 +6,7 @@
 #include "meradb/gui_app.h"
 #include "meradb/gui_fonts.h"
 #include "meradb/gui_gl.h"
+#include "meradb/gui_icon.h"
 #include "meradb/gui_poster.h"
 #include "meradb/gui_ui.h"
 #include "meradb/wb_session.h"
@@ -104,6 +105,14 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
     glfwMakeContextCurrent(window);
     glfwSwapInterval(screenshot ? 0 : 1);
     glfwSetWindowSizeLimits(window, 640, 400, GLFW_DONT_CARE, GLFW_DONT_CARE);
+#if !defined(__APPLE__)   // macOS takes the icon from the application bundle
+    {
+        const std::vector<IconImage> icons = windowIconImages();
+        std::vector<GLFWimage> images;
+        for (const IconImage& icon : icons) images.push_back(GLFWimage{icon.width, icon.height, const_cast<unsigned char*>(icon.rgba.data())});
+        if (!images.empty()) glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
+    }
+#endif
 
     GlApi gl;
     if (!gl.load()) {

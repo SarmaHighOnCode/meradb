@@ -17,6 +17,9 @@ endif()
 option(MERADB_WORKBENCH "Build the full-screen workbench (fetches FTXUI)" ON)
 # The desktop window (meradb_gui): GLFW + Dear ImGui + the Geist fonts, all fetched on the first configure.
 option(MERADB_GUI "Build the desktop workbench window (fetches GLFW, Dear ImGui, Geist fonts, stb_image_write)" ON)
+if(MERADB_GUI AND WIN32)
+  enable_language(RC)   # the icon and version resource of meradb_gui
+endif()
 if(MERADB_GUI AND UNIX AND NOT APPLE)
   # GLFW needs the X11 and OpenGL development files on Linux. Without them skip the window, once and clearly.
   find_package(OpenGL QUIET)
@@ -113,6 +116,16 @@ meradb_quiet_third_party(nlohmann_json Catch2 Catch2WithMain ftxui-screen ftxui-
 set(MERADB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 if(MERADB_GUI)
   include(cmake/gui_deps.cmake)
+  # The window icon: resources/meradb_gui.ico (made by tools/gen_gui_icon.py) is embedded for glfwSetWindowIcon, and on
+  # Windows it is also the executable's application icon.
+  set(MERADB_GUI_ICO ${CMAKE_CURRENT_SOURCE_DIR}/resources/meradb_gui.ico)
+  add_custom_command(
+    OUTPUT ${MERADB_GEN_DIR}/gui_icon_data.inc
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${MERADB_GUI_ICO} -DOUTPUT=${MERADB_GEN_DIR}/gui_icon_data.inc
+            -DVAR=kGuiIconIco -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake
+    DEPENDS ${MERADB_GUI_ICO} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake
+    COMMENT "Embedding meradb_gui.ico"
+    VERBATIM)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
@@ -224,6 +237,8 @@ if(MERADB_GUI)
     src/gui_grid.cpp
     src/gui_markdown.cpp
     src/gui_platform.cpp
+    src/gui_icon.cpp
+    ${MERADB_GEN_DIR}/gui_icon_data.inc
     src/gui_dialogs.cpp
     src/gui_ui.cpp
     src/gui_window.cpp
@@ -237,7 +252,14 @@ if(MERADB_GUI)
     target_link_libraries(meradb_gui_lib PUBLIC advapi32 user32)
   endif()
 
-  add_executable(meradb_gui src/gui_main.cpp)
+  set(MERADB_GUI_SOURCES src/gui_main.cpp)
+  if(WIN32)
+    # application icon and version resource (ProductName MeraDB Workbench, 1.0.0)
+    set(MERADB_GUI_ICON_PATH ${MERADB_GUI_ICO})
+    configure_file(resources/meradb_gui.rc.in ${CMAKE_CURRENT_BINARY_DIR}/meradb_gui.rc @ONLY)
+    list(APPEND MERADB_GUI_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/meradb_gui.rc)
+  endif()
+  add_executable(meradb_gui ${MERADB_GUI_SOURCES})
   target_link_libraries(meradb_gui PRIVATE meradb_gui_lib)
   if(WIN32)
     if(MSVC)
