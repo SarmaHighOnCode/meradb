@@ -8,3 +8,7 @@ build/
 dist/
 exports/
 cpp/build/
+
+# Local working notes and tool folders (never committed)
+.superpowers/
+.claude/
