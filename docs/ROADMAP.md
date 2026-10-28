@@ -19,6 +19,7 @@
 | C++ 3 | C++ port, phase 3: interactive shell | ✅ Done |
 | C++ 4 | C++ port, phase 4: full-screen workbench (FTXUI) | ✅ Done |
 | C++ 5 | C++ port, phase 5: README/report/build scripts, Linux (POSIX) results | 🔄 In progress |
+| C++ extra | Desktop workbench `meradb_gui` (Dear ImGui + GLFW, Hinglish, dark/light); built and tested on Windows and Linux, macOS not yet (`docs/CPP.md`) | ✅ Done |
 | C++ 5 | C++ port: macOS and MSVC (Visual Studio) builds verified | ⬜ Not yet |
 | C++ 5 | Report: your name, college, screenshots (including the C++ chapter 10) | ⬜ **Yours** |
 
