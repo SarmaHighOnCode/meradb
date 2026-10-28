@@ -66,6 +66,10 @@ Not yet (Phase 5): the final polish pass.
 - `-DMERADB_WORKBENCH=OFF` builds without FTXUI (nothing is fetched for it); `workbench` then prints a
   note and exits 1, and everything else is unchanged. `-DFETCHCONTENT_SOURCE_DIR_FTXUI=<dir>` builds from an
   unpacked copy of the v5.0.0 tarball instead of downloading it (an offline checkout).
+- `meradb_gui`, the desktop workbench window (work in progress), is built by default and also downloads GLFW 3.4,
+  Dear ImGui 1.93.0, the Geist fonts and stb_image_write (see `THIRD_PARTY_NOTICES.md`). `-DMERADB_GUI=OFF` skips
+  it, and on Linux it is skipped with one message when the X11 / OpenGL development files are missing. It works
+  with `-DMERADB_WORKBENCH=OFF` too (only FTXUI's small text-width library is still fetched for it).
 
 ## Build
 
