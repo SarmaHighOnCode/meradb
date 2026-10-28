@@ -223,6 +223,7 @@ if(MERADB_GUI)
     src/gui_tree.cpp
     src/gui_grid.cpp
     src/gui_markdown.cpp
+    src/gui_platform.cpp
     src/gui_dialogs.cpp
     src/gui_ui.cpp
     src/gui_window.cpp

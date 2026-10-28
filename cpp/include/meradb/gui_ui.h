@@ -8,6 +8,7 @@
 #include "meradb/gui_editor.h"
 #include "meradb/gui_fonts.h"
 #include "meradb/gui_grid.h"
+#include "meradb/gui_platform.h"
 #include "meradb/gui_theme.h"
 #include "meradb/gui_tree.h"
 #include "meradb/wb_session.h"
@@ -58,6 +59,16 @@ public:
     CommandMenu& commandMenu() { return palette_; }
     void runCommand(const CommandItem& item);
     void openPalette(const std::string& query = "");
+
+    // The CSV toast: after an export a small card in the bottom-right corner with the log message and a Folder kholo
+    // button; it hides itself after kToastSeconds (hovering it keeps it) and the message stays in the Log.
+    static constexpr double kToastSeconds = 6.0;
+    bool toastVisible() const { return toastVisible_; }
+    const std::string& toastMessage() const { return toastMessage_; }
+    void setFolderOpener(std::function<void(const std::string&)> opener) { openFolder_ = std::move(opener); }
+    bool wantsFastTick() const { return toastVisible_; }   // the main loop wakes often enough to hide the toast on time
+    // a toast button: where the last frame drew it (screen pixels); empty rect when no toast is shown
+    ImVec2 toastButtonCentre() const { return toastButton_; }
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
@@ -111,6 +122,13 @@ private:
     std::size_t seenRevision_ = 0, seenGeneration_ = 0;
     bool logFollow_ = true;
     bool badgeShown_ = false;
+    void drawToast(const ImVec2& display, float statusHeight);
+    bool toastVisible_ = false;
+    std::string toastMessage_, toastPath_;
+    double toastShownAt_ = 0.0;
+    int seenExport_ = 0;
+    ImVec2 toastButton_ = ImVec2(-1, -1);
+    std::function<void(const std::string&)> openFolder_ = [](const std::string& folder) { (void)openFolder(folder); };
     int logMaxChars_ = 0;
 
     struct LogLine { wb::LogKind kind; std::string text; std::size_t prefix = 0; };

@@ -348,8 +348,11 @@ void Session::exportCsv() {
     }
     const ExportOutcome outcome = meradb::wb::exportCsv(*lastResult_, options_.exportBaseDir, options_.stamp());
     if (outcome.ok) {
-        log_.addText(LogKind::Message,
-                     std::to_string(lastResult_->rows.size()) + " row(s) CSV mein save: " + outcome.path);
+        const std::string message = std::to_string(lastResult_->rows.size()) + " row(s) CSV mein save: " + outcome.path;
+        log_.addText(LogKind::Message, message);
+        lastExport_.serial += 1;
+        lastExport_.message = message;
+        lastExport_.path = outcome.path;
     } else {
         log_.addText(LogKind::Error, "CSV save nahi hua: " + outcome.error);
     }

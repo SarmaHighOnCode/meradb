@@ -89,6 +89,9 @@ public:
     Modal modal() const { return modal_; }
     std::optional<Panel> takeFocusRequest();         // set by history / column insert (Python: editor.focus())
     ConnectDefaults connectDefaults() const;         // for the dialog
+    // The last CSV export: `serial` counts successful exports (0 = none yet); `message` is the log text, `path` the file.
+    struct ExportNote { int serial = 0; std::string message; std::string path; };
+    const ExportNote& lastExport() const { return lastExport_; }
 
     // ---- actions (key bindings call these) ----
     void runEditorText();                            // F5 / Ctrl+R
@@ -152,6 +155,7 @@ private:
     int pending_ = 0;
     int resultVersion_ = 0;
     bool quitting_ = false;
+    ExportNote lastExport_;
     bool shutdown_ = false;
     std::function<void()> onExit_;
     Worker worker_;  // last, so it is destroyed (and joined) first

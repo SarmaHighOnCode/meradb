@@ -290,7 +290,58 @@ void GuiUi::draw() {
     const bool overlay = overlayOpen();
     if (overlayWasOpen_ && !overlay) editor_.setFocused(true);   // typing continues where it was
     overlayWasOpen_ = overlay;
+    drawToast(display, statusH);
     ImGui::PopFont();
+}
+
+void GuiUi::drawToast(const ImVec2& display, float statusH) {
+    const wb::Session::ExportNote& note = session_.lastExport();
+    const double now = ImGui::GetTime();
+    if (note.serial != seenExport_) {
+        seenExport_ = note.serial;
+        toastVisible_ = true;
+        toastMessage_ = note.message;
+        toastPath_ = note.path;
+        toastShownAt_ = now;
+    }
+    toastButton_ = ImVec2(-1, -1);
+    if (!toastVisible_) return;
+    const Theme& th = theme();
+    const float width = std::min(px(420.0f), std::max(px(160.0f), display.x - px(32.0f)));
+    ImGui::SetNextWindowPos(ImVec2(display.x - px(16.0f), display.y - statusH - px(16.0f)), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16.0f), px(14.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, px(8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, toVec4(th.surface));
+    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.faint, 0.55f));
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar |
+                                       ImGuiWindowFlags_NoScrollWithMouse;
+    const bool open = ImGui::Begin("##toast", nullptr, flags);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+    if (open) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - px(32.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.success));
+        ImGui::TextUnformatted(toastMessage_.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0.0f, px(2.0f)));
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        const float w = ImGui::CalcTextSize("Folder kholo").x + px(24.0f);
+        const bool pressed = ImGui::Button("Folder kholo", ImVec2(w, px(32.0f)));
+        ImGui::PopFont();
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        toastButton_ = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+        if (pressed) {
+            openFolder_(folderOf(toastPath_));
+            toastVisible_ = false;
+        }
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) toastShownAt_ = now;   // reading it keeps it
+    }
+    ImGui::End();
+    if (now - toastShownAt_ >= kToastSeconds) toastVisible_ = false;
 }
 
 void GuiUi::drawTopBar(const Rect& rect) {

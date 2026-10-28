@@ -228,7 +228,7 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
         } else {
             while (!leave) {
                 const bool iconified = glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE;
-                const bool busy = session.busy() || session.quitting();
+                const bool busy = session.busy() || session.quitting() || ui.wantsFastTick();
                 const double timeout = busy ? 0.05 : (iconified ? 1.0 : 0.5);   // idle: almost no CPU
                 const double before = glfwGetTime();
                 glfwWaitEventsTimeout(timeout);
