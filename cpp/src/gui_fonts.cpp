@@ -21,10 +21,12 @@ namespace {
 
 namespace fs = std::filesystem;
 
+#if defined(_WIN32) || defined(__APPLE__)
 bool isFile(const fs::path& path) {
     std::error_code ec;
     return fs::is_regular_file(path, ec);
 }
+#endif
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 // The first file below `dir` (searched to a modest depth) whose name starts with one of `prefixes`.
