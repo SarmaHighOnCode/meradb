@@ -15,8 +15,36 @@ endif()
 # -DMERADB_WORKBENCH=OFF (the rest builds as before and `workbench` prints a note), or point
 # -DFETCHCONTENT_SOURCE_DIR_FTXUI=<unpacked v5.0.0 tarball> at a copy you already have.
 option(MERADB_WORKBENCH "Build the full-screen workbench (fetches FTXUI)" ON)
-if(MERADB_WORKBENCH)
+# The desktop window (meradb_gui): GLFW + Dear ImGui + the Geist fonts, all fetched on the first configure.
+option(MERADB_GUI "Build the desktop workbench window (fetches GLFW, Dear ImGui, Geist fonts, stb_image_write)" ON)
+if(MERADB_GUI AND UNIX AND NOT APPLE)
+  # GLFW needs the X11 and OpenGL development files on Linux. Without them skip the window, once and clearly.
+  find_package(OpenGL QUIET)
+  find_package(X11 QUIET)
+  set(_gui_missing "")
+  if(NOT OPENGL_FOUND)
+    string(APPEND _gui_missing " OpenGL (libgl1-mesa-dev)")
+  endif()
+  if(NOT X11_FOUND)
+    string(APPEND _gui_missing " X11 (libx11-dev)")
+  endif()
+  foreach(_ext Xrandr Xinerama Xcursor Xi)
+    if(NOT X11_${_ext}_FOUND)
+      string(TOLOWER ${_ext} _ext_lower)
+      string(APPEND _gui_missing " ${_ext} (lib${_ext_lower}-dev)")
+    endif()
+  endforeach()
+  if(_gui_missing)
+    message(STATUS "MERADB_GUI skipped: missing${_gui_missing}. Install them (Debian/Ubuntu: libx11-dev libxrandr-dev "
+                   "libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev) or configure with -DMERADB_GUI=OFF. "
+                   "The rest of MeraDB builds as usual.")
+    set(MERADB_GUI OFF)
+  endif()
+endif()
+if(MERADB_WORKBENCH OR MERADB_GUI)
   # Declared before our own warning flags below: add_compile_options only reaches targets created after it.
+  # The desktop window needs only the small ftxui-screen library (string widths); EXCLUDE_FROM_ALL keeps
+  # the rest of FTXUI from being built when -DMERADB_WORKBENCH=OFF.
   set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -24,9 +52,10 @@ if(MERADB_WORKBENCH)
   FetchContent_Declare(
     ftxui
     URL https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v5.0.0.tar.gz
+    EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(ftxui)
-  if(WIN32)
+  if(MERADB_WORKBENCH AND WIN32)
     # FTXUI 5 drops emoji typed on Windows (it converts the two UTF-16 halves of a key event separately).
     include(cmake/patch_ftxui.cmake)
     meradb_patch_ftxui_input(${ftxui_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ftxui_patch/ftxui_win_input.h)
@@ -81,6 +110,11 @@ function(meradb_quiet_third_party)
 endfunction()
 meradb_quiet_third_party(nlohmann_json Catch2 Catch2WithMain ftxui-screen ftxui-dom ftxui-component)
 
+set(MERADB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+if(MERADB_GUI)
+  include(cmake/gui_deps.cmake)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
@@ -129,9 +163,8 @@ if(WIN32)
   target_compile_definitions(meradb_core PUBLIC _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 
-if(MERADB_WORKBENCH)
+if(MERADB_WORKBENCH OR MERADB_GUI)
   # docs/LANGUAGE.md is embedded at build time so the built binary needs no path to the repository.
-  set(MERADB_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
   set(MERADB_LANGUAGE_MD ${CMAKE_CURRENT_SOURCE_DIR}/../docs/LANGUAGE.md)
   set(MERADB_EMBED_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake)
   # The file is a dependency only if it exists when CMake configures: a docs/LANGUAGE.md added later is not noticed
