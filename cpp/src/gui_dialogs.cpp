@@ -5,6 +5,7 @@
 #include <cfloat>
 #include <cctype>
 #include <cstring>
+#include "imgui_internal.h"
 
 namespace meradb::gui {
 
@@ -17,6 +18,24 @@ constexpr ImGuiWindowFlags kDialogFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWin
 void copyInto(char* out, std::size_t capacity, const std::string& text) {
     std::strncpy(out, text.c_str(), capacity - 1);
     out[capacity - 1] = '\0';
+}
+
+// The dialogs share one look: a dimmed window behind (the modal dim colour, at full strength at once instead of
+// fading in), a 1px border in the border token, the surface colour, radius 8px. Returns the BeginPopupModal result.
+bool beginDialogPopup(const char* id, const Theme& th, float scale, ImVec2 padding, std::uint32_t background) {
+    ImGui::GetCurrentContext()->DimBgRatio = 1.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 8.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, toVec4(background));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, toVec4(background));
+    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.border));
+    const bool open = ImGui::BeginPopupModal(id, nullptr, kDialogFlags);
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(5);
+    return open;
 }
 
 int digitsOnly(ImGuiInputTextCallbackData* data) { return data->EventChar >= '0' && data->EventChar <= '9' ? 0 : 1; }
@@ -87,12 +106,7 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     const float width = std::min(420.0f * scale, std::max(200.0f, display.x - 24.0f * scale));
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f * scale, 20.0f * scale));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, toVec4(th.surface));
-    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.faint, 0.55f));
-    const bool open = ImGui::BeginPopupModal(id, nullptr, kDialogFlags);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    const bool open = beginDialogPopup(id, th, scale, ImVec2(24.0f * scale, 20.0f * scale), th.surface);
     if (!open) return;
     ImGui::PushStyleColor(ImGuiCol_FrameBg, toVec4(th.background));   // inputs sit lower than the dialog
 
@@ -209,12 +223,7 @@ void HelpWindow::draw(wb::Session& session, const Theme& th, const FontSet& font
     const float height = std::max(120.0f, display.y - 2.0f * std::min(margin, display.y * 0.1f));
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, toVec4(th.background));
-    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.faint, 0.55f));
-    const bool open = ImGui::BeginPopupModal(id, nullptr, kDialogFlags);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    const bool open = beginDialogPopup(id, th, scale, ImVec2(0.0f, 0.0f), th.surface);
     if (!open) return;
 
     bool close = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
@@ -390,12 +399,7 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
     const float listH = rowH * static_cast<float>(rows);
     ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, std::max(8.0f, display.y * 0.22f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * scale, 12.0f * scale));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, toVec4(th.surface));
-    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.faint, 0.55f));
-    const bool opened = ImGui::BeginPopupModal(id, nullptr, kDialogFlags);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    const bool opened = beginDialogPopup(id, th, scale, ImVec2(0.0f, 0.0f), th.surface);
     if (!opened) return std::nullopt;
 
     std::optional<CommandItem> chosen;
@@ -407,9 +411,18 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
     if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) move(-rows);
     bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
 
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, toVec4(th.background));
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (focusInput_ || !ImGui::IsAnyItemActive()) {
+    // One container (the popup, with its border): the filter on top, a hairline, then the list; both use the full width.
+    const float inset = 8.0f * scale;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(inset + 10.0f * scale, 12.0f * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
+    ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextItemWidth(width);
+    const bool refocus = focusInput_ || !ImGui::IsAnyItemActive();
+    if (refocus) {
         ImGui::SetKeyboardFocusHere();
         focusInput_ = false;
     }
@@ -420,14 +433,27 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
             refilter();
         }
     }
-    ImGui::PopStyleColor();
-    ImGui::Dummy(ImVec2(0.0f, 2.0f * scale));
+    if (refocus) {   // focusing selects everything: keep what is typed unselected, the caret at its end
+        if (ImGuiInputTextState* state = ImGui::GetInputTextState(ImGui::GetItemID())) {
+            state->ClearSelection();
+        }
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(3);
+    {
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(lo.x, hi.y), ImVec2(lo.x + width, hi.y), toU32(th.border));
+    }
+    ImGui::SetCursorPos(ImVec2(0.0f, ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + 1.0f));
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-    ImGui::BeginChild("##command_list", ImVec2(0.0f, listH), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(inset, inset));
+    ImGui::BeginChild("##command_list", ImVec2(width, listH + 2.0f * inset), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoNav);
+    ImGui::PopStyleVar();
     if (visible_.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f * scale);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f * scale);
         ImGui::TextUnformatted("Kuch nahi mila.");
         ImGui::PopStyleColor();
     }
@@ -475,6 +501,7 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
     scrollToHighlight_ = false;
 
     if (chosen || close) {

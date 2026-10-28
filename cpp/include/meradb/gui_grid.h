@@ -43,6 +43,7 @@ private:
     int version_ = -1;
     std::vector<int> chars_;
     std::vector<CellHit> hits_;
+    bool hScroll_ = false;   // the table showed a horizontal scroll bar in the last frame
 };
 
 }  // namespace meradb::gui

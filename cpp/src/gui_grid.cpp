@@ -2,6 +2,7 @@
 #include "meradb/gui_grid.h"
 #include <algorithm>
 #include <cstdio>
+#include "imgui_internal.h"
 
 namespace meradb::gui {
 
@@ -106,17 +107,41 @@ void ResultsGrid::draw(const wb::ResultTable& table, int version, const Theme& t
     const ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuterH |
                                   ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+    // A short result gets a table exactly as tall as its header and rows, so the column lines stop at the last row
+    // (the panel below stays empty). A longer one fills the panel and scrolls.
+    float tableH = 0.0f;
+    {
+        ImGui::PushFont(fonts.uiMedium, kUiFontSize);
+        const float headerH = ImGui::GetTextLineHeight();
+        ImGui::PopFont();
+        const float wanted = headerH + static_cast<float>(rows) * rowH + 2.0f + (hScroll_ ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+        if (wanted < ImGui::GetContentRegionAvail().y) tableH = wanted;
+    }
     ImGui::PushID(version);
-    if (ImGui::BeginTable("##grid", columns + 1, flags, ImVec2(0.0f, 0.0f))) {
+    if (ImGui::BeginTable("##grid", columns + 1, flags, ImVec2(0.0f, tableH))) {
         ImGui::TableSetupScrollFreeze(1, 1);
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, numberW);
         for (int c = 0; c < columns; ++c) {
             const float width = static_cast<float>(chars_[static_cast<std::size_t>(c)]) * cw + 18.0f * scale;
             ImGui::TableSetupColumn(table.columns[static_cast<std::size_t>(c)].c_str(), ImGuiTableColumnFlags_WidthFixed, width);
         }
+        hScroll_ = ImGui::GetCurrentWindow()->ScrollbarX;
         ImGui::PushFont(fonts.uiMedium, kUiFontSize);
         ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.muted));
-        ImGui::TableHeadersRow();
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers, ImGui::TableGetHeaderRowHeight());
+        for (int c = 0; c <= columns; ++c) {
+            if (!ImGui::TableSetColumnIndex(c)) continue;
+            ImGui::PushID(c);
+            if (c == 0) {   // "#" sits on the right, over the row numbers
+                const ImVec2 lo = ImGui::GetCursorScreenPos();
+                const float width = ImGui::GetContentRegionAvail().x;
+                ImGui::TableHeader("##number");
+                ImGui::GetWindowDrawList()->AddText(ImVec2(lo.x + width - ImGui::CalcTextSize("#").x, lo.y), toU32(th.muted), "#");
+            } else {
+                ImGui::TableHeader(ImGui::TableGetColumnName(c));
+            }
+            ImGui::PopID();
+        }
         ImGui::PopStyleColor();
         ImGui::PopFont();
 
