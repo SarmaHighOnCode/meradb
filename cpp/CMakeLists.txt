@@ -220,6 +220,7 @@ if(MERADB_GUI)
     src/gui_fonts.cpp
     src/gui_gl.cpp
     src/gui_editor.cpp
+    src/gui_tree.cpp
     src/gui_ui.cpp
     src/gui_window.cpp
     src/gui_app.cpp
