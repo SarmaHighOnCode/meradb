@@ -3,6 +3,8 @@
 #pragma once
 #include "imgui.h"
 #include <cstddef>
+#include <string>
+#include <vector>
 
 namespace meradb::gui {
 
@@ -25,8 +27,21 @@ FontBlob geistRegularData();
 FontBlob geistMediumData();
 FontBlob geistMonoRegularData();
 
+// A system font merged behind Geist so that Devanagari, CJK, symbols and emoji show instead of '?'.
+struct FallbackFont {
+    std::string path;
+    int index = 0;   // the face within a .ttc collection
+};
+// The fallback fonts that exist on this machine, in merge order (the first font that has a glyph wins).
+//   Windows: %WINDIR%\Fonts: Nirmala.ttc (Devanagari and the other Indic scripts), msyh.ttc (CJK), seguisym.ttf, seguiemj.ttf.
+//   macOS:   /System/Library/Fonts: Kohinoor (Devanagari), PingFang (CJK), Apple Symbols.
+//   Linux:   Noto Sans Devanagari, Noto Sans CJK, Noto Sans Symbols 2 and Noto Emoji (monochrome) below /usr/share/fonts.
+// Files that are not there are skipped silently. `root` (when not empty) replaces the system folder, for tests.
+std::vector<FallbackFont> systemFallbackFonts(const std::string& root = std::string());
+
 // Adds the three fonts to `io`'s atlas (the data stays in the program: the atlas does not own it) and makes Geist
-// Regular at kUiFontSize the default. Call once per ImGui context.
+// Regular at kUiFontSize the default. Every one of them gets the system fallback fonts merged in. Call once per ImGui
+// context.
 FontSet loadFonts(ImGuiIO& io);
 
 }  // namespace meradb::gui

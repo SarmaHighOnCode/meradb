@@ -37,7 +37,7 @@ int columnAt(const std::string& line, float x, const Advance& advance);       //
 struct Slice {
     int firstCol = 0, endCol = 0;
     std::size_t firstByte = 0, endByte = 0;
-    float firstX = 0.0f;   // left edge of firstCol
+    double firstX = 0.0;   // left edge of firstCol (double: a line of millions of columns is millions of pixels wide)
 };
 Slice visibleSlice(const std::string& line, float fromX, float toX, const Advance& advance);
 
@@ -50,8 +50,46 @@ wb::Pos hitTest(const wb::TextBuffer& buffer, float x, float y, float lineHeight
 std::uint32_t colorForKind(const Theme& theme, highlight::Kind kind);   // 0xRRGGBB
 
 // Draws line[from, to) (byte offsets on character boundaries) with syntax colours; `pos` is where line[from] goes.
+// `lexStart`: a byte offset from where lexing may start (see LineMetrics::syncBefore); 0 = the line start.
 void drawHighlighted(ImDrawList* list, ImFont* font, float fontSize, ImVec2 pos, const std::string& line, std::size_t from,
-                     std::size_t to, const Theme& theme, const Advance& advance);
+                     std::size_t to, const Theme& theme, const Advance& advance, std::size_t lexStart = 0);
+
+// ---- very long lines ----
+
+// Derived data of one long line so that finding a column, an x, the visible part and the highlighting start costs
+// O(visible) instead of O(line): an "all ASCII" flag (then x = column * advance, no index at all) or, otherwise, the
+// byte offset and x of every kStride-th column; plus lexer sync points for the syntax colours. Built once per text
+// (O(line)), reused by every frame until the text changes. Valid only for the string and Advance it was built from;
+// matches() is a cheap check that the line is still the one that was indexed.
+class LineMetrics {
+public:
+    static constexpr std::size_t kLongLine = 2048;   // shorter lines are cheap enough to measure from their start
+    static constexpr int kStride = 128;              // columns between two index entries
+    static constexpr std::size_t kSyncStride = 4096;  // bytes between two lexer sync points
+
+    void build(const std::string& line, const Advance& advance);
+    bool built() const { return built_; }
+    bool matches(const std::string& line, const Advance& advance) const;   // same length, sampled bytes and advance as when built
+    int columns() const { return columns_; }
+    double totalWidth() const { return width_; }
+    double xOfColumn(const std::string& line, int col, const Advance& advance) const;
+    int columnAtX(const std::string& line, double x, const Advance& advance) const;
+    Slice slice(const std::string& line, double fromX, double toX, const Advance& advance) const;
+    // The last lexer sync point at or before `byte` (0 when there is none): a blank outside quotes and comments.
+    std::size_t syncBefore(std::size_t byte) const;
+
+private:
+    bool built_ = false;
+    bool ascii_ = true;
+    int columns_ = 0;
+    double width_ = 0.0;
+    double asciiAdvance_ = 0.0;
+    std::size_t size_ = 0;
+    std::uint64_t sample_ = 0;
+    std::vector<std::size_t> byteAt_;   // byte offset of column k * kStride
+    std::vector<double> xAt_;           // its x
+    std::vector<std::size_t> sync_;
+};
 
 // ---- undo ----
 
@@ -73,7 +111,7 @@ public:
 
     // Call before an edit. `before` is only called when the edit starts a new step. Returns true then.
     bool record(bool typing, double now, const std::function<EditorSnapshot()>& before);
-    void cancelLast();                    // the edit that record() started changed nothing
+    void cancelLast();                    // the edit that record() started changed nothing: the redo steps come back
     void breakMerge() { merging_ = false; }
     std::optional<EditorSnapshot> undo(EditorSnapshot current);
     std::optional<EditorSnapshot> redo(EditorSnapshot current);
@@ -83,7 +121,7 @@ public:
 
 private:
     void trim();
-    std::vector<EditorSnapshot> undo_, redo_;
+    std::vector<EditorSnapshot> undo_, redo_, stashedRedo_;   // stashedRedo_: what the last started step cleared
     bool merging_ = false;   // the last edit was typing and may take more
     double lastTime_ = 0.0;
 };
@@ -119,6 +157,8 @@ private:
     void edit(bool typing, const std::function<void()>& change);
     void handleKeys();
     void performUndo(bool redo);
+    // metrics of a long row (cached; rebuilt when the text changed), nullptr for a short one
+    const LineMetrics* longLine(int row, const Advance& advance);
 
     wb::TextBuffer& buffer_;
     UndoStack undo_;
@@ -133,6 +173,13 @@ private:
     int widthLineCount_ = -1, widthRow_ = -1;
     std::size_t widthRowSize_ = 0;
     int maxColumns_ = 0;
+    struct LongEntry {
+        int row = -1;
+        unsigned used = 0;
+        LineMetrics metrics;
+    };
+    std::vector<LongEntry> longLines_;   // at most a few: the long rows on screen
+    unsigned longClock_ = 0;
     Layout layout_;
     double now_ = 0.0;
     int pageRows_ = 10;

@@ -247,7 +247,7 @@ if(MERADB_GUI)
   target_include_directories(meradb_gui_lib PRIVATE ${MERADB_GEN_DIR})
   target_include_directories(meradb_gui_lib SYSTEM PRIVATE ${stb_image_write_SOURCE_DIR})
   if(WIN32)
-    target_link_libraries(meradb_gui_lib PUBLIC advapi32 user32)
+    target_link_libraries(meradb_gui_lib PUBLIC advapi32 user32 imm32)
   endif()
 
   set(MERADB_GUI_SOURCES src/gui_main.cpp)

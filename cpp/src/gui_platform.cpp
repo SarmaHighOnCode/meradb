@@ -10,6 +10,14 @@
 
 namespace meradb::gui {
 
+ImePlacement imePlacement(float x, float y, float lineHeight) {
+    ImePlacement p;
+    p.compositionX = p.candidateX = static_cast<int>(x);
+    p.compositionY = static_cast<int>(y);
+    p.candidateY = static_cast<int>(y + lineHeight + 2.0f);
+    return p;
+}
+
 std::string folderOf(const std::string& path) {
     const std::size_t slash = path.find_last_of("/\\");
     if (slash == std::string::npos) return ".";

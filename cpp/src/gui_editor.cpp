@@ -160,7 +160,7 @@ std::uint32_t colorForKind(const Theme& theme, highlight::Kind kind) {
 }
 
 void drawHighlighted(ImDrawList* list, ImFont* font, float fontSize, ImVec2 pos, const std::string& line, std::size_t from,
-                     std::size_t to, const Theme& theme, const Advance& advance) {
+                     std::size_t to, const Theme& theme, const Advance& advance, std::size_t lexStart) {
     to = std::min(to, line.size());
     if (from >= to) return;
     float x = pos.x;
@@ -172,7 +172,7 @@ void drawHighlighted(ImDrawList* list, ImFont* font, float fontSize, ImVec2 pos,
         x += textWidth(begin, end, advance);
     };
     std::size_t at = from;
-    for (const highlight::Span& span : highlight::spans(line, from, to)) {
+    for (const highlight::Span& span : highlight::spans(line, lexStart, from, to)) {
         const std::size_t s = std::max(span.start, from), e = std::min(span.end, to);
         if (s >= e || s < at) continue;
         run(at, s, theme.text);
@@ -180,6 +180,192 @@ void drawHighlighted(ImDrawList* list, ImFont* font, float fontSize, ImVec2 pos,
         at = e;
     }
     run(at, to, theme.text);
+}
+
+// ---------------------------------------------------------------- very long lines
+
+namespace {
+
+constexpr char kQuote = 0x27;     // the apostrophe that opens and closes a string
+constexpr char kNewline = 0x0A;
+
+std::uint64_t sampleOf(const std::string& line) {
+    std::uint64_t h = 1469598103934665603ull;
+    const std::size_t n = line.size();
+    const std::size_t steps = n < 96 ? n : 96;
+    for (std::size_t i = 0; i < steps; ++i) {
+        const std::size_t at = steps <= 1 ? 0 : i * (n - 1) / (steps - 1);
+        h = (h ^ static_cast<unsigned char>(line[at])) * 1099511628211ull;
+    }
+    return h;
+}
+
+}  // namespace
+
+void LineMetrics::build(const std::string& line, const Advance& advance) {
+    built_ = true;
+    size_ = line.size();
+    sample_ = sampleOf(line);
+    byteAt_.clear();
+    xAt_.clear();
+    sync_.clear();
+    const std::size_t n = line.size();
+    const char* base = line.data();
+
+    // lexer sync points: a blank outside quotes and comments, about every kSyncStride bytes
+    {
+        std::size_t i = 0, next = kSyncStride;
+        while (i < n) {
+            const char c = base[i];
+            if (c == '-' && i + 1 < n && base[i + 1] == '-') {
+                const std::size_t e = line.find(kNewline, i);
+                i = e == std::string::npos ? n : e;
+            } else if (c == kQuote) {
+                std::size_t j = i + 1;
+                while (j < n) {
+                    if (base[j] == kQuote) {
+                        if (j + 1 < n && base[j + 1] == kQuote) { j += 2; continue; }
+                        ++j;
+                        break;
+                    }
+                    ++j;
+                }
+                i = j;
+            } else {
+                if (c == ' ' && i >= next) {
+                    sync_.push_back(i);
+                    next = i + kSyncStride;
+                }
+                ++i;
+            }
+        }
+    }
+
+    unsigned char high = 0;
+    for (std::size_t i = 0; i < n; ++i) high |= static_cast<unsigned char>(base[i]);
+    ascii_ = (high & 0x80) == 0;
+    asciiAdvance_ = advance.ascii;
+    if (ascii_) {
+        columns_ = static_cast<int>(n);
+        width_ = static_cast<double>(n) * static_cast<double>(advance.ascii);
+        return;
+    }
+    const char* p = base;
+    const char* end = base + n;
+    double x = 0.0;
+    int col = 0;
+    while (p < end) {
+        if (col % kStride == 0) {
+            byteAt_.push_back(static_cast<std::size_t>(p - base));
+            xAt_.push_back(x);
+        }
+        x += static_cast<double>(advance.of(decodeUtf8(p, end)));
+        ++col;
+    }
+    columns_ = col;
+    width_ = x;
+}
+
+bool LineMetrics::matches(const std::string& line, const Advance& advance) const {
+    return built_ && line.size() == size_ && asciiAdvance_ == advance.ascii && sampleOf(line) == sample_;
+}
+
+double LineMetrics::xOfColumn(const std::string& line, int col, const Advance& advance) const {
+    if (col <= 0) return 0.0;
+    if (col >= columns_) return width_;
+    if (ascii_) return static_cast<double>(col) * static_cast<double>(asciiAdvance_);
+    const std::size_t k = static_cast<std::size_t>(col / kStride);
+    const char* base = line.data();
+    const char* p = base + byteAt_[k];
+    const char* end = base + line.size();
+    double x = xAt_[k];
+    for (int c = static_cast<int>(k) * kStride; c < col && p < end; ++c) x += static_cast<double>(advance.of(decodeUtf8(p, end)));
+    return x;
+}
+
+int LineMetrics::columnAtX(const std::string& line, double x, const Advance& advance) const {
+    if (x <= 0.0) return 0;
+    if (ascii_ && asciiAdvance_ > 0.0f) {
+        const double c = std::floor(x / static_cast<double>(asciiAdvance_) + 0.5);
+        return c >= static_cast<double>(columns_) ? columns_ : static_cast<int>(c);
+    }
+    std::size_t k = 0;
+    if (!ascii_ && !xAt_.empty()) k = static_cast<std::size_t>(std::upper_bound(xAt_.begin(), xAt_.end(), x) - xAt_.begin()) - 1;
+    const char* base = line.data();
+    const char* p = base + (ascii_ ? 0 : byteAt_[k]);
+    const char* end = base + line.size();
+    double left = ascii_ ? 0.0 : xAt_[k];
+    int col = ascii_ ? 0 : static_cast<int>(k) * kStride;
+    while (p < end) {
+        const double width = static_cast<double>(advance.of(decodeUtf8(p, end)));
+        if (x < left + width * 0.5) return col;
+        left += width;
+        ++col;
+    }
+    return col;
+}
+
+Slice LineMetrics::slice(const std::string& line, double fromX, double toX, const Advance& advance) const {
+    Slice s;
+    if (ascii_ && asciiAdvance_ > 0.0f) {
+        const double a = static_cast<double>(asciiAdvance_);
+        const double f = fromX <= 0.0 ? 0.0 : std::floor(fromX / a);
+        if (f >= static_cast<double>(columns_)) {
+            s.firstCol = s.endCol = columns_;
+            s.firstByte = s.endByte = line.size();
+            s.firstX = width_;
+            return s;
+        }
+        const int first = static_cast<int>(f);
+        const double t = std::ceil(toX / a);
+        const int endCol = t >= static_cast<double>(columns_) ? columns_ : std::max(first, static_cast<int>(std::max(0.0, t)));
+        s.firstCol = first;
+        s.endCol = endCol;
+        s.firstByte = static_cast<std::size_t>(first);
+        s.endByte = static_cast<std::size_t>(endCol);
+        s.firstX = static_cast<double>(first) * a;
+        return s;
+    }
+    std::size_t k = 0;
+    if (!ascii_ && !xAt_.empty() && fromX > 0.0)
+        k = static_cast<std::size_t>(std::upper_bound(xAt_.begin(), xAt_.end(), fromX) - xAt_.begin()) - 1;
+    const char* base = line.data();
+    const char* end = base + line.size();
+    const char* p = base + (byteAt_.empty() ? 0 : byteAt_[k]);
+    double x = xAt_.empty() ? 0.0 : xAt_[k];
+    int col = static_cast<int>(k) * kStride;
+    bool started = false;
+    while (p < end) {
+        const char* next = p;
+        const double width = static_cast<double>(advance.of(decodeUtf8(next, end)));
+        if (!started && x + width > fromX) {
+            started = true;
+            s.firstCol = col;
+            s.firstByte = static_cast<std::size_t>(p - base);
+            s.firstX = x;
+        }
+        if (started && x >= toX) {
+            s.endCol = col;
+            s.endByte = static_cast<std::size_t>(p - base);
+            return s;
+        }
+        x += width;
+        p = next;
+        ++col;
+    }
+    if (!started) {
+        s.firstCol = col;
+        s.firstByte = line.size();
+        s.firstX = x;
+    }
+    s.endCol = col;
+    s.endByte = line.size();
+    return s;
+}
+
+std::size_t LineMetrics::syncBefore(std::size_t byte) const {
+    const auto it = std::upper_bound(sync_.begin(), sync_.end(), byte);
+    return it == sync_.begin() ? 0 : *(it - 1);
 }
 
 // ---------------------------------------------------------------- undo
@@ -206,6 +392,7 @@ bool UndoStack::record(bool typing, double now, const std::function<EditorSnapsh
     lastTime_ = now;
     if (merge) return false;
     undo_.push_back(before());
+    stashedRedo_ = std::move(redo_);
     redo_.clear();
     merging_ = typing;
     trim();
@@ -214,6 +401,8 @@ bool UndoStack::record(bool typing, double now, const std::function<EditorSnapsh
 
 void UndoStack::cancelLast() {
     if (!undo_.empty()) undo_.pop_back();
+    if (!stashedRedo_.empty()) redo_ = std::move(stashedRedo_);   // a no-op edit must not cost the redo steps
+    stashedRedo_.clear();
     merging_ = false;
 }
 
@@ -238,6 +427,7 @@ std::optional<EditorSnapshot> UndoStack::redo(EditorSnapshot current) {
 void UndoStack::clear() {
     undo_.clear();
     redo_.clear();
+    stashedRedo_.clear();
     merging_ = false;
 }
 
@@ -251,6 +441,34 @@ void UndoStack::trim() {
 }
 
 // ---------------------------------------------------------------- the widget
+
+const LineMetrics* EditorWidget::longLine(int row, const Advance& advance) {
+    const std::string& line = buffer_.line(row);
+    if (line.size() <= LineMetrics::kLongLine) return nullptr;
+    LongEntry* oldest = nullptr;
+    for (LongEntry& e : longLines_) {
+        if (e.row == row && e.metrics.matches(line, advance)) {
+            e.used = ++longClock_;
+            return &e.metrics;
+        }
+        if (oldest == nullptr || e.used < oldest->used) oldest = &e;
+    }
+    LongEntry* slot = nullptr;
+    for (LongEntry& e : longLines_)
+        if (e.row == row) slot = &e;
+    if (slot == nullptr) {
+        if (longLines_.size() < 8) {
+            longLines_.emplace_back();
+            slot = &longLines_.back();
+        } else {
+            slot = oldest;
+        }
+    }
+    slot->row = row;
+    slot->used = ++longClock_;
+    slot->metrics.build(line, advance);
+    return &slot->metrics;
+}
 
 void EditorWidget::edit(bool typing, const std::function<void()>& change) {
     EditorSnapshot before;
@@ -395,6 +613,23 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     adv.ascii = cw;
     adv.other = [baked](char32_t cp) { return baked->GetCharAdvance(static_cast<ImWchar>(cp)); };
 
+    // Measuring a row: a long one through its cached metrics (O(visible)), a short one directly.
+    auto xOf = [&](int row, int col) -> double {
+        const std::string& l = buffer_.line(row);
+        if (const LineMetrics* m = longLine(row, adv)) return m->xOfColumn(l, col, adv);
+        return static_cast<double>(columnX(l, col, adv));
+    };
+    auto widthOf = [&](int row) -> double {
+        const std::string& l = buffer_.line(row);
+        if (const LineMetrics* m = longLine(row, adv)) return m->totalWidth();
+        return static_cast<double>(textWidth(l.data(), l.data() + l.size(), adv));
+    };
+    auto colAtX = [&](int row, double x) -> int {
+        const std::string& l = buffer_.line(row);
+        if (const LineMetrics* m = longLine(row, adv)) return m->columnAtX(l, x, adv);
+        return columnAt(l, static_cast<float>(x), adv);
+    };
+
     const int lines = buffer_.lineCount();
     int digits = 2;
     for (int n = lines; n >= 100; n /= 10) ++digits;
@@ -409,6 +644,10 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
         if (widthStamp_ != textStamp_ || widthLineCount_ != lines || widthRow_ != c.row || widthRowSize_ != rowSize) {
             maxColumns_ = 0;
             for (int r = 0; r < lines; ++r) {
+                if (const LineMetrics* m = longLine(r, adv)) {
+                    maxColumns_ = std::max(maxColumns_, m->columns());
+                    continue;
+                }
                 int count = 0;
                 for (unsigned char ch : buffer_.line(r)) count += (ch & 0xC0) != 0x80 ? 1 : 0;
                 maxColumns_ = std::max(maxColumns_, count);
@@ -440,7 +679,13 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     layout_.inset = inset;
 
     // ---- mouse ----
-    auto hit = [&](ImVec2 mouse) { return hitTest(buffer_, mouse.x - textOrigin.x, mouse.y - textOrigin.y, lh, adv); };
+    // x is taken from the visible left edge plus the scroll, not from the (possibly millions of pixels distant) origin
+    auto hit = [&](ImVec2 mouse) {
+        int row = lh > 0.0f ? static_cast<int>(std::floor((mouse.y - textOrigin.y) / lh)) : 0;
+        row = std::max(0, std::min(row, buffer_.lineCount() - 1));
+        const double x = static_cast<double>(mouse.x - viewMin.x - gutter) + static_cast<double>(ImGui::GetScrollX());
+        return wb::Pos{row, colAtX(row, x)};
+    };
     if (clicked) {
         focused_ = true;
         dragging_ = true;
@@ -488,18 +733,21 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     // ---- keep the caret in view ----
     if (caretMoved_) {
         const wb::Pos c = buffer_.cursor();
-        const float cx = columnX(buffer_.line(c.row), c.col, adv);
+        const double cx = xOf(c.row, c.col);
         const float cy = inset + static_cast<float>(c.row) * lh;
-        const float sx = ImGui::GetScrollX(), sy = ImGui::GetScrollY();
-        const float viewW = viewMax.x - viewMin.x - gutter, viewH = viewMax.y - viewMin.y;
-        const float margin = 2.0f * cw;
-        float tx = sx, ty = sy;
-        if (cx < sx + margin) tx = std::max(0.0f, cx - margin);
+        const double sx = ImGui::GetScrollX();
+        const float sy = ImGui::GetScrollY();
+        const double viewW = viewMax.x - viewMin.x - gutter;
+        const float viewH = viewMax.y - viewMin.y;
+        const double margin = 2.0 * cw;
+        double tx = sx;
+        float ty = sy;
+        if (cx < sx + margin) tx = std::max(0.0, cx - margin);
         else if (cx + cw > sx + viewW - margin) tx = cx + cw - viewW + margin;
         if (cy - inset < sy) ty = std::max(0.0f, cy - inset);
         else if (cy + lh + inset > sy + viewH) ty = cy + lh + inset - viewH;
-        const bool change = tx != sx || ty != sy;
-        if (tx != sx) ImGui::SetScrollX(tx);
+        const bool change = static_cast<float>(tx) != static_cast<float>(sx) || ty != sy;
+        if (static_cast<float>(tx) != static_cast<float>(sx)) ImGui::SetScrollX(static_cast<float>(tx));
         if (ty != sy) ImGui::SetScrollY(ty);
         if (!change || ++settleFrames_ > 3) caretMoved_ = false;
     }
@@ -517,6 +765,11 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     std::pair<wb::Pos, wb::Pos> selection;
     if (hasSelection) selection = buffer_.selection();
     const float textLeftEdge = viewMin.x + gutter;
+    // Every x on screen is (x - scroll) from the visible left edge, so the numbers stay small however long the line.
+    const double scroll = scrollX_;
+    const double viewW = viewMax.x - viewMin.x - gutter;
+    auto screenX = [&](double x) { return textLeftEdge + static_cast<float>(x - scroll); };
+    auto screenClamped = [&](double x) { return std::max(viewMin.x - 8.0f, std::min(screenX(x), viewMax.x + 8.0f)); };
 
     if (cursor.row >= first && cursor.row <= last) {   // the current line
         const float y = textOrigin.y + static_cast<float>(cursor.row) * lh;
@@ -524,16 +777,22 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     }
     for (int r = first; r <= last; ++r) {
         const std::string& line = buffer_.line(r);
+        const LineMetrics* metrics = longLine(r, adv);
         const float y = textOrigin.y + static_cast<float>(r) * lh;
         if (hasSelection && r >= selection.first.row && r <= selection.second.row) {
             const int from = r == selection.first.row ? selection.first.col : 0;
             const int to = r == selection.second.row ? selection.second.col : -1;   // -1: through the end and the newline
-            const float x0 = textOrigin.x + columnX(line, from, adv);
-            float x1 = to >= 0 ? textOrigin.x + columnX(line, to, adv) : textOrigin.x + textWidth(line.data(), line.data() + line.size(), adv) + cw * 0.6f;
-            if (x1 > x0) dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + lh), toU32(th.focus, focused_ ? kSelectionAlpha : kSelectionAlpha * 0.5f));
+            const double x0 = xOf(r, from);
+            const double x1 = to >= 0 ? xOf(r, to) : widthOf(r) + cw * 0.6;
+            if (x1 > x0)
+                dl->AddRectFilled(ImVec2(screenClamped(x0), y), ImVec2(screenClamped(x1), y + lh),
+                                  toU32(th.focus, focused_ ? kSelectionAlpha : kSelectionAlpha * 0.5f));
         }
-        const Slice slice = visibleSlice(line, scrollX_ - cw, scrollX_ + (viewMax.x - viewMin.x - gutter) + cw, adv);
-        drawHighlighted(dl, font, fontSize, ImVec2(textOrigin.x + slice.firstX, y), line, slice.firstByte, slice.endByte, th, adv);
+        const double fromX = scroll - cw, toX = scroll + viewW + cw;
+        const Slice slice = metrics != nullptr ? metrics->slice(line, fromX, toX, adv)
+                                               : visibleSlice(line, static_cast<float>(fromX), static_cast<float>(toX), adv);
+        drawHighlighted(dl, font, fontSize, ImVec2(screenX(slice.firstX), y), line, slice.firstByte, slice.endByte, th, adv,
+                        metrics != nullptr ? metrics->syncBefore(slice.firstByte) : 0);
     }
     if (buffer_.empty()) {
         dl->AddText(font, fontSize, ImVec2(textOrigin.x, textOrigin.y), toU32(th.faint),
@@ -541,7 +800,7 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     }
     if (focused_ && cursor.row >= first - 1 && cursor.row <= last + 1) {   // the caret
         const double phase = std::fmod(std::max(0.0, now_ - lastInput_), 1.0);
-        const float x = textOrigin.x + columnX(buffer_.line(cursor.row), cursor.col, adv);
+        const float x = screenX(xOf(cursor.row, cursor.col));
         const float y = textOrigin.y + static_cast<float>(cursor.row) * lh;
         if (phase < 0.5) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + std::max(1.0f, 1.5f * scale), y + lh), toU32(th.text));
         ImGuiContext& g = *ImGui::GetCurrentContext();

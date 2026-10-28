@@ -7,6 +7,7 @@
 #include "meradb/gui_fonts.h"
 #include "meradb/gui_gl.h"
 #include "meradb/gui_icon.h"
+#include "meradb/gui_platform.h"
 #include "meradb/gui_poster.h"
 #include "meradb/gui_ui.h"
 #include "meradb/wb_session.h"
@@ -15,6 +16,12 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#if defined(_WIN32)
+#include <windows.h>
+#include <imm.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <exception>
@@ -67,6 +74,36 @@ void closeQuietly(Backend& backend) {
     } catch (...) {
     }
 }
+
+#if defined(_WIN32)
+// The editor tells Dear ImGui where its caret is (io.PlatformImeData); the GLFW backend does not pass that on, so the
+// Windows input method gets it here: the composition string starts at the caret and the candidate list sits below.
+// Other systems: no hook (GLFW has no IME API there); typed text still arrives as characters, only the candidate
+// window is not placed at the caret.
+GLFWwindow* g_imeWindow = nullptr;
+
+void setImeData(ImGuiContext*, ImGuiViewport* viewport, ImGuiPlatformImeData* data) {
+    if (data == nullptr || !data->WantVisible || g_imeWindow == nullptr) return;
+    HWND hwnd = viewport != nullptr ? static_cast<HWND>(viewport->PlatformHandleRaw) : nullptr;
+    if (hwnd == nullptr) hwnd = glfwGetWin32Window(g_imeWindow);
+    if (hwnd == nullptr) return;
+    HIMC context = ImmGetContext(hwnd);
+    if (context == nullptr) return;
+    const ImePlacement at = imePlacement(data->InputPos.x, data->InputPos.y, data->InputLineHeight);
+    COMPOSITIONFORM composition = {};
+    composition.dwStyle = CFS_FORCE_POSITION;
+    composition.ptCurrentPos.x = at.compositionX;
+    composition.ptCurrentPos.y = at.compositionY;
+    ImmSetCompositionWindow(context, &composition);
+    CANDIDATEFORM candidate = {};
+    candidate.dwIndex = 0;
+    candidate.dwStyle = CFS_CANDIDATEPOS;
+    candidate.ptCurrentPos.x = at.candidateX;
+    candidate.ptCurrentPos.y = at.candidateY;
+    ImmSetCandidateWindow(context, &candidate);
+    ImmReleaseContext(hwnd, context);
+}
+#endif
 
 constexpr unsigned kColorBufferBit = 0x00004000;
 
@@ -130,6 +167,10 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
     const FontSet fonts = loadFonts(io);
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(kGlslVersion);
+#if defined(_WIN32)
+    g_imeWindow = window;
+    ImGui::GetPlatformIO().Platform_SetImeDataFn = &setImeData;
+#endif
 
     int exitCode = 0;
     try {
@@ -269,6 +310,9 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+#if defined(_WIN32)
+    g_imeWindow = nullptr;
+#endif
     glfwDestroyWindow(window);
     return exitCode;
 }

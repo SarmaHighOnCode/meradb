@@ -134,7 +134,12 @@ private:
     std::function<void(const std::string&)> openFolder_ = [](const std::string& folder) { (void)openFolder(folder); };
     int logMaxChars_ = 0;
 
-    struct LogLine { wb::LogKind kind; std::string text; std::size_t prefix = 0; };
+    struct LogLine {
+        wb::LogKind kind;
+        std::string text;
+        std::size_t prefix = 0;
+        mutable LineMetrics metrics;   // built when the line is very long, so drawing it costs what is visible
+    };
     std::vector<LogLine> logLines_;
     std::size_t logRevision_ = static_cast<std::size_t>(-1);
     std::size_t logGeneration_ = static_cast<std::size_t>(-1);

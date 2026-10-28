@@ -658,7 +658,7 @@ void GuiUi::rebuildLogCache() {
     for (const wb::LogEntry& entry : log.entries()) {
         bool first = true;
         for (const wb::Line& line : entry.lines) {
-            LogLine out{entry.kind, wb::plainText(line), 0};
+            LogLine out{entry.kind, wb::plainText(line), 0, {}};
             if (entry.kind == wb::LogKind::Echo && first && !line.empty() && line[0].style.dim) out.prefix = line[0].text.size();
             first = false;
             int chars = 0;
@@ -696,6 +696,12 @@ void GuiUi::drawLogTab() {
     Advance adv;
     adv.ascii = cw;
     adv.other = [baked](char32_t cp) { return baked->GetCharAdvance(static_cast<ImWchar>(cp)); };
+    // positions are taken from the visible left edge plus the scroll, and a very long line draws only its visible part
+    const ImGuiWindow* logWin = ImGui::GetCurrentWindow();
+    const float viewLeft = logWin->InnerRect.Min.x, viewRight = logWin->InnerRect.Max.x;
+    const double scrollX = ImGui::GetScrollX();
+    const double viewW = viewRight - viewLeft;
+    const float textLeft = viewLeft + px(2.0f);
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(logLines_.size()), rowH);
     while (clipper.Step()) {
@@ -703,14 +709,27 @@ void GuiUi::drawLogTab() {
             const LogLine& line = logLines_[static_cast<std::size_t>(i)];
             const ImVec2 at = ImGui::GetCursorScreenPos();
             ImGui::Dummy(ImVec2(width, rowH));
-            const ImVec2 text(at.x + px(2.0f), at.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f);
+            const float textY = at.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+            const bool isLong = line.text.size() > LineMetrics::kLongLine;
+            Slice slice;
+            slice.endByte = line.text.size();
+            if (isLong) {
+                if (!line.metrics.matches(line.text, adv)) line.metrics.build(line.text, adv);
+                slice = line.metrics.slice(line.text, scrollX - cw, scrollX + viewW + cw, adv);
+            }
+            auto screenX = [&](double x) { return textLeft + static_cast<float>(x - scrollX); };
+            const char* base = line.text.data();
             if (line.kind == wb::LogKind::Echo) {
-                dl->AddRectFilled(at, ImVec2(at.x + width, at.y + rowH), toU32(th.surface));
-                if (line.prefix > 0) dl->AddText(font, fontSize, text, toU32(th.faint), line.text.data(), line.text.data() + line.prefix);
-                const float x = text.x + textWidth(line.text.data(), line.text.data() + line.prefix, adv);
-                drawHighlighted(dl, font, fontSize, ImVec2(x, text.y), line.text, line.prefix, line.text.size(), th, adv);
-            } else {
-                dl->AddText(font, fontSize, text, toU32(colorForLog(th, line.kind)), line.text.c_str());
+                dl->AddRectFilled(ImVec2(viewLeft, at.y), ImVec2(viewRight, at.y + rowH), toU32(th.surface));
+                const std::size_t dimEnd = std::min(line.prefix, slice.endByte);
+                if (slice.firstByte < dimEnd) dl->AddText(font, fontSize, ImVec2(screenX(slice.firstX), textY), toU32(th.faint), base + slice.firstByte, base + dimEnd);
+                const std::size_t from = std::max(slice.firstByte, line.prefix);
+                const float x = screenX(slice.firstX) + textWidth(base + slice.firstByte, base + from, adv);
+                drawHighlighted(dl, font, fontSize, ImVec2(x, textY), line.text, from, slice.endByte, th, adv,
+                                isLong ? line.metrics.syncBefore(from) : 0);
+            } else if (slice.firstByte < slice.endByte) {
+                dl->AddText(font, fontSize, ImVec2(screenX(slice.firstX), textY), toU32(colorForLog(th, line.kind)), base + slice.firstByte,
+                            base + slice.endByte);
             }
         }
     }

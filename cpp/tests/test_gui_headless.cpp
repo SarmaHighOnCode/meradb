@@ -5,9 +5,11 @@
 #include "test_util.h"
 #include "imgui_internal.h"
 #include "meradb/backend.h"
+#include "meradb/gui_fonts.h"
 #include "meradb/gui_poster.h"
 #include "meradb/gui_ui.h"
 #include "meradb/wb_session.h"
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -805,6 +807,143 @@ TEST_CASE("gui editor: a very long line draws only its visible columns", "[gui][
     s.frames(6);
     CHECK(s.ui.editor().scrollX() > 1000.0f);
     CHECK(s.gui.vertexCount() < 60000);
+}
+
+namespace {
+
+double frameMs(Screen& s) {
+    const auto t0 = std::chrono::steady_clock::now();
+    s.frames(1);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return ms;
+}
+
+std::string longStatement(std::size_t bytes) {
+    std::string line;
+    const std::string piece = "DIKHAO naam, umar SE students JAHAN umar > 18 AUR naam = 'Asha Rao' -- ";
+    while (line.size() < bytes) line += piece.substr(0, piece.size() - 3) + "; ";
+    return line;
+}
+
+}  // namespace
+
+TEST_CASE("gui editor: frames stay cheap on a 2 MB single line (typing, scrolling, the log)", "[gui][headless][editor][longline]") {
+    Screen s;
+    s.buffer().setText(longStatement(300));
+    s.click(s.at(0, 3));
+    s.frames(4);
+    double baseline = 0.0;   // what an idle frame costs on this machine with a short line
+    for (int i = 0; i < 10; ++i) baseline = std::max(baseline, frameMs(s));
+    s.buffer().setText(longStatement(2000000));
+    s.frames(4);
+    // The bounds are generous (a loaded CI machine, a slow build): the point is O(visible), where the old code paid
+    // O(line) in every frame and a 2 MB line cost about 10 ms or more even for an idle frame.
+    const double kIdleMs = 40.0 + 20.0 * baseline, kEditMs = 120.0 + 20.0 * baseline;
+    double worstIdle = 0.0, worstEdit = 0.0;
+    for (int i = 0; i < 10; ++i) worstIdle = std::max(worstIdle, frameMs(s));
+    CHECK(worstIdle < kIdleMs);
+
+    s.press(ImGuiKey_End);
+    s.frames(6);
+    CHECK(s.buffer().cursor().col > 1000000);
+    for (int i = 0; i < 10; ++i) worstIdle = std::max(worstIdle, frameMs(s));
+    CHECK(worstIdle < kIdleMs);
+
+    for (int i = 0; i < 12; ++i) {   // typing: the text changes in every one of these frames
+        ImGui::GetIO().AddInputCharacter(static_cast<unsigned>('a' + i));
+        worstEdit = std::max(worstEdit, frameMs(s));
+    }
+    CHECK(worstEdit < kEditMs);
+
+    ImGui::GetIO().AddMousePosEvent(s.at(0, 3).x, s.at(0, 3).y);
+    s.frames(2);
+    double worstScroll = 0.0;
+    for (int i = 0; i < 12; ++i) {   // the wheel scrolls sideways through a line of a million columns
+        ImGui::GetIO().AddMouseWheelEvent(-3.0f, 0.0f);
+        worstScroll = std::max(worstScroll, frameMs(s));
+    }
+    CHECK(worstScroll < kIdleMs);
+    s.press(ImGuiKey_Home, true);
+    s.frames(4);
+    CHECK(s.ui.editor().scrollX() == 0.0f);
+
+    s.press(ImGuiKey_Z, true);   // undo of a typing run on a 2 MB line
+    worstEdit = 0.0;
+    for (int i = 0; i < 3; ++i) worstEdit = std::max(worstEdit, frameMs(s));
+    CHECK(worstEdit < kEditMs);
+
+    // the log echoes the whole statement; with the Log tab showing, drawing it must not cost the line either
+    s.buffer().setText("DIKHAO 1;");
+    s.press(ImGuiKey_Enter, true);
+    s.rig.settle();
+    s.frames(3);
+    s.buffer().setText(longStatement(2000000));
+    s.press(ImGuiKey_Enter, true);
+    s.rig.settle();
+    s.frames(4);
+    s.ui.showTab(GuiUi::Tab::Log);
+    s.frames(4);
+    double worstLog = 0.0;
+    for (int i = 0; i < 10; ++i) worstLog = std::max(worstLog, frameMs(s));
+    CHECK(worstLog < kIdleMs);
+}
+
+TEST_CASE("gui editor: a line of millions of columns places the caret and the mouse exactly", "[gui][headless][editor][longline]") {
+    Screen s;
+    s.buffer().setText(std::string(3200000, 'x'));   // 6 px per column: well past 2^24 pixels
+    s.click(s.at(0, 3));
+    s.press(ImGuiKey_End);
+    s.frames(6);
+    const EditorWidget::Layout l = s.ui.editorLayout();
+    REQUIRE(s.ui.editor().scrollX() > 16777216.0f);
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    const float caretX = g.PlatformImeData.InputPos.x;
+    CHECK(caretX >= l.viewMin.x + l.gutter);
+    CHECK(caretX <= l.viewMax.x);
+    // a click four columns left of the end lands four columns left of the end
+    s.click(ImVec2(caretX - 4.0f * l.charWidth + 0.25f * l.charWidth, l.viewMin.y + 20.0f));
+    s.frames(2);
+    CHECK(s.buffer().cursor().col == 3200000 - 4);
+}
+
+TEST_CASE("gui fonts: Devanagari, CJK and symbols have glyphs of their own, not the '?' fallback", "[gui][headless][fonts]") {
+    bool devanagari = false, cjk = false, symbols = false;
+    for (const FallbackFont& f : systemFallbackFonts()) {
+        const std::string name = f.path;
+        if (name.find("Nirmala") != std::string::npos || name.find("Devanagari") != std::string::npos || name.find("Kohinoor") != std::string::npos) devanagari = true;
+        if (name.find("msyh") != std::string::npos || name.find("CJK") != std::string::npos || name.find("PingFang") != std::string::npos) cjk = true;
+        if (name.find("seguisym") != std::string::npos || name.find("Symbols") != std::string::npos) symbols = true;
+    }
+    if (!devanagari && !cjk && !symbols) {
+        WARN("no system fallback font here: nothing to check");
+        SUCCEED();
+        return;
+    }
+    guitest::HeadlessImGui gui;
+    Rig rig;
+    GuiUi ui(*rig.session, gui.fonts(), ThemeMode::Dark);
+    std::vector<std::string> missing;
+    gui.frameWith(
+        [&] {
+            for (ImFont* font : {gui.fonts().ui, gui.fonts().mono}) {
+                ImGui::PushFont(font, 14.0f);
+                ImFontBaked* baked = ImGui::GetFontBaked();
+                const ImFontGlyph* question = baked->FindGlyph(static_cast<ImWchar>('?'));
+                auto check = [&](ImWchar cp) {
+                    const ImFontGlyph* glyph = baked->FindGlyphNoFallback(cp);
+                    if (glyph == nullptr || glyph == question) missing.push_back("U+" + std::to_string(static_cast<unsigned>(cp)));
+                };
+                if (devanagari)
+                    for (ImWchar cp : {0x0928, 0x092E, 0x0938, 0x094D, 0x0924, 0x0947}) check(cp);   // the letters of the word namaste
+                if (cjk)
+                    for (ImWchar cp : {0x4F60, 0x597D, 0x4E16, 0x754C}) check(cp);
+                if (symbols)
+                    for (ImWchar cp : {0x2713, 0x2605, 0x2764}) check(cp);
+                ImGui::PopFont();
+            }
+        },
+        [] {});
+    CHECK(missing.empty());
 }
 
 TEST_CASE("gui editor: the placeholder shows while the editor is empty", "[gui][headless][editor]") {

@@ -3,10 +3,15 @@
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/gui_editor.h"
 #include "meradb/gui_grid.h"
+#include "meradb/gui_fonts.h"
 #include "meradb/gui_options.h"
+#include "meradb/gui_platform.h"
 #include "meradb/gui_tree.h"
 #include "meradb/gui_ui.h"
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <catch2/catch_approx.hpp>
 
 using namespace meradb;
 using namespace meradb::gui;
@@ -413,4 +418,142 @@ TEST_CASE("gui options: the hidden editor and expand-tables options", "[gui][opt
     CHECK_FALSE(o.expandTables);
     o = parseGuiArgs({"--editor"});
     CHECK_FALSE(o.error.empty());
+}
+
+// ---------------------------------------------------------------- very long lines: LineMetrics
+
+namespace {
+
+std::string randomLine(unsigned seed, std::size_t length, bool wide) {
+    std::string line;
+    unsigned x = seed;
+    auto next = [&] {
+        x = x * 1664525u + 1013904223u;
+        return x >> 8;
+    };
+    const char* pieces[] = {"DIKHAO ", "naam", ", ", "'ab cd'", "'it''s'", "42 ", "3.5", "(", ")", " ", "= ", "--c", "x_1 ", "SE "};
+    const char* multi[] = {"\xE3\x81\x82", "\xC3\xA9", "\xE0\xA4\xA8", "\xF0\x9F\x98\x80"};
+    while (line.size() < length) {
+        if (wide && next() % 7 == 0) line += multi[next() % 4];
+        else line += pieces[next() % (sizeof pieces / sizeof pieces[0])];
+    }
+    return line;
+}
+
+}  // namespace
+
+TEST_CASE("gui long lines: LineMetrics agrees with the plain functions (ASCII and mixed text)", "[gui][editor][longline]") {
+    for (const bool wide : {false, true}) {
+        const Advance adv = fixed(7.0f);
+        const std::string line = randomLine(wide ? 11u : 5u, 20000, wide);
+        LineMetrics m;
+        m.build(line, adv);
+        REQUIRE(m.matches(line, adv));
+        CHECK(m.columns() == static_cast<int>(std::count_if(line.begin(), line.end(), [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; })));
+        CHECK(m.totalWidth() == Catch::Approx(static_cast<double>(textWidth(line.data(), line.data() + line.size(), adv))).margin(0.5));
+        unsigned seed = 99;
+        auto rnd = [&](unsigned n) {
+            seed = seed * 1664525u + 1013904223u;
+            return (seed >> 8) % n;
+        };
+        for (int i = 0; i < 400; ++i) {
+            const int col = static_cast<int>(rnd(static_cast<unsigned>(m.columns() + 40)));
+            CHECK(m.xOfColumn(line, col, adv) == Catch::Approx(static_cast<double>(columnX(line, col, adv))).margin(0.5));
+            const float x = static_cast<float>(rnd(static_cast<unsigned>(m.totalWidth()) + 200)) - 20.0f;
+            CHECK(m.columnAtX(line, static_cast<double>(x), adv) == columnAt(line, x, adv));
+            const float from = static_cast<float>(rnd(static_cast<unsigned>(m.totalWidth()) + 100)) - 30.0f;
+            const float to = from + static_cast<float>(rnd(900));
+            const Slice a = m.slice(line, from, to, adv);
+            const Slice b = visibleSlice(line, from, to, adv);
+            CHECK(a.firstCol == b.firstCol);
+            CHECK(a.endCol == b.endCol);
+            CHECK(a.firstByte == b.firstByte);
+            CHECK(a.endByte == b.endByte);
+            CHECK(a.firstX == Catch::Approx(static_cast<double>(b.firstX)).margin(0.5));
+        }
+    }
+}
+
+TEST_CASE("gui long lines: lexing from a sync point gives the same colours as lexing from the start", "[gui][editor][longline]") {
+    const Advance adv = fixed(7.0f);
+    // long strings and comments, so that sync points must skip them
+    std::string line = randomLine(3u, 30000, true);
+    line += " '" + std::string(9000, 'q') + " ''" + std::string(9000, 'w') + "' " + randomLine(4u, 12000, false) + " --" + randomLine(5u, 9000, false);
+    LineMetrics m;
+    m.build(line, adv);
+    unsigned seed = 7;
+    auto rnd = [&](std::size_t n) {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) % n;
+    };
+    for (int i = 0; i < 300; ++i) {
+        std::size_t from = rnd(line.size());
+        while (from > 0 && (static_cast<unsigned char>(line[from]) & 0xC0) == 0x80) --from;
+        std::size_t to = std::min(line.size(), from + 600);
+        while (to < line.size() && (static_cast<unsigned char>(line[to]) & 0xC0) == 0x80) ++to;
+        const std::size_t sync = m.syncBefore(from);
+        CHECK(sync <= from);
+        const auto full = highlight::spans(line, from, to);
+        const auto fast = highlight::spans(line, sync, from, to);
+        REQUIRE(full.size() == fast.size());
+        for (std::size_t k = 0; k < full.size(); ++k) {
+            CHECK(full[k].start == fast[k].start);
+            CHECK(full[k].end == fast[k].end);
+            CHECK(full[k].kind == fast[k].kind);
+        }
+    }
+}
+
+TEST_CASE("gui long lines: a line of 30 million columns keeps exact positions", "[gui][editor][longline]") {
+    const Advance adv = fixed(6.0f);
+    const std::string line(30000000, 'x');
+    LineMetrics m;
+    m.build(line, adv);
+    // 6 px * 30M = 180M px: far beyond what a float holds exactly; the double-based answers stay exact
+    CHECK(m.totalWidth() == 180000000.0);
+    CHECK(m.xOfColumn(line, 29999999, adv) == 179999994.0);
+    const double scroll = 179999000.0;
+    const Slice s = m.slice(line, scroll - 6.0, scroll + 1000.0, adv);
+    CHECK(s.firstCol == 29999832);
+    CHECK(s.firstX - scroll == Catch::Approx(-8.0).margin(0.001));   // relative to the scroll the number is small again
+    CHECK(m.columnAtX(line, 179999994.0 + 2.0, adv) == 29999999);
+}
+
+TEST_CASE("gui undo: an edit that changes nothing keeps the redo steps", "[gui][editor][undo]") {
+    UndoStack u;
+    u.record(false, 0.0, [] { return snap("a"); });
+    u.record(false, 5.0, [] { return snap("ab"); });
+    auto step = u.undo(snap("abc"));
+    REQUIRE(step);
+    REQUIRE(u.redoSteps() == 1);
+    const bool started = u.record(false, 10.0, [] { return snap("ab"); });   // a no-op edit begins a step...
+    CHECK(started);
+    CHECK(u.redoSteps() == 0);
+    u.cancelLast();                                                          // ...and is found to change nothing
+    CHECK(u.redoSteps() == 1);
+    CHECK(u.undoSteps() == 1);
+    auto again = u.redo(snap("ab"));
+    REQUIRE(again);
+    CHECK(again->text == "abc");
+}
+
+// ---------------------------------------------------------------- fallback fonts, IME
+
+TEST_CASE("gui fonts: the fallback list only names files that exist", "[gui][fonts]") {
+    for (const FallbackFont& f : systemFallbackFonts()) {
+        std::FILE* file = std::fopen(f.path.c_str(), "rb");
+        CHECK(file != nullptr);
+        if (file != nullptr) std::fclose(file);
+        CHECK(f.index >= 0);
+    }
+    CHECK(systemFallbackFonts("/this/folder/does/not/exist").empty());
+}
+
+TEST_CASE("gui ime: the composition starts at the caret and the candidate list hangs below it", "[gui][ime]") {
+    const ImePlacement p = imePlacement(120.5f, 300.0f, 18.0f);
+    CHECK(p.compositionX == 120);
+    CHECK(p.compositionY == 300);
+    CHECK(p.candidateX == 120);
+    CHECK(p.candidateY > 318);
+    CHECK(p.candidateY < 330);
 }

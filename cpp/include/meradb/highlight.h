@@ -27,6 +27,10 @@ std::vector<Span> spans(const std::string& line);
 // Only the spans that overlap the byte range [from, to): the same spans spans(line) gives, filtered, but words
 // outside the range are not classified and no span is built for them (for drawing a window of a very long line).
 std::vector<Span> spans(const std::string& line, std::size_t from, std::size_t to);
+// The same, but lexing starts at byte `start` (<= from) instead of 0. The caller guarantees that `start` is a point
+// where the full lexer is between tokens and outside any string or comment (a blank outside quotes is one); the
+// result then equals spans(line, from, to). Makes a window of a multi-megabyte line cost the window, not the line.
+std::vector<Span> spans(const std::string& line, std::size_t start, std::size_t from, std::size_t to);
 
 // highlight.py's RICH_STYLES: rgb is 0xRRGGBB or -1 for "no colour".
 struct RichStyle {

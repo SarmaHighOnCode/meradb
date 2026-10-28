@@ -96,10 +96,12 @@ const char* kindName(Kind kind) {
 
 std::vector<Span> spans(const std::string& s) { return spans(s, 0, s.size()); }
 
-std::vector<Span> spans(const std::string& s, std::size_t from, std::size_t to) {
+std::vector<Span> spans(const std::string& s, std::size_t from, std::size_t to) { return spans(s, 0, from, to); }
+
+std::vector<Span> spans(const std::string& s, std::size_t start, std::size_t from, std::size_t to) {
     std::vector<Span> out;
     const std::size_t n = s.size();
-    std::size_t i = 0;
+    std::size_t i = start < from ? start : from;
     while (i < n && i < to) {
         const unsigned char c = static_cast<unsigned char>(s[i]);
         if (c == '-' && i + 1 < n && s[i + 1] == '-') {
