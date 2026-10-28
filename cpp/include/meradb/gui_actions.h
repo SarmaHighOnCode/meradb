@@ -3,6 +3,6 @@
 
 namespace meradb::gui {
 
-enum class Action { Run, Explain, Previous, Next, ExportCsv, ClearLog, Quit, Connect, Madad, ToggleTheme };
+enum class Action { Run, Explain, Previous, Next, ExportCsv, ClearLog, Quit, Connect, Madad, Palette, ToggleTheme };
 
 }  // namespace meradb::gui

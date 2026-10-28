@@ -3,6 +3,7 @@
 #include "meradb/wb_help.h"
 #include <algorithm>
 #include <cfloat>
+#include <cctype>
 #include <cstring>
 
 namespace meradb::gui {
@@ -38,6 +39,7 @@ const std::vector<KeyHelp>& keyHelp() {
         {"F1", "Madad kholo / band karo", Action::Madad},
         {MERADB_CTRL "+L", "Log saaf karo", Action::ClearLog},
         {MERADB_CTRL "+Q", "Bahar: chalta statement khatam hone tak ruko, khula transaction WAPAS ho jata hai", Action::Quit},
+        {MERADB_CTRL "+K", "Command menu: action, table ya purani query dhoondo aur chalao", Action::Palette},
         {"Esc", "Dialog, Madad ya command menu band karo", std::nullopt},
         {MERADB_CTRL "+A / C / X / V", "Editor mein sab select, copy, cut, paste", std::nullopt},
         {MERADB_CTRL "+Z / " MERADB_CTRL "+Y", "Editor mein undo / redo (redo: " MERADB_CTRL "+Shift+Z bhi)", std::nullopt},
@@ -254,6 +256,217 @@ void HelpWindow::draw(wb::Session& session, const Theme& th, const FontSet& font
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------- the command menu
+
+bool commandMatches(const std::string& text, const std::string& query) {
+    auto lower = [](const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) out += static_cast<char>(c < 0x80 ? std::tolower(c) : c);
+        return out;
+    };
+    const std::string hay = lower(text), q = lower(query);
+    std::size_t pos = 0;
+    while (pos < q.size()) {
+        while (pos < q.size() && (q[pos] == ' ' || q[pos] == '\t')) ++pos;
+        std::size_t end = pos;
+        while (end < q.size() && q[end] != ' ' && q[end] != '\t') ++end;
+        if (end > pos && hay.find(q.substr(pos, end - pos)) == std::string::npos) return false;
+        pos = end;
+    }
+    return true;
+}
+
+std::vector<CommandItem> commandItems(wb::Session& session) {
+    std::vector<CommandItem> items;
+    auto action = [&](const char* label, const char* detail, Action a) {
+        CommandItem item;
+        item.kind = CommandItem::Kind::Action;
+        item.label = label;
+        item.detail = detail;
+        item.action = a;
+        items.push_back(std::move(item));
+    };
+    action("Chalao", MERADB_CTRL "+Enter", Action::Run);
+    action("Samjhao", MERADB_CTRL "+Shift+Enter", Action::Explain);
+    action("CSV", MERADB_CTRL "+S", Action::ExportCsv);
+    action("Connect", MERADB_CTRL "+O", Action::Connect);
+    action("Madad", "F1", Action::Madad);
+    action("Log saaf karo", MERADB_CTRL "+L", Action::ClearLog);
+    action("Light / dark", "", Action::ToggleTheme);
+    for (const wb::TreeRow& row : session.tree().allNodes()) {
+        if (row.key.kind != wb::NodeKey::Kind::Table) continue;
+        CommandItem item;
+        item.kind = CommandItem::Kind::Table;
+        item.label = "DIKHAO * SE " + row.key.table + " SIRF 100";
+        item.detail = row.key.db;
+        item.table = row.key;
+        items.push_back(std::move(item));
+    }
+    const std::vector<std::string>& history = session.history().items();
+    std::size_t taken = 0;
+    for (auto it = history.rbegin(); it != history.rend() && taken < 20; ++it, ++taken) {
+        CommandItem item;
+        item.kind = CommandItem::Kind::History;
+        std::string flat;
+        bool blank = true;
+        for (char c : *it) {   // one line: blanks and line breaks collapse
+            const bool space = c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            if (space) {
+                if (!blank) flat += ' ';
+                blank = true;
+            } else {
+                flat += c;
+                blank = false;
+            }
+        }
+        if (flat.size() > 120) {
+            std::size_t cut = 117;
+            while (cut > 0 && (static_cast<unsigned char>(flat[cut]) & 0xC0) == 0x80) --cut;
+            flat = flat.substr(0, cut) + "...";
+        }
+        item.label = flat;
+        item.detail = "history";
+        item.text = *it;
+        items.push_back(std::move(item));
+    }
+    return items;
+}
+
+void CommandMenu::open(wb::Session& session) {
+    items_ = commandItems(session);
+    buffer_[0] = '\0';
+    query_.clear();
+    highlighted_ = 0;
+    open_ = true;
+    focusInput_ = true;
+    refilter();
+}
+
+void CommandMenu::setQuery(const std::string& text) {
+    std::strncpy(buffer_, text.c_str(), sizeof buffer_ - 1);
+    buffer_[sizeof buffer_ - 1] = '\0';
+    query_ = buffer_;
+    highlighted_ = 0;
+    refilter();
+}
+
+void CommandMenu::refilter() {
+    visible_.clear();
+    for (std::size_t i = 0; i < items_.size(); ++i)
+        if (commandMatches(items_[i].label + " " + items_[i].detail, query_)) visible_.push_back(static_cast<int>(i));
+    highlighted_ = visible_.empty() ? 0 : std::max(0, std::min(highlighted_, static_cast<int>(visible_.size()) - 1));
+}
+
+void CommandMenu::move(int delta) {
+    if (visible_.empty()) return;
+    highlighted_ = std::max(0, std::min(highlighted_ + delta, static_cast<int>(visible_.size()) - 1));
+    scrollToHighlight_ = true;
+}
+
+std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fonts, float scale) {
+    if (!open_) return std::nullopt;
+    const char* id = "##command_menu";
+    if (!ImGui::IsPopupOpen(id)) ImGui::OpenPopup(id);
+
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float width = std::min(560.0f * scale, std::max(200.0f, display.x - 24.0f * scale));
+    const float rowH = 32.0f * scale;
+    const int rows = std::max(1, std::min(10, static_cast<int>(visible_.size())));
+    const float listH = rowH * static_cast<float>(rows);
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, std::max(8.0f, display.y * 0.22f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * scale, 12.0f * scale));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, toVec4(th.surface));
+    ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.faint, 0.55f));
+    const bool opened = ImGui::BeginPopupModal(id, nullptr, kDialogFlags);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+    if (!opened) return std::nullopt;
+
+    std::optional<CommandItem> chosen;
+    const bool close = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K, false));
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) move(1);
+    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) move(-1);
+    if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) move(rows);
+    if (ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) move(-rows);
+    bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, toVec4(th.background));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (focusInput_ || !ImGui::IsAnyItemActive()) {
+        ImGui::SetKeyboardFocusHere();
+        focusInput_ = false;
+    }
+    if (ImGui::InputTextWithHint("##command_filter", "Kya karna hai? dhoondo...", buffer_, sizeof buffer_)) {
+        if (query_ != buffer_) {
+            query_ = buffer_;
+            highlighted_ = 0;
+            refilter();
+        }
+    }
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0.0f, 2.0f * scale));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::BeginChild("##command_list", ImVec2(0.0f, listH), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
+    if (visible_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f * scale);
+        ImGui::TextUnformatted("Kuch nahi mila.");
+        ImGui::PopStyleColor();
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+    for (int pos = 0; pos < static_cast<int>(visible_.size()); ++pos) {
+        const CommandItem& item = items_[static_cast<std::size_t>(visible_[static_cast<std::size_t>(pos)])];
+        ImGui::PushID(pos);
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float rowW = ImGui::GetContentRegionAvail().x;
+        ImGui::InvisibleButton("##row", ImVec2(rowW, rowH));
+        if (ImGui::IsItemHovered() && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) highlighted_ = pos;
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            highlighted_ = pos;
+            enter = true;
+        }
+        const bool selected = pos == highlighted_;
+        if (selected) {
+            dl->AddRectFilled(at, ImVec2(at.x + rowW, at.y + rowH), toU32(th.hover), 6.0f * scale);
+            if (scrollToHighlight_) {
+                ImGui::SetScrollHereY(0.5f);
+                scrollToHighlight_ = false;
+            }
+        }
+        const bool mono = item.kind != CommandItem::Kind::Action;
+        ImFont* font = mono ? fonts.mono : fonts.ui;
+        ImGui::PushFont(font, mono ? kMonoFontSize : kUiFontSize);
+        const float px = ImGui::GetFontSize();
+        ImGui::PopFont();
+        ImGui::PushFont(fonts.ui, 12.0f);
+        const float dpx = ImGui::GetFontSize();
+        const float dw = ImGui::CalcTextSize(item.detail.c_str()).x;
+        ImGui::PopFont();
+        const float textX = at.x + 10.0f * scale;
+        const float maxLabel = rowW - 20.0f * scale - dw - 12.0f * scale;
+        // the label is clipped to its room (a long statement) rather than running under the detail
+        dl->PushClipRect(ImVec2(textX, at.y), ImVec2(textX + std::max(0.0f, maxLabel), at.y + rowH), true);
+        dl->AddText(font, px, ImVec2(textX, at.y + (rowH - px) * 0.5f), toU32(th.text), item.label.c_str());
+        dl->PopClipRect();
+        dl->AddText(fonts.ui, dpx, ImVec2(at.x + rowW - 10.0f * scale - dw, at.y + (rowH - dpx) * 0.5f), toU32(th.faint), item.detail.c_str());
+        if (selected && enter) chosen = item;
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    scrollToHighlight_ = false;
+
+    if (chosen || close) {
+        open_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    return chosen;
 }
 
 }  // namespace meradb::gui

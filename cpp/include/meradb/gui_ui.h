@@ -55,6 +55,9 @@ public:
     void perform(Action action);
     ConnectDialog& connectDialog() { return connectDialog_; }
     HelpWindow& helpWindow() { return helpWindow_; }
+    CommandMenu& commandMenu() { return palette_; }
+    void runCommand(const CommandItem& item);
+    void openPalette(const std::string& query = "");
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
@@ -97,6 +100,7 @@ private:
     ResultsGrid grid_;
     ConnectDialog connectDialog_;
     HelpWindow helpWindow_;
+    CommandMenu palette_;
     bool overlayWasOpen_ = false;
     float schemaWidth_ = kSchemaWidth;
     float queryFraction_ = 0.42f;

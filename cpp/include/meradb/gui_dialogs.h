@@ -66,4 +66,45 @@ private:
     float scrollY_ = 0.0f;
 };
 
+// ---- the command menu (Ctrl+K) ----
+struct CommandItem {
+    enum class Kind { Action, Table, History };
+    Kind kind = Kind::Action;
+    std::string label;        // what is listed and filtered
+    std::string detail;       // right side, muted: the key, the database, "history"
+    Action action = Action::Run;
+    wb::NodeKey table;        // Kind::Table
+    std::string text;         // Kind::History: the statement
+};
+// Every term of `query` (split at blanks, ASCII case-insensitive) must occur in `text`; an empty query matches all.
+bool commandMatches(const std::string& text, const std::string& query);
+// Actions, then every table (DIKHAO * SE t SIRF 100), then the last 20 history entries, newest first.
+std::vector<CommandItem> commandItems(wb::Session& session);
+
+class CommandMenu {
+public:
+    void open(wb::Session& session);
+    void close() { open_ = false; }
+    bool isOpen() const { return open_; }
+    void setQuery(const std::string& text);
+    const std::string& query() const { return query_; }
+    const std::vector<CommandItem>& items() const { return items_; }
+    const std::vector<int>& visible() const { return visible_; }   // indexes into items(), in the order shown
+    int highlighted() const { return highlighted_; }               // position in visible()
+    void move(int delta);
+    // The chosen item (Enter or a click); the menu has closed by then. Esc and Ctrl+K close it without a choice.
+    std::optional<CommandItem> draw(const Theme& theme, const FontSet& fonts, float scale);
+
+private:
+    void refilter();
+    bool open_ = false;
+    bool focusInput_ = false;
+    bool scrollToHighlight_ = false;
+    char buffer_[256] = {0};
+    std::string query_;
+    std::vector<CommandItem> items_;
+    std::vector<int> visible_;
+    int highlighted_ = 0;
+};
+
 }  // namespace meradb::gui

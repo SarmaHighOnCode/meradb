@@ -75,6 +75,7 @@ const std::vector<KeyBinding>& keyBindings() {
         {ImGuiMod_Ctrl | ImGuiKey_L, Action::ClearLog},
         {ImGuiMod_Ctrl | ImGuiKey_O, Action::Connect},
         {ImGuiKey_F1, Action::Madad},
+        {ImGuiMod_Ctrl | ImGuiKey_K, Action::Palette},
         {ImGuiMod_Ctrl | ImGuiKey_Q, Action::Quit},
     };
     return table;
@@ -117,6 +118,9 @@ void GuiUi::perform(Action action) {
             if (session_.modal() == wb::Modal::Help) session_.closeModal();
             else if (session_.modal() == wb::Modal::None && !session_.quitting()) session_.showHelp();
             break;
+        case Action::Palette:
+            if (!session_.quitting() && session_.modal() == wb::Modal::None && !palette_.isOpen()) palette_.open(session_);
+            break;
         case Action::ToggleTheme: mode_ = otherMode(mode_); break;
         case Action::Quit: session_.requestQuit(); break;
     }
@@ -143,7 +147,22 @@ bool GuiUi::beginPanel(const char* id, const Rect& rect, std::uint32_t backgroun
     return open;
 }
 
-bool GuiUi::overlayOpen() const { return session_.modal() != wb::Modal::None; }
+bool GuiUi::overlayOpen() const { return session_.modal() != wb::Modal::None || palette_.isOpen(); }
+
+void GuiUi::openPalette(const std::string& query) {
+    palette_.open(session_);
+    if (!query.empty()) palette_.setQuery(query);
+}
+
+void GuiUi::runCommand(const CommandItem& item) {
+    switch (item.kind) {
+        case CommandItem::Kind::Action: perform(item.action); break;
+        case CommandItem::Kind::Table:
+            for (const std::string& script : topRowsScripts(item.table, session_.currentDb())) session_.runText(script);
+            break;
+        case CommandItem::Kind::History: session_.runText(item.text); break;
+    }
+}
 
 void GuiUi::handleShortcuts() {
     ImGuiIO& io = ImGui::GetIO();
@@ -264,6 +283,10 @@ void GuiUi::draw() {
     drawSplitters(topH, bodyH, schemaW, queryH, display);
     connectDialog_.draw(session_, theme(), fonts_, scale_);
     helpWindow_.draw(session_, theme(), fonts_, scale_);
+    if (const std::optional<CommandItem> chosen = palette_.draw(theme(), fonts_, scale_)) {
+        editor_.setFocused(true);
+        runCommand(*chosen);   // the menu has closed; Connect and Madad open their own overlay
+    }
     const bool overlay = overlayOpen();
     if (overlayWasOpen_ && !overlay) editor_.setFocused(true);   // typing continues where it was
     overlayWasOpen_ = overlay;

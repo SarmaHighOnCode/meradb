@@ -203,6 +203,7 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
             if (options.open) {
                 if (*options.open == "connect") session.openConnectDialog();
                 else if (*options.open == "madad") session.showHelp();
+                else if (*options.open == "palette") ui.openPalette(options.typeText.value_or(""));
             }
             if (exitCode == 0) {
                 OffscreenTarget target;
