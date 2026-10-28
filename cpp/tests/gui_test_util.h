@@ -17,6 +17,12 @@ inline void throwingAssertHandler(const char* expression, const char* file, int 
     throw ImGuiAssertion(std::string("Dear ImGui assertion: ") + expression + " (" + file + ":" + std::to_string(line) + ")");
 }
 
+// The clipboard of the tests: in memory, so a test never touches the real one.
+inline std::string& fakeClipboard() {
+    static std::string text;
+    return text;
+}
+
 // Creates a context, sets the display size by hand, loads the embedded fonts and turns a failed IM_ASSERT into an
 // exception for as long as it lives. There is no renderer: frame() plays its part for the font texture (marks it
 // uploaded), which is all Dear ImGui needs to keep going.
@@ -32,6 +38,9 @@ public:
         io.LogFilename = nullptr;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.DisplaySize = ImVec2(width, height);
+        ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
+        platform.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) { fakeClipboard() = text != nullptr ? text : ""; };
+        platform.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* { return fakeClipboard().c_str(); };
         fonts_ = meradb::gui::loadFonts(io);
     }
     ~HeadlessImGui() {

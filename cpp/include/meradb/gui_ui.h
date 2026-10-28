@@ -48,9 +48,11 @@ public:
     float schemaWidth() const { return schemaWidth_; }        // unscaled pixels
     float queryFraction() const { return queryFraction_; }    // the editor's share of the height between the bars
     EditorWidget& editor() { return editor_; }
+    const EditorWidget::Layout& editorLayout() const { return editor_.layout(); }
     SchemaTree& schemaTree() { return tree_; }
     ResultsGrid& grid() { return grid_; }
     void perform(Action action);
+    bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
     void prepare(float scale);
@@ -97,6 +99,7 @@ private:
     int seenVersion_ = 0;
     std::size_t seenRevision_ = 0, seenGeneration_ = 0;
     bool logFollow_ = true;
+    bool badgeShown_ = false;
     int logMaxChars_ = 0;
 
     struct LogLine { wb::LogKind kind; std::string text; std::size_t prefix = 0; };

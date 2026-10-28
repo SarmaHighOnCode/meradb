@@ -146,7 +146,9 @@ std::vector<TreeEntry> treeEntries(const std::vector<wb::TreeRow>& nodes, const 
     for (std::size_t i = 0; i < n; ++i) {
         if (!keep[i]) continue;
         TreeEntry e = makeEntry(nodes[i]);
-        e.expanded = e.expandable && i + 1 < n && keep[i + 1] && nodes[i + 1].depth > nodes[i].depth;
+        std::size_t next = i + 1;   // the next kept node: a child of this one means it shows open
+        while (next < n && !keep[next]) ++next;
+        e.expanded = e.expandable && next < n && nodes[next].depth > nodes[i].depth;
         out.push_back(std::move(e));
     }
     return out;
@@ -246,6 +248,11 @@ void SchemaTree::drawMenu() {
         openMenu_ = false;
     }
     if (!ImGui::BeginPopup("##treemenu")) return;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
     const bool isTable = menuKey_.kind == Kind::Table;
     if (ImGui::MenuItem("Top 100 rows dikhao", nullptr, false, isTable)) {
         for (const std::string& script : topRowsScripts(menuKey_, session_.currentDb())) session_.runText(script);

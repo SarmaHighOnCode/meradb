@@ -188,8 +188,7 @@ void GuiUi::followRuns() {
 void GuiUi::drawSplitters(float topH, float bodyH, float schemaW, float queryH, const ImVec2& display) {
     const Theme& th = theme();
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
-                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse |
-                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
+                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse;   // on top of the panels
     const float grab = px(6.0f);
     auto strip = [&](const char* id, ImVec2 pos, ImVec2 size, bool vertical, float* delta) {
         ImGui::SetNextWindowPos(pos);
@@ -316,6 +315,7 @@ void GuiUi::drawTopBar(const Rect& rect) {
         const float sepWidth = ImGui::CalcTextSize("/").x + px(20.0f);
         const float dbWidth = db.empty() ? 0.0f : sepWidth + ImGui::CalcTextSize(db.c_str()).x;
         const bool inTransaction = session_.inTransaction();
+        badgeShown_ = inTransaction;
         const char* badge = "TRANSACTION";
         const float badgeWidth = inTransaction ? ImGui::CalcTextSize(badge).x + px(20.0f) : 0.0f;
         const float badgeGap = inTransaction ? px(14.0f) : 0.0f;

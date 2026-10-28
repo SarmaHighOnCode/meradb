@@ -25,3 +25,6 @@ inline AssertHandler& assertHandler() {
 }  // namespace meradb::gui
 
 #define IM_ASSERT(_EXPR) ((void)((_EXPR) ? (void)0 : ::meradb::gui::assertHandler()(#_EXPR, __FILE__, __LINE__)))
+
+// Characters beyond the BMP (emoji) reach the editor as one code point.
+#define IMGUI_USE_WCHAR32

@@ -509,7 +509,7 @@ void EditorWidget::draw(const char* id, ImVec2 size, const Theme& th, ImFont* mo
     // ---- drawing ----
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const int first = std::max(0, static_cast<int>(std::floor((viewMin.y - textOrigin.y) / lh)));
-    const int last = std::min(lines - 1, static_cast<int>(std::floor((viewMax.y - textOrigin.y) / lh)));
+    const int last = std::min(buffer_.lineCount() - 1, static_cast<int>(std::floor((viewMax.y - textOrigin.y) / lh)));
     layout_.firstRow = first;
     layout_.lastRow = last;
     const wb::Pos cursor = buffer_.cursor();
