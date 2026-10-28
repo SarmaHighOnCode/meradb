@@ -193,6 +193,13 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
+            if (options.editorText) session.editor().setText(*options.editorText);
+            if (options.expandTables) {
+                for (int i = 0; i < static_cast<int>(session.tree().rows().size()); ++i) {   // the rows shift as tables open
+                    const wb::TreeRow& row = session.tree().rows()[static_cast<std::size_t>(i)];
+                    if (row.key.kind == wb::NodeKey::Kind::Table && !row.expanded) session.tree().toggle(i);
+                }
+            }
             if (exitCode == 0) {
                 OffscreenTarget target;
                 if (!target.create(gl, options.width, options.height)) {

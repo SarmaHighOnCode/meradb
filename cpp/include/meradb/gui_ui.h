@@ -3,10 +3,14 @@
 //
 // One frame:   ui.prepare(scale);  ImGui::NewFrame();  ui.draw();  ImGui::Render();
 #pragma once
+#include "meradb/gui_editor.h"
 #include "meradb/gui_fonts.h"
+#include "meradb/gui_grid.h"
 #include "meradb/gui_theme.h"
+#include "meradb/gui_tree.h"
 #include "meradb/wb_session.h"
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +21,17 @@ namespace meradb::gui {
 // are never cut in half. Returns `text` unchanged when it fits and "..." when even that does not fit.
 std::string ellipsizeMiddle(const std::string& text, float maxWidth, const std::function<float(const std::string&)>& measure);
 
+// "local (C:\Users\x\data)" -> "local (data)": the connection as the top bar shows it. A server ("host:port") stays as it is.
+std::string connectionLabel(const std::string& description);
+
+// What a key does. The table is keyBindings(); the Madad window will list it.
+enum class Action { Run, Explain, Previous, Next, ExportCsv, ClearLog, Quit };
+struct KeyBinding {
+    ImGuiKeyChord chord;   // ImGuiMod_Ctrl is the Cmd key on macOS (Dear ImGui swaps them there)
+    Action action;
+};
+const std::vector<KeyBinding>& keyBindings();
+
 class GuiUi {
 public:
     GuiUi(wb::Session& session, const FontSet& fonts, ThemeMode mode);
@@ -25,6 +40,17 @@ public:
     void setMode(ThemeMode mode) { mode_ = mode; }     // takes effect at the next prepare()
     const Theme& theme() const { return themeFor(mode_); }
     float scale() const { return scale_; }
+
+    enum class Tab { Results, Log };
+    Tab tab() const { return activeTab_; }
+    void showTab(Tab tab) { requestTab_ = tab; }
+    double lastRunMs() const { return lastMs_; }              // the time of the run that made the table; < 0 = unknown
+    float schemaWidth() const { return schemaWidth_; }        // unscaled pixels
+    float queryFraction() const { return queryFraction_; }    // the editor's share of the height between the bars
+    EditorWidget& editor() { return editor_; }
+    SchemaTree& schemaTree() { return tree_; }
+    ResultsGrid& grid() { return grid_; }
+    void perform(Action action);
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
     void prepare(float scale);
@@ -47,8 +73,11 @@ private:
     void drawStatusBar(const Rect& rect);
     void drawLogTab();
     void drawResultsTab();
+    void drawTabBarExtras(float tabY, float rightX);
     void rebuildLogCache();
     void handleShortcuts();
+    void followRuns();
+    void drawSplitters(float topH, float bodyH, float schemaW, float queryH, const ImVec2& display);
     float px(float value) const { return value * scale_; }
 
     wb::Session& session_;
@@ -57,9 +86,20 @@ private:
     ThemeMode appliedMode_;
     float scale_ = 1.0f;
     float appliedScale_ = 0.0f;   // 0: nothing applied yet
-    char schemaFilter_[128] = {0};
+    EditorWidget editor_;
+    SchemaTree tree_;
+    ResultsGrid grid_;
+    float schemaWidth_ = kSchemaWidth;
+    float queryFraction_ = 0.42f;
+    Tab activeTab_ = Tab::Results;
+    std::optional<Tab> requestTab_;
+    double lastMs_ = -1.0;
+    int seenVersion_ = 0;
+    std::size_t seenRevision_ = 0, seenGeneration_ = 0;
+    bool logFollow_ = true;
+    int logMaxChars_ = 0;
 
-    struct LogLine { wb::LogKind kind; std::string text; };
+    struct LogLine { wb::LogKind kind; std::string text; std::size_t prefix = 0; };
     std::vector<LogLine> logLines_;
     std::size_t logRevision_ = static_cast<std::size_t>(-1);
     std::size_t logGeneration_ = static_cast<std::size_t>(-1);

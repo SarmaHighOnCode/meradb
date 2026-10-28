@@ -59,7 +59,11 @@ GuiOptions parseGuiArgs(std::vector<std::string> argv) {
             options.showVersion = true;
             continue;
         }
-        const char* names[] = {"--screenshot", "--script", "--theme", "--size"};
+        if (arg == "--expand-tables") {
+            options.expandTables = true;
+            continue;
+        }
+        const char* names[] = {"--screenshot", "--script", "--theme", "--size", "--editor"};
         const char* matched = nullptr;
         std::string inlineValue;
         bool hasInline = false;
@@ -95,6 +99,8 @@ GuiOptions parseGuiArgs(std::vector<std::string> argv) {
             options.screenshot = value;
         } else if (name == "--script") {
             options.script = value;
+        } else if (name == "--editor") {
+            options.editorText = value;
         } else if (name == "--theme") {
             const std::optional<ThemeMode> mode = parseThemeName(value);
             if (!mode) options.error = "argument --theme: invalid choice: '" + value + "' (choose from 'light', 'dark')";

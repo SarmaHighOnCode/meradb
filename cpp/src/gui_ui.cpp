@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace meradb::gui {
@@ -47,8 +48,69 @@ std::string ellipsizeMiddle(const std::string& text, float maxWidth, const std::
     return "...";
 }
 
+std::string connectionLabel(const std::string& description) {
+    static const std::string prefix = "local (";
+    if (description.size() <= prefix.size() || description.compare(0, prefix.size(), prefix) != 0 || description.back() != ')')
+        return description;
+    std::string path = description.substr(prefix.size(), description.size() - prefix.size() - 1);
+    while (!path.empty() && (path.back() == '/' || path.back() == '\\')) path.pop_back();
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::string folder = slash == std::string::npos ? path : path.substr(slash + 1);
+    return folder.empty() ? std::string("local") : "local (" + folder + ")";
+}
+
+const std::vector<KeyBinding>& keyBindings() {
+    static const std::vector<KeyBinding> table = {
+        {ImGuiMod_Ctrl | ImGuiKey_Enter, Action::Run},
+        {ImGuiMod_Ctrl | ImGuiKey_KeypadEnter, Action::Run},
+        {ImGuiKey_F5, Action::Run},
+        {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Enter, Action::Explain},
+        {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_KeypadEnter, Action::Explain},
+        {ImGuiKey_F6, Action::Explain},
+        {ImGuiMod_Alt | ImGuiKey_UpArrow, Action::Previous},
+        {ImGuiMod_Ctrl | ImGuiKey_UpArrow, Action::Previous},
+        {ImGuiMod_Alt | ImGuiKey_DownArrow, Action::Next},
+        {ImGuiMod_Ctrl | ImGuiKey_DownArrow, Action::Next},
+        {ImGuiMod_Ctrl | ImGuiKey_S, Action::ExportCsv},
+        {ImGuiMod_Ctrl | ImGuiKey_L, Action::ClearLog},
+        {ImGuiMod_Ctrl | ImGuiKey_Q, Action::Quit},
+    };
+    return table;
+}
+
 GuiUi::GuiUi(wb::Session& session, const FontSet& fonts, ThemeMode mode)
-    : session_(session), fonts_(fonts), mode_(mode), appliedMode_(mode) {}
+    : session_(session),
+      fonts_(fonts),
+      mode_(mode),
+      appliedMode_(mode),
+      editor_(session.editor()),
+      tree_(session,
+            [this](const std::function<void()>& change) {
+                const std::string before = session_.editor().text();
+                editor_.external(change);
+                if (session_.editor().text() != before) {   // a column name went in: typing continues there
+                    editor_.setFocused(true);
+                    tree_.setFocused(false);
+                }
+            }),
+      seenVersion_(session.resultVersion()),
+      seenRevision_(session.log().revision()),
+      seenGeneration_(session.log().generation()) {}
+
+void GuiUi::perform(Action action) {
+    switch (action) {
+        case Action::Run: session_.runEditorText(); break;
+        case Action::Explain: session_.explainEditorText(); break;
+        case Action::Previous: editor_.external([this] { session_.historyStep(-1); }); break;
+        case Action::Next: editor_.external([this] { session_.historyStep(+1); }); break;
+        case Action::ExportCsv:
+            session_.exportCsv();
+            seenRevision_ = session_.log().revision();   // its message is not the end of a run: no tab switch
+            break;
+        case Action::ClearLog: session_.clearLog(); break;
+        case Action::Quit: session_.requestQuit(); break;
+    }
+}
 
 void GuiUi::prepare(float scale) {
     if (!(scale > 0.0f)) scale = 1.0f;
@@ -72,7 +134,91 @@ bool GuiUi::beginPanel(const char* id, const Rect& rect, std::uint32_t backgroun
 }
 
 void GuiUi::handleShortcuts() {
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Q)) session_.requestQuit();
+    ImGuiIO& io = ImGui::GetIO();
+    const bool dialog = session_.modal() != wb::Modal::None;
+    for (const KeyBinding& binding : keyBindings()) {
+        if (!ImGui::IsKeyChordPressed(binding.chord)) continue;
+        if (dialog && binding.action != Action::Quit) continue;
+        perform(binding.action);
+        break;
+    }
+    // copying from the grid: only when no text field wants Ctrl+C
+    if (!dialog && !editor_.focused() && !io.WantTextInput && grid_.hasSelection() && session_.table() != nullptr) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C)) grid_.copy(*session_.table(), false);
+        else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C)) grid_.copy(*session_.table(), true);
+    }
+}
+
+// After every run the window shows what it produced: a table goes to Results, messages and errors without a table go
+// to Log. It waits until the worker is idle, so the echo line that arrives before the answer does not decide.
+void GuiUi::followRuns() {
+    if (session_.busy()) return;
+    const wb::LogBuffer& log = session_.log();
+    const int version = session_.resultVersion();
+    if (version == seenVersion_ && log.revision() == seenRevision_ && log.generation() == seenGeneration_) return;
+    const bool newTable = version != seenVersion_;
+    bool messages = false;
+    const auto& entries = log.entries();
+    if (log.generation() == seenGeneration_ && log.revision() > seenRevision_) {
+        const std::size_t fresh = std::min<std::size_t>(log.revision() - seenRevision_, entries.size());
+        for (std::size_t i = entries.size() - fresh; i < entries.size(); ++i) {
+            const wb::LogKind kind = entries[i].kind;
+            if (kind == wb::LogKind::Error || kind == wb::LogKind::Message || kind == wb::LogKind::Warn) messages = true;
+        }
+    }
+    if (newTable) {
+        requestTab_ = Tab::Results;
+        std::size_t scanned = 0;
+        for (auto it = entries.rbegin(); it != entries.rend() && scanned < 8; ++it, ++scanned) {   // "(3.1 ms)"
+            if (it->kind != wb::LogKind::Dim || it->lines.size() != 1) continue;
+            double ms = 0.0;
+            if (std::sscanf(wb::plainText(it->lines[0]).c_str(), "(%lf ms)", &ms) == 1) {
+                lastMs_ = ms;
+                break;
+            }
+        }
+    } else if (messages) {
+        requestTab_ = Tab::Log;
+    }
+    seenVersion_ = version;
+    seenRevision_ = log.revision();
+    seenGeneration_ = log.generation();
+}
+
+void GuiUi::drawSplitters(float topH, float bodyH, float schemaW, float queryH, const ImVec2& display) {
+    const Theme& th = theme();
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse |
+                                       ImGuiWindowFlags_NoBringToFrontOnFocus;
+    const float grab = px(6.0f);
+    auto strip = [&](const char* id, ImVec2 pos, ImVec2 size, bool vertical, float* delta) {
+        ImGui::SetNextWindowPos(pos);
+        ImGui::SetNextWindowSize(size);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        const bool open = ImGui::Begin(id, nullptr, flags);
+        ImGui::PopStyleVar(2);
+        if (open) {
+            ImGui::InvisibleButton("##grip", size);
+            const bool active = ImGui::IsItemActive();
+            if (ImGui::IsItemHovered() || active) {
+                ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+                const ImVec2 mid(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f);
+                const float w = px(2.0f);
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImU32 color = toU32(th.focus, active ? 1.0f : 0.6f);
+                if (vertical) dl->AddRectFilled(ImVec2(mid.x - w * 0.5f, pos.y), ImVec2(mid.x + w * 0.5f, pos.y + size.y), color);
+                else dl->AddRectFilled(ImVec2(pos.x, mid.y - w * 0.5f), ImVec2(pos.x + size.x, mid.y + w * 0.5f), color);
+            }
+            if (active) *delta = vertical ? ImGui::GetIO().MouseDelta.x : ImGui::GetIO().MouseDelta.y;
+        }
+        ImGui::End();
+    };
+    float dx = 0.0f, dy = 0.0f;
+    strip("##split_side", ImVec2(schemaW - grab * 0.5f, topH), ImVec2(grab, bodyH), true, &dx);
+    strip("##split_query", ImVec2(schemaW, topH + queryH - grab * 0.5f), ImVec2(display.x - schemaW, grab), false, &dy);
+    if (dx != 0.0f) schemaWidth_ = std::max(180.0f, std::min(schemaWidth_ + dx / scale_, display.x / scale_ * 0.5f));
+    if (dy != 0.0f && bodyH > 0.0f) queryFraction_ = std::max(0.15f, std::min(queryFraction_ + dy / bodyH, 0.85f));
 }
 
 void GuiUi::draw() {
@@ -81,17 +227,26 @@ void GuiUi::draw() {
     const float topH = std::min(px(kTopBarHeight), display.y);
     const float statusH = std::min(px(kStatusBarHeight), std::max(0.0f, display.y - topH));
     const float bodyH = std::max(0.0f, display.y - topH - statusH);
-    const float schemaW = std::min(px(kSchemaWidth), display.x * 0.5f);
+    const float schemaW = std::min(px(schemaWidth_), display.x * 0.5f);
     const float rightW = std::max(0.0f, display.x - schemaW);
-    const float queryH = std::floor(bodyH * 0.42f);
+    const float minPart = std::min(px(120.0f), bodyH * 0.5f);
+    const float queryH = std::max(minPart, std::min(std::floor(bodyH * queryFraction_), bodyH - minPart));
 
     ImGui::PushFont(fonts_.ui, kUiFontSize);
     handleShortcuts();
+    followRuns();
+    if (const std::optional<wb::Panel> focus = session_.takeFocusRequest()) {
+        if (*focus == wb::Panel::Editor) {
+            editor_.setFocused(true);
+            tree_.setFocused(false);
+        }
+    }
     drawTopBar({ImVec2(0, 0), ImVec2(display.x, topH)});
     drawSchema({ImVec2(0, topH), ImVec2(schemaW, bodyH)});
     drawQuery({ImVec2(schemaW, topH), ImVec2(rightW, queryH)});
     drawResults({ImVec2(schemaW, topH + queryH), ImVec2(rightW, bodyH - queryH)});
     drawStatusBar({ImVec2(0, display.y - statusH), ImVec2(display.x, statusH)});
+    drawSplitters(topH, bodyH, schemaW, queryH, display);
     ImGui::PopFont();
 }
 
@@ -156,6 +311,7 @@ void GuiUi::drawTopBar(const Rect& rect) {
         ImGui::PopFont();
 
         const std::string description = session_.description();
+        const std::string label = connectionLabel(description);
         const std::string db = session_.currentDb();
         const float sepWidth = ImGui::CalcTextSize("/").x + px(20.0f);
         const float dbWidth = db.empty() ? 0.0f : sepWidth + ImGui::CalcTextSize(db.c_str()).x;
@@ -170,13 +326,17 @@ void GuiUi::drawTopBar(const Rect& rect) {
             dl->AddText(ImVec2(x + px(10.0f), textY), toU32(th.faint), "/");
             x += sepWidth;
         };
-        if (!description.empty()) {
+        if (!label.empty()) {
             separator();
-            const std::string shown = ellipsizeMiddle(description, descMax, [](const std::string& s) {
+            const std::string shown = ellipsizeMiddle(label, descMax, [](const std::string& s) {
                 return ImGui::CalcTextSize(s.c_str()).x;
             });
             dl->AddText(ImVec2(x, textY), toU32(th.muted), shown.c_str());
-            x += ImGui::CalcTextSize(shown.c_str()).x;
+            const float shownWidth = ImGui::CalcTextSize(shown.c_str()).x;
+            if (ImGui::IsMouseHoveringRect(ImVec2(x, origin.y), ImVec2(x + shownWidth, origin.y + height))) {
+                ImGui::SetTooltip("%s", description.c_str());   // the full description: the whole folder or host:port
+            }
+            x += shownWidth;
         }
         if (!db.empty()) {
             separator();
@@ -204,28 +364,7 @@ void GuiUi::drawSchema(const Rect& rect) {
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
         ImGui::TextUnformatted("Schema");
         ImGui::PopFont();
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputTextWithHint("##schemafilter", "dhoondo...", schemaFilter_, sizeof schemaFilter_);
-
-        const auto& rows = session_.tree().rows();
-        if (rows.size() <= 1) {
-            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
-            ImGui::TextUnformatted("Koi database nahi.");
-            ImGui::PopStyleColor();
-        } else {
-            ImGui::BeginChild("##schematree", ImVec2(0, 0), ImGuiChildFlags_None);
-            for (std::size_t i = 1; i < rows.size(); ++i) {   // row 0 is the "Databases" root
-                const wb::TreeRow& row = rows[i];
-                std::string label = row.expandable ? (row.expanded ? "v " : "> ") : "  ";
-                label += wb::plainText(row.label);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(14.0f) * static_cast<float>(std::max(0, row.depth - 1)));
-                const bool isColumn = row.key.kind == wb::NodeKey::Kind::Column;
-                ImGui::PushStyleColor(ImGuiCol_Text, toVec4(isColumn ? th.muted : th.text));
-                ImGui::TextUnformatted(label.c_str());
-                ImGui::PopStyleColor();
-            }
-            ImGui::EndChild();
-        }
+        tree_.draw(th, fonts_, scale_);
     }
     ImGui::End();
 }
@@ -239,74 +378,99 @@ void GuiUi::drawQuery(const Rect& rect) {
         ImGui::PopFont();
         ImGui::PopStyleColor();
 
-        const float actionsH = px(32.0f) + ImGui::GetStyle().ItemSpacing.y;
+        const float buttonH = px(32.0f);
+        const float actionsH = buttonH + ImGui::GetStyle().ItemSpacing.y;
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const float editorH = std::max(px(48.0f), avail.y - actionsH);
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, toVec4(th.surface));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12.0f), px(8.0f)));
-        ImGui::BeginChild("##editor", ImVec2(0, editorH), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-        {
-            ImGui::PushFont(fonts_.mono, kMonoFontSize);
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const ImVec2 start = ImGui::GetCursorScreenPos();
-            const float lineH = ImGui::GetTextLineHeight();
-            const float gutter = ImGui::CalcTextSize("000").x;
-            const wb::TextBuffer& buffer = session_.editor();
-            if (buffer.empty()) {
-                dl->AddText(start, toU32(th.faint), "1");
-                dl->AddText(ImVec2(start.x + gutter, start.y), toU32(th.faint),
-                            "Yahan query likho, jaise:  DIKHAO * SE students;   (Ctrl+Enter se chalao)");
-            } else {
-                const int rows = std::min(buffer.lineCount(), 500);
-                for (int i = 0; i < rows; ++i) {
-                    const float y = start.y + lineH * static_cast<float>(i);
-                    if (y > start.y + editorH) break;
-                    const std::string number = std::to_string(i + 1);
-                    dl->AddText(ImVec2(start.x + gutter - ImGui::CalcTextSize(number.c_str()).x, y), toU32(th.faint), number.c_str());
-                    dl->AddText(ImVec2(start.x + gutter + px(12.0f), y), toU32(th.text), buffer.line(i).c_str());
-                }
-            }
-            ImGui::PopFont();
-        }
-        ImGui::EndChild();
+        editor_.draw("##editor", ImVec2(0, editorH), th, fonts_.mono, kMonoFontSize, scale_);
 
         // ---- actions row ----
+        ImDrawList* dl = ImGui::GetWindowDrawList();
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        const ImVec2 runSize(ImGui::CalcTextSize("Chalao").x + px(24.0f) + ImGui::CalcTextSize("  Ctrl+Enter").x, px(32.0f));
+        const float runLabelW = ImGui::CalcTextSize("Chalao").x;
+        ImGui::PopFont();
+#if defined(__APPLE__)
+        const char* hint = "Cmd+Enter";
+#else
+        const char* hint = "Ctrl+Enter";
+#endif
+        ImGui::PushFont(fonts_.ui, 12.0f);
+        const float hintW = ImGui::CalcTextSize(hint).x;
+        const float hintH = ImGui::GetTextLineHeight();
+        ImGui::PopFont();
+        const ImVec2 runSize(px(14.0f) + runLabelW + px(10.0f) + hintW + px(14.0f), buttonH);
         ImGui::PushStyleColor(ImGuiCol_Button, toVec4(th.primary));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, toVec4(th.primary, 0.85f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, toVec4(th.primary, 0.7f));
-        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.primaryText));
         ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.primary));
-        if (ImGui::Button("Chalao  Ctrl+Enter", runSize)) session_.runEditorText();
-        ImGui::PopStyleColor(5);
+        if (ImGui::Button("##chalao", runSize)) perform(Action::Run);
+        ImGui::PopStyleColor(4);
+        {
+            const ImVec2 lo = ImGui::GetItemRectMin();
+            ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+            dl->AddText(ImVec2(lo.x + px(14.0f), lo.y + (buttonH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.primaryText), "Chalao");
+            ImGui::PopFont();
+            ImGui::PushFont(fonts_.ui, 12.0f);
+            dl->AddText(ImVec2(lo.x + px(14.0f) + runLabelW + px(10.0f), lo.y + (buttonH - hintH) * 0.5f), toU32(th.primaryText, 0.55f), hint);
+            ImGui::PopFont();
+        }
         ImGui::SameLine();
-        if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), px(32.0f)))) session_.explainEditorText();
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), buttonH))) perform(Action::Explain);
         ImGui::SameLine();
         const float previousW = ImGui::CalcTextSize("Pichli").x + px(24.0f);
         const float nextW = ImGui::CalcTextSize("Agli").x + px(24.0f);
-        const char* status = session_.quitting() ? "band ho raha hai..." : (session_.busy() ? "chal raha hai..." : "");
         ImGui::PopFont();
-        const float statusW = ImGui::CalcTextSize(status).x;
+        const bool quitting = session_.quitting();
+        const char* status = quitting ? "band ho raha hai..." : (session_.busy() ? "chal raha hai..." : "");
+        const float statusW = status[0] != '\0' ? ImGui::CalcTextSize(status).x + px(24.0f) : 0.0f;   // text + spinner
         const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-        const float groupW = previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(16.0f) : 0.0f);
+        const float groupW = previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(8.0f) : 0.0f);
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rightEdge - groupW));
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        if (ImGui::Button("Pichli", ImVec2(previousW, px(32.0f)))) session_.historyStep(-1);
+        ImGui::BeginDisabled(session_.history().size() == 0);
+        if (ImGui::Button("Pichli", ImVec2(previousW, buttonH))) perform(Action::Previous);
         ImGui::SameLine();
-        if (ImGui::Button("Agli", ImVec2(nextW, px(32.0f)))) session_.historyStep(+1);
+        if (ImGui::Button("Agli", ImVec2(nextW, buttonH))) perform(Action::Next);
+        ImGui::EndDisabled();
         ImGui::PopFont();
         if (statusW > 0) {
             ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.muted));
-            ImGui::TextUnformatted(status);
-            ImGui::PopStyleColor();
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const float radius = px(6.0f);
+            const ImVec2 centre(at.x + px(8.0f) + radius, at.y + buttonH * 0.5f);
+            const float t = static_cast<float>(ImGui::GetTime()) * 6.0f;
+            dl->PathArcTo(centre, radius, t, t + 4.4f, 20);
+            dl->PathStroke(toU32(th.muted), px(1.6f));
+            dl->AddText(ImVec2(centre.x + radius + px(8.0f), at.y + (buttonH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.muted), status);
+            ImGui::Dummy(ImVec2(statusW, buttonH));
         }
     }
     ImGui::End();
+}
+
+void GuiUi::drawTabBarExtras(float tabY, float rightX) {
+    const Theme& th = theme();
+    const float height = ImGui::GetFrameHeight();
+    float right = rightX;
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    if (activeTab_ == Tab::Log) {
+        const float w = ImGui::CalcTextSize("Log saaf karo").x + px(20.0f);
+        ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
+        if (ImGui::Button("Log saaf karo", ImVec2(w, height))) perform(Action::ClearLog);
+    } else if (const wb::ResultTable* table = session_.table()) {
+        const float w = ImGui::CalcTextSize("CSV").x + px(20.0f);
+        ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
+        if (ImGui::Button("CSV", ImVec2(w, height))) perform(Action::ExportCsv);
+        right -= w + px(10.0f);
+        ImGui::PopFont();
+        ImGui::PushFont(fonts_.ui, kUiFontSize);
+        const std::string summary = rowsSummary(table->rows.size(), lastMs_);
+        const float tw = ImGui::CalcTextSize(summary.c_str()).x;
+        ImGui::GetWindowDrawList()->AddText(ImVec2(right - tw, tabY + (height - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.muted),
+                                            summary.c_str());
+    }
+    ImGui::PopFont();
 }
 
 void GuiUi::drawResults(const Rect& rect) {
@@ -314,12 +478,20 @@ void GuiUi::drawResults(const Rect& rect) {
     if (beginPanel("##results", rect, th.background, ImVec2(px(16.0f), px(8.0f)))) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddLine(rect.pos, ImVec2(rect.pos.x + rect.size.x, rect.pos.y), toU32(th.border));
+        const ImVec2 tabStart = ImGui::GetCursorScreenPos();
+        const float rightX = tabStart.x + ImGui::GetContentRegionAvail().x;
+        drawTabBarExtras(tabStart.y, rightX);
+        ImGui::SetCursorScreenPos(tabStart);
         if (ImGui::BeginTabBar("##resulttabs", ImGuiTabBarFlags_None)) {
-            if (ImGui::BeginTabItem("Results")) {
+            const std::optional<Tab> wanted = requestTab_;
+            requestTab_.reset();
+            if (ImGui::BeginTabItem("Results", nullptr, wanted == Tab::Results ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+                activeTab_ = Tab::Results;
                 drawResultsTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Log")) {
+            if (ImGui::BeginTabItem("Log", nullptr, wanted == Tab::Log ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+                activeTab_ = Tab::Log;
                 drawLogTab();
                 ImGui::EndTabItem();
             }
@@ -339,19 +511,26 @@ void GuiUi::drawResultsTab() {
         ImGui::PopStyleColor();
         return;
     }
-    // The grid arrives in a later batch; until then say how much came back.
-    const std::string summary = wb::resultsTitle(table);
-    ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.muted));
-    ImGui::TextUnformatted(summary.c_str());
-    ImGui::PopStyleColor();
+    grid_.draw(*table, session_.resultVersion(), th, fonts_, scale_);
 }
 
 void GuiUi::rebuildLogCache() {
     const wb::LogBuffer& log = session_.log();
     if (log.revision() == logRevision_ && log.generation() == logGeneration_) return;
     logLines_.clear();
-    for (const wb::LogEntry& entry : log.entries())
-        for (const wb::Line& line : entry.lines) logLines_.push_back({entry.kind, wb::plainText(line)});
+    logMaxChars_ = 0;
+    for (const wb::LogEntry& entry : log.entries()) {
+        bool first = true;
+        for (const wb::Line& line : entry.lines) {
+            LogLine out{entry.kind, wb::plainText(line), 0};
+            if (entry.kind == wb::LogKind::Echo && first && !line.empty() && line[0].style.dim) out.prefix = line[0].text.size();
+            first = false;
+            int chars = 0;
+            for (unsigned char ch : out.text) chars += (ch & 0xC0) != 0x80 ? 1 : 0;
+            logMaxChars_ = std::max(logMaxChars_, chars);
+            logLines_.push_back(std::move(out));
+        }
+    }
     logRevision_ = log.revision();
     logGeneration_ = log.generation();
 }
@@ -367,22 +546,47 @@ void GuiUi::drawLogTab() {
         ImGui::PopStyleColor();
         return;
     }
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
     ImGui::BeginChild("##log", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
-    const bool followEnd = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
     ImGui::PushFont(fonts_.mono, kMonoFontSize);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float cw = ImGui::CalcTextSize("0").x;
+    const float rowH = ImGui::GetTextLineHeight() + px(5.0f);
+    const float rowW = static_cast<float>(logMaxChars_ + 2) * cw + px(16.0f);
+    const float width = std::max(rowW, ImGui::GetContentRegionAvail().x);
+    ImFont* font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    Advance adv;
+    adv.ascii = cw;
+    adv.other = [baked](char32_t cp) { return baked->GetCharAdvance(static_cast<ImWchar>(cp)); };
     ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(logLines_.size()), ImGui::GetTextLineHeightWithSpacing());
+    clipper.Begin(static_cast<int>(logLines_.size()), rowH);
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
             const LogLine& line = logLines_[static_cast<std::size_t>(i)];
-            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(colorForLog(th, line.kind)));
-            ImGui::TextUnformatted(line.text.empty() ? " " : line.text.c_str());
-            ImGui::PopStyleColor();
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(width, rowH));
+            const ImVec2 text(at.x + px(2.0f), at.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f);
+            if (line.kind == wb::LogKind::Echo) {
+                dl->AddRectFilled(at, ImVec2(at.x + width, at.y + rowH), toU32(th.surface));
+                if (line.prefix > 0) dl->AddText(font, fontSize, text, toU32(th.faint), line.text.data(), line.text.data() + line.prefix);
+                const float x = text.x + textWidth(line.text.data(), line.text.data() + line.prefix, adv);
+                drawHighlighted(dl, font, fontSize, ImVec2(x, text.y), line.text, line.prefix, line.text.size(), th, adv);
+            } else {
+                dl->AddText(font, fontSize, text, toU32(colorForLog(th, line.kind)), line.text.c_str());
+            }
         }
     }
     ImGui::PopFont();
-    if (followEnd && previousRevision != logRevision_) ImGui::SetScrollHereY(1.0f);
+    const bool changed = previousRevision != logRevision_;
+    if (changed) {
+        if (logFollow_) ImGui::SetScrollHereY(1.0f);
+    } else {
+        logFollow_ = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
+    }
     ImGui::EndChild();
+    ImGui::PopStyleVar();
 }
 
 void GuiUi::drawStatusBar(const Rect& rect) {
