@@ -454,6 +454,25 @@ Ctrl+S, Ctrl+O, F1, Ctrl+L, Ctrl+Q) and Hinglish labels. Two design points:
 📷 *Screenshot: the C++ workbench (`meradb_cli workbench`) with a JOIN + GROUP BY result.*
 📷 *Screenshot: the C++ shell (`meradb_cli shell`) showing the banner and a query.*
 
+#### The desktop workbench
+Besides the terminal workbench, the C++ version has a **desktop window**, `meradb_gui`. It is an extra that the
+Python version does not have. It does the same job as the terminal workbench (schema tree, query editor with
+coloured keywords, results grid, log, query history, `SAMJHAO`, saving results as CSV, connecting to a server or
+opening the data folder directly) but in a normal window with a dark and a light theme, and all its labels are in
+Hinglish (`Chalao`, `Samjhao`, `Madad`, ...). Ctrl+K opens a small command menu.
+
+It is built with **Dear ImGui**, a C++ library that draws a user interface every frame, on top of **GLFW**
+(window and keyboard) and OpenGL. I did not write a second controller: the part of the terminal workbench that does
+not draw anything (the session with the history, the log, the schema tree and the worker thread) was moved into its
+own library, `meradb_wbmodel`, and both the terminal workbench and the window use it. So the window can never
+disagree with the terminal workbench about what a statement does. Database calls still run on one worker thread;
+when it finishes it puts a message in a queue and wakes up the window, and the window sleeps in between, so it uses
+almost no CPU when nothing happens. The fonts (Geist) are embedded in the program. A limit I know about: Dear ImGui
+does not join Devanagari letters into conjuncts. It was tested on Windows and Linux (under a virtual display, with
+headless tests that press keys and click) but not on macOS. `docs/CPP.md` has the build steps and a manual checklist.
+
+📷 *Screenshot: the desktop workbench (`meradb_gui`), see `docs/images/desktop-dark.png`.*
+
 ### 10.10 Deliberate divergences from the Python version
 `docs/CPP.md` lists every known difference. The main ones are:
 - **Depth and stack limits** (section 10.8) instead of Python's `RecursionError`.
