@@ -26,6 +26,9 @@ public:
     std::string port() const { return port_; }
     std::string database() const { return database_; }
     bool passwordEmpty() const { return password_[0] == '\0'; }
+    // Where the widgets were drawn in the last frame (screen pixels, centre), for the tests.
+    enum Widget { kHost, kPort, kPassword, kDatabase, kCancel, kLocal, kConnect, kWidgetCount };
+    ImVec2 centre(Widget w) const { return centres_[w]; }
 
 private:
     void load(const wb::ConnectDefaults& defaults);
@@ -37,6 +40,7 @@ private:
     char port_[8] = {0};
     char password_[256] = {0};
     char database_[256] = {0};
+    ImVec2 centres_[kWidgetCount] = {};
 };
 
 // One line of the key table in the Madad window.
@@ -91,6 +95,7 @@ public:
     const std::vector<CommandItem>& items() const { return items_; }
     const std::vector<int>& visible() const { return visible_; }   // indexes into items(), in the order shown
     int highlighted() const { return highlighted_; }               // position in visible()
+    const std::vector<ImVec2>& rowCentres() const { return rowCentres_; }   // the rows drawn in the last frame, screen pixels
     void move(int delta);
     // The chosen item (Enter or a click); the menu has closed by then. Esc and Ctrl+K close it without a choice.
     std::optional<CommandItem> draw(const Theme& theme, const FontSet& fonts, float scale);
@@ -99,11 +104,13 @@ private:
     void refilter();
     bool open_ = false;
     bool focusInput_ = false;
+    int openedFrame_ = -1;   // the frame it was opened in: the key that opened it must not close it
     bool scrollToHighlight_ = false;
     char buffer_[256] = {0};
     std::string query_;
     std::vector<CommandItem> items_;
     std::vector<int> visible_;
+    std::vector<ImVec2> rowCentres_;
     int highlighted_ = 0;
 };
 

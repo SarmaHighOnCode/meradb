@@ -33,7 +33,8 @@ const std::vector<KeyHelp>& keyHelp() {
     static const std::vector<KeyHelp> rows = {
         {MERADB_CTRL "+Enter / F5", "Chalao: jo text select hai woh, nahi to poora editor", Action::Run},
         {MERADB_CTRL "+Shift+Enter / F6", "Samjhao: query plan dikhao, bina chalaye", Action::Explain},
-        {"Alt+Up / Alt+Down, " MERADB_CTRL "+Up / " MERADB_CTRL "+Down", "Pichli / Agli query (history)", Action::Previous},
+        {"Alt+Up / " MERADB_CTRL "+Up", "Pichli query (history)", Action::Previous},
+        {"Alt+Down / " MERADB_CTRL "+Down", "Agli query (history)", Action::Next},
         {MERADB_CTRL "+S", "Results ko CSV file mein save karo (exports/ folder)", Action::ExportCsv},
         {MERADB_CTRL "+O", "Connect: doosre server se jodo, ya Local mode", Action::Connect},
         {"F1", "Madad kholo / band karo", Action::Madad},
@@ -116,23 +117,31 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     label("Host");
     ImGui::SameLine(portX);
     label("Port");
+    auto remember = [&](Widget w) {
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        centres_[w] = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+    };
     ImGui::SetNextItemWidth(hostWidth);
     if (focusHost_) {
         ImGui::SetKeyboardFocusHere();
         focusHost_ = false;
     }
     if (ImGui::InputText("##host", host_, sizeof host_, fieldFlags)) connect = true;
+    remember(kHost);
     ImGui::SameLine(portX);
     ImGui::SetNextItemWidth(portWidth);
     if (ImGui::InputText("##port", port_, sizeof port_, fieldFlags | ImGuiInputTextFlags_CallbackCharFilter, digitsOnly)) connect = true;
+    remember(kPort);
 
     label("Password (agar server par hai)");
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputText("##password", password_, sizeof password_, fieldFlags | ImGuiInputTextFlags_Password)) connect = true;
+    remember(kPassword);
 
     label("Database (optional)");
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputText("##database", database_, sizeof database_, fieldFlags)) connect = true;
+    remember(kDatabase);
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f * scale));
     const float buttonH = 32.0f * scale;
@@ -143,8 +152,10 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     const float total = widths[0] + widths[1] + widths[2] + gap * 2.0f;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - total));
     if (ImGui::Button("Cancel", ImVec2(widths[0], buttonH))) cancel = true;
+    remember(kCancel);
     ImGui::SameLine();
     if (ImGui::Button("Local mode", ImVec2(widths[1], buttonH))) local = true;
+    remember(kLocal);
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, toVec4(th.primary));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, toVec4(th.primary, 0.85f));
@@ -152,6 +163,7 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.primaryText));
     ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.primary));
     if (ImGui::Button("Connect", ImVec2(widths[2], buttonH))) connect = true;
+    remember(kConnect);
     ImGui::PopStyleColor(5);
     ImGui::PopFont();
 
@@ -341,6 +353,7 @@ void CommandMenu::open(wb::Session& session) {
     highlighted_ = 0;
     open_ = true;
     focusInput_ = true;
+    openedFrame_ = ImGui::GetCurrentContext() != nullptr ? ImGui::GetFrameCount() : -1;
     refilter();
 }
 
@@ -386,7 +399,8 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
     if (!opened) return std::nullopt;
 
     std::optional<CommandItem> chosen;
-    const bool close = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K, false));
+    const bool justOpened = openedFrame_ == ImGui::GetFrameCount();
+    const bool close = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || (!justOpened && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K, false));
     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) move(1);
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) move(-1);
     if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) move(rows);
@@ -419,12 +433,14 @@ std::optional<CommandItem> CommandMenu::draw(const Theme& th, const FontSet& fon
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+    rowCentres_.clear();
     for (int pos = 0; pos < static_cast<int>(visible_.size()); ++pos) {
         const CommandItem& item = items_[static_cast<std::size_t>(visible_[static_cast<std::size_t>(pos)])];
         ImGui::PushID(pos);
         const ImVec2 at = ImGui::GetCursorScreenPos();
         const float rowW = ImGui::GetContentRegionAvail().x;
         ImGui::InvisibleButton("##row", ImVec2(rowW, rowH));
+        rowCentres_.push_back(ImVec2(at.x + rowW * 0.5f, at.y + rowH * 0.5f));
         if (ImGui::IsItemHovered() && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) highlighted_ = pos;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
             highlighted_ = pos;

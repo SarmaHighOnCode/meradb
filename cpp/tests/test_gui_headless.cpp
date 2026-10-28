@@ -814,3 +814,302 @@ TEST_CASE("gui editor: the placeholder shows while the editor is empty", "[gui][
     s.frames(2);
     CHECK(s.gui.vertexCount() < empty);                   // the long hint is gone
 }
+
+// ---------------------------------------------------------------- Batch C: dialogs, Madad, command menu, toast, quit
+
+namespace {
+
+int errorCount(const wb::Session& session) {
+    int n = 0;
+    for (const wb::LogEntry& e : session.log().entries())
+        if (e.kind == wb::LogKind::Error) ++n;
+    return n;
+}
+
+std::string valuesList(int n) {
+    std::string out;
+    for (int i = 0; i < n; ++i) out += std::string(i ? ",(" : "(") + std::to_string(i) + ")";
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("gui dialogs: Ctrl+O opens the connect dialog with the defaults; typing replaces the selected host; Esc cancels", "[gui][headless][dialogs]") {
+    Screen s;
+    CHECK_FALSE(s.ui.connectDialog().shown());
+    s.press(ImGuiKey_O, true);
+    CHECK(s.rig.session->modal() == wb::Modal::Connect);
+    s.frames(2);
+    REQUIRE(s.ui.connectDialog().shown());
+    CHECK(s.ui.connectDialog().host() == "127.0.0.1");
+    CHECK(s.ui.connectDialog().port() == "6372");
+    CHECK(s.ui.connectDialog().passwordEmpty());
+    CHECK(s.ui.connectDialog().database().empty());
+    s.type("abc");   // the host got the focus with its text selected, as in the terminal workbench
+    CHECK(s.ui.connectDialog().host() == "abc");
+    s.press(ImGuiKey_Escape);
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    s.frames(2);
+    CHECK_FALSE(s.ui.connectDialog().shown());
+    CHECK(ImGui::GetCurrentContext()->OpenPopupStack.Size == 0);
+    s.press(ImGuiKey_O, true);   // opening it again starts from the defaults again
+    s.frames(2);
+    CHECK(s.ui.connectDialog().host() == "127.0.0.1");
+}
+
+TEST_CASE("gui dialogs: the Port field takes digits only and Cancel closes the dialog", "[gui][headless][dialogs]") {
+    Screen s;
+    s.press(ImGuiKey_O, true);
+    s.frames(2);
+    s.click(s.ui.connectDialog().centre(ConnectDialog::kPort));
+    s.type("12ab-3");
+    CHECK(s.ui.connectDialog().port() == "123");
+    s.click(s.ui.connectDialog().centre(ConnectDialog::kCancel));
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+}
+
+TEST_CASE("gui dialogs: Local mode reconnects to the local folder", "[gui][headless][dialogs]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1);"));
+    const std::string before = s.rig.session->description();
+    const std::size_t entries = s.rig.session->log().entries().size();
+    s.press(ImGuiKey_O, true);
+    s.frames(2);
+    s.click(s.ui.connectDialog().centre(ConnectDialog::kLocal));
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    CHECK(s.rig.session->description() == before);
+    CHECK(s.rig.session->log().entries().size() > entries);   // Session::connect logged its outcome
+    CHECK(errorCount(*s.rig.session) == 0);
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->rows.size() == 1);
+}
+
+TEST_CASE("gui dialogs: Enter connects; an unreachable server logs an error and keeps the old connection", "[gui][headless][dialogs]") {
+    Screen s;
+    const std::string before = s.rig.session->description();
+    s.press(ImGuiKey_O, true);
+    s.frames(2);
+    s.click(s.ui.connectDialog().centre(ConnectDialog::kPort));
+    s.type("59871");   // nothing listens on this high port
+    s.press(ImGuiKey_Enter);
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    CHECK(errorCount(*s.rig.session) >= 1);
+    CHECK(s.rig.session->description() == before);
+}
+
+TEST_CASE("gui dialogs: Madad opens with F1, scrolls, closes with Esc and F1", "[gui][headless][dialogs]") {
+    Screen s;
+    s.press(ImGuiKey_F1);
+    CHECK(s.rig.session->modal() == wb::Modal::Help);
+    s.frames(3);
+    REQUIRE(s.ui.helpWindow().shown());
+    CHECK(s.ui.helpWindow().view().blocks().size() > 20);
+    CHECK(s.ui.helpWindow().view().tablesDrawn() >= 1);
+    CHECK(s.ui.helpWindow().scrollY() == 0.0f);
+    s.press(ImGuiKey_PageDown);
+    CHECK(s.ui.helpWindow().scrollY() > 0.0f);
+    s.press(ImGuiKey_Escape);
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    s.press(ImGuiKey_F1);
+    CHECK(s.rig.session->modal() == wb::Modal::Help);
+    s.press(ImGuiKey_F1);   // F1 toggles
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    s.frames(2);
+    CHECK_FALSE(s.ui.helpWindow().shown());
+}
+
+TEST_CASE("gui dialogs: while Madad is open the keys do not reach the editor", "[gui][headless][dialogs]") {
+    Screen s;
+    s.click(s.at(0, 0));
+    s.press(ImGuiKey_F1);
+    s.type("zzz");
+    s.press(ImGuiKey_Escape);
+    CHECK(s.text().empty());
+    s.type("ok");   // back in the editor afterwards
+    CHECK(s.text() == "ok");
+}
+
+TEST_CASE("gui dialogs: the command menu filters, runs a table, and closes", "[gui][headless][dialogs]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE students (id ANK, naam TEXT); BANAO TABLE courses (cid ANK); DAALO MEIN students MAAN (1, 'Asha');"));
+    s.press(ImGuiKey_K, true);
+    REQUIRE(s.ui.commandMenu().isOpen());
+    s.frames(2);
+    CHECK(s.ui.commandMenu().items().size() >= 7 + 2 + 1);
+    CHECK(s.ui.commandMenu().visible().size() == s.ui.commandMenu().items().size());
+    s.type("students");
+    REQUIRE_FALSE(s.ui.commandMenu().visible().empty());
+    for (int index : s.ui.commandMenu().visible())
+        CHECK(s.ui.commandMenu().items()[static_cast<std::size_t>(index)].label.find("students") != std::string::npos);
+    const CommandItem& first = s.ui.commandMenu().items()[static_cast<std::size_t>(s.ui.commandMenu().visible()[0])];
+    CHECK(first.kind == CommandItem::Kind::Table);
+    CHECK(first.label == "DIKHAO * SE students SIRF 100");
+    const int version = s.rig.session->resultVersion();
+    s.press(ImGuiKey_Enter);
+    CHECK_FALSE(s.ui.commandMenu().isOpen());
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    CHECK(s.rig.session->resultVersion() > version);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->rows.size() == 1);
+}
+
+TEST_CASE("gui dialogs: command menu arrows, Esc and a mouse click", "[gui][headless][dialogs]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE students (id ANK); BANAO TABLE courses (cid ANK);"));
+    s.press(ImGuiKey_K, true);
+    s.frames(2);
+    CHECK(s.ui.commandMenu().highlighted() == 0);
+    s.press(ImGuiKey_DownArrow);
+    s.press(ImGuiKey_DownArrow);
+    CHECK(s.ui.commandMenu().highlighted() == 2);
+    s.press(ImGuiKey_UpArrow);
+    CHECK(s.ui.commandMenu().highlighted() == 1);
+    const int version = s.rig.session->resultVersion();
+    s.press(ImGuiKey_Escape);
+    CHECK_FALSE(s.ui.commandMenu().isOpen());
+    CHECK(s.rig.session->resultVersion() == version);   // nothing ran
+    CHECK(ImGui::GetCurrentContext()->OpenPopupStack.Size == 0);
+
+    s.press(ImGuiKey_K, true);
+    s.type("courses");
+    s.frames(2);
+    REQUIRE(s.ui.commandMenu().rowCentres().size() >= 1);
+    s.click(s.ui.commandMenu().rowCentres()[0]);
+    CHECK_FALSE(s.ui.commandMenu().isOpen());
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->columns.size() == 1);
+    CHECK(s.rig.session->table()->columns[0] == "cid");
+}
+
+TEST_CASE("gui dialogs: command menu actions and history", "[gui][headless][dialogs]") {
+    Screen s;
+    CHECK(s.ui.mode() == ThemeMode::Dark);
+    s.press(ImGuiKey_K, true);
+    s.type("light");
+    s.press(ImGuiKey_Enter);
+    s.frames(2);
+    CHECK(s.ui.mode() == ThemeMode::Light);
+
+    REQUIRE(s.run("BANAO TABLE t (a ANK);"));
+    CHECK(s.logHas("BANAO TABLE t"));
+    s.press(ImGuiKey_K, true);
+    s.type("log saaf");
+    s.press(ImGuiKey_Enter);
+    s.frames(2);
+    CHECK_FALSE(s.logHas("BANAO TABLE t"));
+
+    s.press(ImGuiKey_K, true);   // Connect from the menu opens the dialog
+    s.type("connect");
+    s.press(ImGuiKey_Enter);
+    CHECK(s.rig.session->modal() == wb::Modal::Connect);
+    s.press(ImGuiKey_Escape);
+
+    // only the last 20 history entries are listed, newest first
+    for (int i = 0; i < 25; ++i) {
+        s.rig.session->runText("DIKHAO " + std::to_string(i) + ";");
+        REQUIRE(s.rig.settle());
+    }
+    const std::vector<CommandItem> items = commandItems(*s.rig.session);
+    std::vector<std::string> history;
+    for (const CommandItem& item : items)
+        if (item.kind == CommandItem::Kind::History) history.push_back(item.text);
+    REQUIRE(history.size() == 20);
+    CHECK(history.front() == "DIKHAO 24;");
+    CHECK(history.back() == "DIKHAO 5;");
+}
+
+TEST_CASE("gui dialogs: the CSV toast shows the message, opens the folder, and hides by itself", "[gui][headless][dialogs]") {
+    Screen s;
+    std::string opened;
+    s.ui.setFolderOpener([&](const std::string& folder) { opened = folder; });
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1), (2); DIKHAO * SE t;"));
+    CHECK_FALSE(s.ui.toastVisible());
+    s.press(ImGuiKey_S, true);
+    s.frames(3);
+    REQUIRE(s.ui.toastVisible());
+    CHECK(s.ui.toastMessage().find("2 row(s) CSV mein save: ") == 0);
+    CHECK(s.logHas("2 row(s) CSV mein save"));
+    s.click(s.ui.toastButtonCentre());
+    CHECK(std::filesystem::path(opened).filename() == "exports");
+    CHECK_FALSE(s.ui.toastVisible());
+    CHECK(s.logHas("2 row(s) CSV mein save"));   // the Log keeps it
+
+    s.moveTo(ImVec2(5.0f, 5.0f));
+    s.press(ImGuiKey_S, true);
+    s.frames(3);
+    REQUIRE(s.ui.toastVisible());
+    s.frames(300);   // 5 seconds at 60 frames per second
+    CHECK(s.ui.toastVisible());
+    s.frames(90);
+    CHECK_FALSE(s.ui.toastVisible());
+    CHECK(s.logHas("2 row(s) CSV mein save"));
+}
+
+TEST_CASE("gui dialogs: no toast when there is nothing to export", "[gui][headless][dialogs]") {
+    Screen s;
+    s.press(ImGuiKey_S, true);   // nothing to save: a hint only
+    s.frames(3);
+    CHECK_FALSE(s.ui.toastVisible());
+}
+
+TEST_CASE("gui dialogs: quitting while a slow statement runs keeps the window responsive and exits when it is done", "[gui][headless][dialogs]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE a (v ANK); BANAO TABLE b (v ANK); DAALO MEIN a MAAN " + valuesList(2000) + "; DAALO MEIN b MAAN " + valuesList(2000) + ";"));
+    s.rig.session->runText("DIKHAO GINO(*) SE a x MILAO b y PAR x.v < y.v;");   // about 4 million comparisons
+    CHECK(s.rig.session->busy());
+    s.frames(3);
+    s.press(ImGuiKey_Q, true);
+    CHECK(s.rig.session->quitting());
+    for (int i = 0; i < 20; ++i) {
+        CHECK_NOTHROW(s.frames());
+        CHECK(s.ui.quitOverlayShown());
+    }
+    s.press(ImGuiKey_K, true);   // nothing new can be opened
+    CHECK_FALSE(s.ui.commandMenu().isOpen());
+    s.press(ImGuiKey_O, true);
+    CHECK(s.rig.session->modal() == wb::Modal::None);
+    REQUIRE(s.rig.pumpUntil([&] { return s.rig.exited; }, std::chrono::seconds(120)));
+}
+
+TEST_CASE("gui dialogs: every overlay draws in both themes, at several scales and sizes, without an ImGui assertion", "[gui][headless][dialogs]") {
+    for (const ThemeMode mode : {ThemeMode::Dark, ThemeMode::Light}) {
+        for (const float scale : {1.0f, 2.0f}) {
+            for (const ImVec2 size : {ImVec2(1280.0f, 800.0f), ImVec2(640.0f, 400.0f), ImVec2(150.0f, 100.0f)}) {
+                guitest::HeadlessImGui gui(size.x, size.y);
+                Rig rig;
+                GuiUi ui(*rig.session, gui.fonts(), mode);
+                auto frames = [&](int n) {
+                    for (int i = 0; i < n; ++i) gui.frame(ui, scale);
+                };
+                frames(2);
+                rig.session->openConnectDialog();
+                CHECK_NOTHROW(frames(3));
+                rig.session->closeModal();
+                frames(2);
+                rig.session->showHelp();
+                CHECK_NOTHROW(frames(3));
+                rig.session->closeModal();
+                frames(2);
+                ui.openPalette("a");
+                CHECK_NOTHROW(frames(3));
+                ui.commandMenu().close();
+                frames(2);
+                rig.session->runText("BANAO TABLE t (a ANK); DIKHAO * SE t;");
+                REQUIRE(rig.settle());
+                ui.perform(Action::ExportCsv);
+                CHECK_NOTHROW(frames(3));
+                rig.session->requestQuit();
+                CHECK_NOTHROW(frames(3));
+                REQUIRE(rig.pumpUntil([&] { return rig.exited; }));
+            }
+        }
+    }
+}

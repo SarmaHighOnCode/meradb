@@ -96,6 +96,7 @@ if(TARGET meradb_gui_lib)
     test_gui_poster.cpp
     test_gui_options.cpp
     test_gui_widgets.cpp
+    test_gui_dialogs.cpp
     test_gui_headless.cpp
   )
   target_link_libraries(meradb_gui_tests PRIVATE meradb_gui_lib meradb_core Catch2::Catch2WithMain)
