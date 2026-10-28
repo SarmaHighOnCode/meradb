@@ -74,6 +74,7 @@ const std::vector<KeyBinding>& keyBindings() {
         {ImGuiMod_Ctrl | ImGuiKey_S, Action::ExportCsv},
         {ImGuiMod_Ctrl | ImGuiKey_L, Action::ClearLog},
         {ImGuiMod_Ctrl | ImGuiKey_O, Action::Connect},
+        {ImGuiKey_F1, Action::Madad},
         {ImGuiMod_Ctrl | ImGuiKey_Q, Action::Quit},
     };
     return table;
@@ -112,6 +113,11 @@ void GuiUi::perform(Action action) {
         case Action::Connect:
             if (!session_.quitting()) session_.openConnectDialog();
             break;
+        case Action::Madad:
+            if (session_.modal() == wb::Modal::Help) session_.closeModal();
+            else if (session_.modal() == wb::Modal::None && !session_.quitting()) session_.showHelp();
+            break;
+        case Action::ToggleTheme: mode_ = otherMode(mode_); break;
         case Action::Quit: session_.requestQuit(); break;
     }
 }
@@ -144,7 +150,7 @@ void GuiUi::handleShortcuts() {
     const bool dialog = overlayOpen();
     for (const KeyBinding& binding : keyBindings()) {
         if (!ImGui::IsKeyChordPressed(binding.chord)) continue;
-        if (dialog && binding.action != Action::Quit) continue;
+        if (dialog && binding.action != Action::Quit && !(binding.action == Action::Madad && session_.modal() == wb::Modal::Help)) continue;
         perform(binding.action);
         break;
     }
@@ -257,6 +263,7 @@ void GuiUi::draw() {
     drawStatusBar({ImVec2(0, display.y - statusH), ImVec2(display.x, statusH)});
     drawSplitters(topH, bodyH, schemaW, queryH, display);
     connectDialog_.draw(session_, theme(), fonts_, scale_);
+    helpWindow_.draw(session_, theme(), fonts_, scale_);
     const bool overlay = overlayOpen();
     if (overlayWasOpen_ && !overlay) editor_.setFocused(true);   // typing continues where it was
     overlayWasOpen_ = overlay;
@@ -283,7 +290,7 @@ void GuiUi::drawTopBar(const Rect& rect) {
         ImGui::PopFont();
 
         ImGui::SetCursorScreenPos(ImVec2(right - buttonH, buttonY));
-        if (ImGui::Button("##theme", ImVec2(buttonH, buttonH))) mode_ = otherMode(mode_);
+        if (ImGui::Button("##theme", ImVec2(buttonH, buttonH))) perform(Action::ToggleTheme);
         ImGui::SetItemTooltip("%s", "Light / dark");
         {
             const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
@@ -297,7 +304,7 @@ void GuiUi::drawTopBar(const Rect& rect) {
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
         for (int i = 0; i < 2; ++i) {
             ImGui::SetCursorScreenPos(ImVec2(right - labelWidths[i], buttonY));
-            if (ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH)) && i == 1) perform(Action::Connect);   // Madad: later
+            if (ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH))) perform(i == 1 ? Action::Connect : Action::Madad);
             right -= labelWidths[i] + px(8.0f);
         }
         ImGui::PopFont();

@@ -54,6 +54,7 @@ public:
     ResultsGrid& grid() { return grid_; }
     void perform(Action action);
     ConnectDialog& connectDialog() { return connectDialog_; }
+    HelpWindow& helpWindow() { return helpWindow_; }
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
@@ -95,6 +96,7 @@ private:
     SchemaTree tree_;
     ResultsGrid grid_;
     ConnectDialog connectDialog_;
+    HelpWindow helpWindow_;
     bool overlayWasOpen_ = false;
     float schemaWidth_ = kSchemaWidth;
     float queryFraction_ = 0.42f;
