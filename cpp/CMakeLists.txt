@@ -146,8 +146,8 @@ if(MERADB_WORKBENCH)
     DEPENDS ${MERADB_EMBED_DEPENDS}
     COMMENT "Embedding docs/LANGUAGE.md"
     VERBATIM)
-  add_library(meradb_workbench STATIC
-    src/workbench.cpp
+  # The FTXUI-free model (text, editor, tree, worker, session, markdown, help): shared by every front end.
+  add_library(meradb_wbmodel STATIC
     src/wb_text.cpp
     src/wb_editor.cpp
     src/wb_tree.cpp
@@ -155,17 +155,27 @@ if(MERADB_WORKBENCH)
     src/wb_session.cpp
     src/wb_markdown.cpp
     src/wb_help.cpp
+    ${MERADB_GEN_DIR}/language_doc_data.inc
+  )
+  # No header of the model includes FTXUI; wb_text.cpp and wb_editor.cpp use only its string_width (terminal cell
+  # widths), from the small ftxui-screen library, which therefore stays a private link dependency.
+  target_link_libraries(meradb_wbmodel PUBLIC meradb_core PRIVATE ftxui::screen)
+  target_include_directories(meradb_wbmodel SYSTEM PRIVATE ${ftxui_SOURCE_DIR}/include)
+  target_include_directories(meradb_wbmodel PRIVATE ${MERADB_GEN_DIR})
+endif()
+
+if(MERADB_WORKBENCH)
+  add_library(meradb_workbench STATIC
+    src/workbench.cpp
     src/wb_panels.cpp
     src/wb_ui.cpp
     src/wb_form.cpp
     src/wb_dialogs.cpp
-    ${MERADB_GEN_DIR}/language_doc_data.inc
     # workbench source files are appended here by later tasks
   )
-  target_link_libraries(meradb_workbench PUBLIC meradb_core ftxui::component ftxui::dom ftxui::screen)
+  target_link_libraries(meradb_workbench PUBLIC meradb_wbmodel meradb_core ftxui::component ftxui::dom ftxui::screen)
   # FTXUI's headers are third-party: keep our warning flags quiet about them.
   target_include_directories(meradb_workbench SYSTEM PUBLIC ${ftxui_SOURCE_DIR}/include)
-  target_include_directories(meradb_workbench PRIVATE ${MERADB_GEN_DIR})
 endif()
 
 add_executable(meradb_cli src/main.cpp)
