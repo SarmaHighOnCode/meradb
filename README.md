@@ -14,7 +14,7 @@ files, same network protocol):
 
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![C++ tests](https://img.shields.io/badge/C%2B%2B%20ctest-783%20tests-brightgreen)
+![C++ tests](https://img.shields.io/badge/C%2B%2B%20ctest-901%20tests-brightgreen)
 ![Python tests](https://img.shields.io/badge/python%20tests-183%20passing-brightgreen)
 
 ```sql
@@ -103,7 +103,10 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
 - **A C++17 compiler**, one of: MinGW-w64 g++, MSVC (Visual Studio 2019 or newer), g++ or clang
   (what has actually been built and tested is listed under [Run the tests](#run-the-tests))
 - **On Debian / Ubuntu**, one line installs the compiler, CMake and Python (Python is only for the tests):
-  `sudo apt-get install -y build-essential cmake python3`
+  `sudo apt-get install -y build-essential cmake python3`. For the desktop window (`meradb_gui`, below) add GLFW's
+  X11 and OpenGL development files:
+  `sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev`
+  (without them the window is skipped and everything else still builds)
 - **Git** and **internet access on the first build**: CMake downloads three libraries by itself
   (nlohmann/json, Catch2 for the tests, and FTXUI for the workbench). Nothing else is installed
   by hand. A first build takes several minutes (about 5 minutes with 20 cores, including the
@@ -160,6 +163,14 @@ alias meradb_cli="$PWD/cpp/build/meradb_cli"                     # bash / zsh
 Check it works: `meradb_cli --version` prints `MeraDB 1.0.0`, and `meradb_cli --help` lists the
 commands. (The help text calls the program `meradb`; it is the same program.)
 
+**The desktop window.** The same build also makes `meradb_gui` (next to `meradb_cli`), a native desktop
+workbench in Hinglish with a dark and a light theme. The first configure downloads GLFW, Dear ImGui and the Geist
+fonts as well. Start it with `cpp/build/meradb_gui` (`.exe` on Windows; double-click works, no console window
+opens), or `meradb_cli gui` from a terminal; it connects to a running server, else opens the data folder directly.
+`-DMERADB_GUI=OFF` leaves it out. Details, keys and known limits: [docs/CPP.md](docs/CPP.md#desktop-workbench-meradb_gui).
+
+![The desktop workbench (meradb_gui)](docs/images/desktop-dark.png)
+
 **Building without the workbench.** `-DMERADB_WORKBENCH=OFF` (script: `-NoWorkbench` /
 `--no-workbench`) leaves out the full-screen workbench, so FTXUI is not downloaded and not
 compiled; `meradb_cli workbench` then prints a note and exits. For a machine with no internet,
@@ -179,6 +190,7 @@ meradb_cli start                       # server in the background (port 6372)
 meradb_cli status                      # is it running? exit code 0 = yes, 3 = no
 meradb_cli shell                       # command-line shell (uses the server if running)
 meradb_cli workbench                   # full-screen UI (needs a real terminal, at least 60 x 24)
+meradb_cli gui                         # desktop window (meradb_gui, from the same build folder)
 meradb_cli run examples/demo.mdb       # run a script file
 meradb_cli stop                        # stop the background server
 meradb_cli server                      # or: run the server in this terminal (Ctrl+C stops it)
@@ -219,6 +231,8 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
    [Quick start](#quick-start-python-version) below, and is identical).
 5. `meradb_cli workbench` (the server is still running): press **F5** to run the editor text, **F6** for
    the query plan, **F1** for help, **Ctrl+Q** to quit.
+   Prefer a window? `meradb_cli gui` (or `meradb_gui`) opens the desktop workbench: **Ctrl+Enter** runs,
+   **Ctrl+K** opens the command menu, **F1** is Madad (help).
 6. `meradb_cli stop`.
 
 ### Run the tests
@@ -227,7 +241,7 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
 ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
 ```
 
-There are 783 tests (781 on Linux, where three pseudo-terminal tests run and the workbench
+There are 901 tests (899 on Linux, where three pseudo-terminal tests run and the workbench
 comparison is skipped without Textual): unit tests for every layer, and the cross-checks that compare the
 C++ program with the Python engine (these need Python, and the workbench comparison also
 needs the `textual` package, otherwise it is reported as skipped). A full run takes a
@@ -235,8 +249,8 @@ couple of minutes. What has been built and run so far:
 
 | Platform / compiler | Result |
 |---------------------|--------|
-| Windows 11, MinGW-w64 g++ 16.1 | 783 tests, all passed (3 skipped: the pseudo-terminal tests), no warnings |
-| Linux (Ubuntu under WSL), g++ 15.2 | 781 tests, all passed (1 skipped without Textual), no warnings |
+| Windows 11, MinGW-w64 g++ 16.1 | 901 tests, all passed (3 skipped: the pseudo-terminal tests), no warnings |
+| Linux (Ubuntu under WSL), g++ 15.2 | 899 tests, all passed (1 skipped without Textual), no warnings |
 | Linux (Ubuntu under WSL), clang 21 | all passed, no warnings |
 | macOS, Windows with MSVC | not built yet |
 
@@ -816,7 +830,7 @@ docs/            documentation
 cpp/
   include/meradb/   headers (one per Python module, plus the shell and workbench)
   src/              sources: engine, storage, server, client, shell, workbench
-  tests/            783 ctest tests: unit tests, golden files, comparison scripts
+  tests/            901 ctest tests: unit tests, golden files, comparison scripts
   cmake/            helper scripts for the build
 build.ps1, build.sh build helpers (Windows / POSIX)
 ```
