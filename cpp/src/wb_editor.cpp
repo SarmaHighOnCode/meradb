@@ -1,7 +1,7 @@
 // cpp/src/wb_editor.cpp
 #include "meradb/wb_editor.h"
 #include <algorithm>
-#include <ftxui/screen/string.hpp>
+#include "meradb/wb_width.h"
 
 namespace meradb::wb {
 
@@ -51,7 +51,7 @@ int cpWidth(const std::string& s, std::size_t b) {
     const unsigned char lead = static_cast<unsigned char>(s[b]);
     if (lead >= 0x20 && lead < 0x7F) return 1;
     if (lead >= 0x80 && lead < 0xC0) return 1;
-    return ftxui::string_width(s.substr(b, cpLenAt(s, b)));
+    return displayWidth(s.substr(b, cpLenAt(s, b)));
 }
 
 // A code point that glyphs() merges into the character before it (zero width, not the first one).
@@ -467,7 +467,7 @@ int displayColumn(const std::string& line, int cpCol) {
     for (std::size_t i = 0; i < line.size() && col < cpCol; ++col) {
         const unsigned char lead = static_cast<unsigned char>(line[i]);
         const std::size_t len = cpLenAt(line, i);
-        cells += (lead >= 0x20 && lead < 0x7F) ? 1 : ftxui::string_width(line.substr(i, len));
+        cells += (lead >= 0x20 && lead < 0x7F) ? 1 : displayWidth(line.substr(i, len));
         i += len;
     }
     return cells;

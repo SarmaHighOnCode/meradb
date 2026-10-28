@@ -8,7 +8,7 @@ Each keeps its own licence text, which is included in the downloaded files.
 | Library | Version | Licence | Upstream | Used for |
 |---------|---------|---------|----------|----------|
 | nlohmann/json | 3.11.3 | MIT | https://github.com/nlohmann/json | JSON in the catalog, the network protocol and the data files; linked into `meradb_cli` |
-| FTXUI | 5.0.0 | MIT | https://github.com/ArthurSonzogni/FTXUI | the full-screen workbench; linked into `meradb_cli` (not downloaded when both `-DMERADB_WORKBENCH=OFF` and `-DMERADB_GUI=OFF`); `meradb_gui` uses only its text-width function |
+| FTXUI | 5.0.0 | MIT | https://github.com/ArthurSonzogni/FTXUI | the full-screen workbench; linked into `meradb_cli`; not downloaded with `-DMERADB_WORKBENCH=OFF` (the desktop window `meradb_gui` does not use it) |
 | Catch2 | 3.5.4 | BSL-1.0 (Boost Software License 1.0) | https://github.com/catchorg/Catch2 | the unit tests only; not part of `meradb_cli` |
 | GLFW | 3.4 | zlib | https://github.com/glfw/glfw | windows, input and the OpenGL context of the desktop window `meradb_gui` (not downloaded with `-DMERADB_GUI=OFF`) |
 | Dear ImGui | 1.93.0 | MIT | https://github.com/ocornut/imgui | the user interface of `meradb_gui` |

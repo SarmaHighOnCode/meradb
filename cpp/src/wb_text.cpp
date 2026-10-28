@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <ftxui/screen/string.hpp>
+#include "meradb/wb_width.h"
 #include <system_error>
 #include <variant>
 
@@ -234,11 +234,11 @@ ResultTable makeTable(const Result& result) {
 
 std::vector<int> columnWidths(const ResultTable& table) {
     std::vector<int> widths;
-    for (const std::string& c : table.columns) widths.push_back(ftxui::string_width(c));
+    for (const std::string& c : table.columns) widths.push_back(displayWidth(c));
     for (const auto& row : table.rows) {
         for (std::size_t i = 0; i < row.size(); ++i) {
             if (i >= widths.size()) widths.push_back(0);
-            widths[i] = std::max(widths[i], ftxui::string_width(row[i].text));
+            widths[i] = std::max(widths[i], displayWidth(row[i].text));
         }
     }
     return widths;
@@ -261,7 +261,7 @@ std::vector<Glyph> glyphs(const std::string& utf8) {
         const std::string cp = utf8.substr(i, len);
         i += len;
         const bool stray = lead >= 0x80 && lead < 0xC0;  // a continuation byte with no lead
-        const int w = stray ? 1 : ftxui::string_width(cp);
+        const int w = stray ? 1 : displayWidth(cp);
         if (w == 0 && !out.empty()) {
             out.back().text += cp;  // a combining mark rides on the previous character
         } else {

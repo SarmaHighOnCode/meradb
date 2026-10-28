@@ -44,10 +44,9 @@ if(MERADB_GUI AND UNIX AND NOT APPLE)
     set(MERADB_GUI OFF)
   endif()
 endif()
-if(MERADB_WORKBENCH OR MERADB_GUI)
+if(MERADB_WORKBENCH)
   # Declared before our own warning flags below: add_compile_options only reaches targets created after it.
-  # The desktop window needs only the small ftxui-screen library (string widths); EXCLUDE_FROM_ALL keeps
-  # the rest of FTXUI from being built when -DMERADB_WORKBENCH=OFF.
+  # Only the terminal workbench needs FTXUI; -DMERADB_WORKBENCH=OFF (with or without the desktop window) never downloads it.
   set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -58,7 +57,7 @@ if(MERADB_WORKBENCH OR MERADB_GUI)
     EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(ftxui)
-  if(MERADB_WORKBENCH AND WIN32)
+  if(WIN32)
     # FTXUI 5 drops emoji typed on Windows (it converts the two UTF-16 halves of a key event separately).
     include(cmake/patch_ftxui.cmake)
     meradb_patch_ftxui_input(${ftxui_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ftxui_patch/ftxui_win_input.h)
@@ -201,12 +200,11 @@ if(MERADB_WORKBENCH OR MERADB_GUI)
     src/wb_session.cpp
     src/wb_markdown.cpp
     src/wb_help.cpp
+    src/wb_width.cpp
     ${MERADB_GEN_DIR}/language_doc_data.inc
   )
-  # No header of the model includes FTXUI; wb_text.cpp and wb_editor.cpp use only its string_width (terminal cell
-  # widths), from the small ftxui-screen library, which therefore stays a private link dependency.
-  target_link_libraries(meradb_wbmodel PUBLIC meradb_core PRIVATE ftxui::screen)
-  target_include_directories(meradb_wbmodel SYSTEM PRIVATE ${ftxui_SOURCE_DIR}/include)
+  # No FTXUI here: cell widths come from wb_width.cpp (own Unicode tables).
+  target_link_libraries(meradb_wbmodel PUBLIC meradb_core)
   target_include_directories(meradb_wbmodel PRIVATE ${MERADB_GEN_DIR})
 endif()
 
