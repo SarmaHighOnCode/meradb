@@ -20,13 +20,15 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <chrono>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace meradb {
 namespace {
 
-const std::set<std::string> kCommands = {"server", "start", "stop", "status", "shell", "workbench", "tui", "run"};
+const std::set<std::string> kCommands = {"server", "start", "stop", "status", "shell", "workbench", "tui", "run", "gui"};
 
 void note(const std::string& message) { std::cerr << message << "\n"; }
 
@@ -57,6 +59,7 @@ const char* kUsage =
     "    status           server chal raha hai ya nahi\n"
     "    shell            interactive command-line shell\n"
     "    workbench (tui)  full-screen UI (MySQL Workbench jaisa)\n"
+    "    gui              desktop window (meradb_gui; terminal ki zaroorat nahi)\n"
     "    run              .mdb script files chalao\n"
     "\n"
     "options:\n"
@@ -67,6 +70,7 @@ const char* kUsage =
     "  meradb start                      server ko background mein chalao\n"
     "  meradb shell                      server se connect karo (command-line shell)\n"
     "  meradb workbench                  full-screen UI (MySQL Workbench jaisa)\n"
+    "  meradb gui                        desktop window kholo\n"
     "  meradb run examples/demo.mdb      script chalao\n"
     "  meradb status / meradb stop\n"
     "  meradb shell --local              bina server ke, seedha data folder par\n";
@@ -87,6 +91,9 @@ std::string subcommandUsage(const std::string& command) {
     if (command == "workbench")
         return "usage: meradb workbench [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
                "                        [-U USER] [--local]\n";
+    if (command == "gui")
+        return "usage: meradb gui [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
+               "                  [-U USER] [--local]\n";
     return "usage: meradb run [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
            "                  [-U USER] [--local]\n"
            "                  files [files ...]\n";
@@ -161,7 +168,7 @@ std::string wrapHelp(const std::string& text, std::size_t width) {
 // lines, then argparse's option list. The data folder's default is the one this process would use.
 std::string subcommandHelp(const std::string& command, const std::string& dataDir) {
     const bool server = command == "server" || command == "start";
-    const bool client = command == "shell" || command == "workbench" || command == "run";
+    const bool client = command == "shell" || command == "workbench" || command == "run" || command == "gui";
     std::string out = subcommandUsage(command) + "\n";
     if (command == "run") out += "positional arguments:\n  files                 script files\n\n";
     out += "options:\n";
@@ -234,7 +241,7 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
     args.dataDir = protocol::defaultDataDir();
 
     const bool isServer = args.command == "server" || args.command == "start";
-    const bool isClient = args.command == "shell" || args.command == "workbench" || args.command == "run";
+    const bool isClient = args.command == "shell" || args.command == "workbench" || args.command == "run" || args.command == "gui";
     const bool isControl = args.command == "stop" || args.command == "status";
     if (isServer) {
         args.host = protocol::kDefaultHost;
@@ -528,6 +535,57 @@ int runWorkbenchCommand(const CliArgs& args) {
     return g_workbenchRunner(std::move(backend), args);
 }
 
+// `meradb gui`: starts meradb_gui from the folder this program is in, with the options given here, and returns at
+// once (the window is a separate program: no terminal is needed once it is open). A password asked for with -W is
+// read here, where there is a terminal, and handed over through MERADB_PASSWORD. The window's own start-up errors
+// go to a log file; one that appears within a moment of the start is shown here.
+int runGuiCommand(const CliArgs& args) {
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    const char* programName = "meradb_gui.exe";
+#else
+    const char* programName = "meradb_gui";
+#endif
+    const std::string self = sys::executablePath();
+    const fs::path program = self.empty() ? fs::path(programName) : fs::u8path(self).parent_path() / programName;
+    std::error_code ec;
+    if (!fs::exists(program, ec)) {
+        note("meradb_gui nahi mila: " + program.u8string() +
+             "\nYa to ye build GUI ke bina bana hai (cmake -DMERADB_GUI=ON se dobara banao), ya meradb_gui is folder mein nahi hai. "
+             "Terminal wala workbench:  meradb workbench");
+        return 1;
+    }
+
+    std::vector<std::string> forwarded = {"-D", args.dataDir};
+    if (args.host) forwarded.insert(forwarded.end(), {"-H", *args.host});
+    if (args.port) forwarded.insert(forwarded.end(), {"-p", std::to_string(*args.port)});
+    if (args.database) forwarded.insert(forwarded.end(), {"-d", *args.database});
+    if (args.user) forwarded.insert(forwarded.end(), {"-U", *args.user});
+    if (args.local) forwarded.push_back("--local");
+    if (args.askPassword) sys::setEnv("MERADB_PASSWORD", sys::readHidden("Password: "));
+
+    const fs::path logPath = fs::temp_directory_path(ec) / "meradb_gui.log";
+    std::uintmax_t logSizeBefore = fs::exists(logPath, ec) ? fs::file_size(logPath, ec) : 0;
+    std::unique_ptr<sys::DetachedProcess> child = sys::spawnDetached(program.u8string(), forwarded, logPath.u8string());
+    for (int i = 0; i < 30 && !child->exited(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (child->exited()) {
+        std::string text;
+        std::ifstream in(logPath, std::ios::binary);
+        if (in) {
+            in.seekg(static_cast<std::streamoff>(logSizeBefore));
+            std::ostringstream all;
+            all << in.rdbuf();
+            text = all.str();
+        }
+        if (!text.empty()) {
+            std::cerr << text;
+            if (text.back() != '\n') std::cerr << "\n";
+            return 1;
+        }
+    }
+    return 0;
+}
+
 ControlOptions controlOptions(const CliArgs& args) {
     ControlOptions options;
     options.dataDir = args.dataDir;
@@ -592,6 +650,7 @@ int cliMain(std::vector<std::string> argv) {
             return allOk ? 0 : 1;
         }
         if (args.command == "shell") return runShellCommand(args);
+        if (args.command == "gui") return runGuiCommand(args);
         return runWorkbenchCommand(args);   // workbench (tui)
     } catch (const MeraDBError& e) {
         note(e.what());
