@@ -18,9 +18,14 @@ Each keeps its own licence text, which is included in the downloaded files.
 On Windows the build applies a small patch to the downloaded FTXUI source (`cpp/ftxui_patch/`, applied by
 `cpp/cmake/patch_ftxui.cmake`) so that emoji can be typed; FTXUI's licence applies to the patched code as well.
 
-The Geist fonts are "Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)" and are
-licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org); the licence text is the file
-`OFL.txt` in the font release. The fonts are embedded unmodified in the `meradb_gui` program.
+Full licence texts and copyright lines of the libraries and fonts that are compiled into or embedded in `meradb_gui`
+are kept in this repository in `third_party/licenses/` and ship with every copy of the program:
+
+- `OFL-Geist.txt` - Geist and Geist Mono: "Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)",
+  SIL Open Font License, Version 1.1 (https://openfontlicense.org), the complete text. The fonts are embedded unmodified.
+- `LICENSE-ImGui.txt` - Dear ImGui, "Copyright (c) 2014-2026 Omar Cornut" (MIT).
+- `LICENSE-GLFW.txt` - GLFW, "Copyright (c) 2002-2006 Marcus Geelnard, (c) 2006-2019 Camilla Löwy" (zlib).
+- `LICENSE-stb.txt` - stb_image_write, "Copyright (c) 2017 Sean Barrett" (MIT alternative).
 
 The Python version (`meradb/`) uses only the Python standard library; its optional workbench uses
 [Textual](https://github.com/Textualize/textual) (MIT), which is installed with `pip` and not included here.
