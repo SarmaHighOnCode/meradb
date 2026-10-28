@@ -97,6 +97,28 @@ def analyse(path):
     return width, height, len(colours), brightness
 
 
+def region_mean(path, x0, y0, x1, y1):
+    """Mean brightness (0..255) of the pixel rectangle [x0,x1) x [y0,y1) of the PNG (rows top to bottom)."""
+    _width, _height, channels, rows = read_png(path)
+    total = count = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            i = x * channels
+            total += rows[y][i] + rows[y][i + 1] + rows[y][i + 2]
+            count += 3
+    return total / float(count)
+
+
+def check_upright(path, theme):
+    """The logo mark sits in the top bar's left corner (x 16..36, y 14..34): a vertically flipped picture has the
+    mark at the bottom instead. The mark is drawn in the text colour, so it is bright on dark and dark on light."""
+    mark = region_mean(path, 18, 16, 34, 32)
+    mirrored = region_mean(path, 18, HEIGHT - 32, 34, HEIGHT - 16)
+    if theme == "dark":
+        return mark > 150 and mirrored < 60
+    return mark < 100 and mirrored > 200
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -139,6 +161,8 @@ def main():
             print("%s: %dx%d, %d distinct colours, mean brightness %.1f" % (theme, width, height, colours, brightness))
             if (width, height) != (WIDTH, HEIGHT):
                 failures.append("%s: size is %dx%d, expected %dx%d" % (theme, width, height, WIDTH, HEIGHT))
+            if not check_upright(png, theme):
+                failures.append("%s: the picture is not upright (logo mark not in the top-left corner)" % theme)
             if colours < 8:
                 failures.append("%s: the picture is (nearly) one flat colour (%d colours)" % (theme, colours))
             if theme == "dark" and brightness > 60:
