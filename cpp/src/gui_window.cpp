@@ -47,10 +47,10 @@ struct WindowHooks {
     std::function<void()> closeRequested;
 };
 
+// The monitor's scale for the interface. On macOS (and Wayland) the framebuffer scale already makes Dear ImGui draw
+// at full resolution, so the helper answers 1 there; Windows and X11 get the real content scale.
 float contentScaleOf(GLFWwindow* window) {
-    float x = 1.0f, y = 1.0f;
-    glfwGetWindowContentScale(window, &x, &y);
-    const float scale = std::max(x, y);
+    const float scale = ImGui_ImplGlfw_GetContentScaleForWindow(window);
     return scale > 0.0f ? std::min(scale, 6.0f) : 1.0f;
 }
 
