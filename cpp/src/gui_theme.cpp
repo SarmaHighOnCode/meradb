@@ -96,7 +96,7 @@ void applyTheme(ImGuiStyle& style, const Theme& theme, float scale) {
     fresh.GrabRounding = 6.0f;
     fresh.TabRounding = 6.0f;
     fresh.TabBorderSize = 0.0f;
-    fresh.WindowMinSize = ImVec2(32, 32);
+    fresh.WindowMinSize = ImVec2(1, 1);   // the panels are laid out by hand and may be thin (the status bar is 24px)
     fresh.ScaleAllSizes(scale);   // sizes only: the font scale is set next
     fresh.FontScaleDpi = scale;
 

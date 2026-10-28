@@ -88,6 +88,18 @@ if(TARGET meradb_workbench)
   target_link_libraries(wb_probe PRIVATE meradb_workbench meradb_core)
 endif()
 
+if(TARGET meradb_gui_lib)
+  # The desktop window: unit tests, and real frames of the layout in a Dear ImGui context without a window.
+  add_executable(meradb_gui_tests
+    test_gui_theme.cpp
+    test_gui_poster.cpp
+    test_gui_options.cpp
+    test_gui_headless.cpp
+  )
+  target_link_libraries(meradb_gui_tests PRIVATE meradb_gui_lib meradb_core Catch2::Catch2WithMain)
+  catch_discover_tests(meradb_gui_tests)
+endif()
+
 # Cross-engine diffs need Python (and the Python reference engine); skip cleanly if absent.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -166,6 +178,13 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME workbench_diff
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/workbench_diff.py --probe $<TARGET_FILE:wb_probe>)
     set_tests_properties(workbench_diff PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  endif()
+  if(TARGET meradb_gui)
+    # Draws the window with a hidden GLFW window in both themes and checks the PNG. Skips (exit 77) where there is
+    # no display or no OpenGL 3 (a headless CI machine).
+    add_test(NAME gui_screenshot
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/gui_screenshot.py $<TARGET_FILE:meradb_gui>)
+    set_tests_properties(gui_screenshot PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
   endif()
 else()
   message(STATUS "Python not found: cross-engine ctest checks skipped")
