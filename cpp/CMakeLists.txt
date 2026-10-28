@@ -211,6 +211,40 @@ if(MERADB_WORKBENCH)
   target_include_directories(meradb_workbench SYSTEM PUBLIC ${ftxui_SOURCE_DIR}/include)
 endif()
 
+if(MERADB_GUI)
+  # The window, as a library (everything but main) so the tests can link it, and the program.
+  add_library(meradb_gui_lib STATIC
+    src/gui_theme.cpp
+    src/gui_poster.cpp
+    src/gui_options.cpp
+    src/gui_fonts.cpp
+    src/gui_gl.cpp
+    src/gui_ui.cpp
+    src/gui_window.cpp
+    src/gui_app.cpp
+    ${MERADB_FONT_FILES}
+  )
+  target_link_libraries(meradb_gui_lib PUBLIC meradb_wbmodel meradb_core meradb_imgui glfw)
+  target_include_directories(meradb_gui_lib PRIVATE ${MERADB_GEN_DIR})
+  target_include_directories(meradb_gui_lib SYSTEM PRIVATE ${stb_image_write_SOURCE_DIR})
+  if(WIN32)
+    target_link_libraries(meradb_gui_lib PUBLIC advapi32 user32)
+  endif()
+
+  add_executable(meradb_gui src/gui_main.cpp)
+  target_link_libraries(meradb_gui PRIVATE meradb_gui_lib)
+  if(WIN32)
+    if(MSVC)
+      target_link_options(meradb_gui PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    else()
+      target_link_options(meradb_gui PRIVATE -mwindows)   # no console window when double-clicked
+    endif()
+  endif()
+  if(MINGW)
+    target_link_options(meradb_gui PRIVATE -static)   # the MinGW runtime inside the program, like meradb_cli
+  endif()
+endif()
+
 add_executable(meradb_cli src/main.cpp)
 target_link_libraries(meradb_cli PRIVATE meradb_core)
 if(MERADB_WORKBENCH)

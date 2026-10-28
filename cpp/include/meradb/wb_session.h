@@ -72,6 +72,7 @@ public:
     // ---- state the view reads ----
     std::string title() const { return "MeraDB Workbench"; }
     std::string subtitle() const;                    // "<description>  |  db: <db>[  |  TRANSACTION (PAKKA / WAPAS)]"
+    const std::string& description() const { return header_.description; }   // "local (<folder>)" or "host:port"
     const std::string& currentDb() const { return header_.db; }
     bool inTransaction() const { return header_.inTransaction; }
     std::string busyLabel() const;                   // "", "[chal raha hai]", "[chal raha hai +N]", "[band ho raha hai ...]"
