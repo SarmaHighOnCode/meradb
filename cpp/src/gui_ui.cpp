@@ -13,6 +13,11 @@ namespace meradb::gui {
 namespace {
 
 constexpr float kPi = 3.14159265f;
+
+ImVec2 rectCentre() {
+    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+    return ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+}
 constexpr ImGuiWindowFlags kPanelFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse;
@@ -100,6 +105,22 @@ GuiUi::GuiUi(wb::Session& session, const FontSet& fonts, ThemeMode mode)
       seenVersion_(session.resultVersion()),
       seenRevision_(session.log().revision()),
       seenGeneration_(session.log().generation()) {}
+
+ImVec2 GuiUi::toolbarButtonCentre(Action action) const {
+    switch (action) {
+        case Action::Run: return toolbar_[0];
+        case Action::Explain: return toolbar_[1];
+        case Action::Previous: return toolbar_[2];
+        case Action::Next: return toolbar_[3];
+        default: break;
+    }
+    return ImVec2(-1, -1);
+}
+
+void GuiUi::focusEditor() {
+    editor_.setFocused(true);
+    tree_.setFocused(false);
+}
 
 void GuiUi::perform(Action action) {
     switch (action) {
@@ -189,17 +210,20 @@ void GuiUi::followRuns() {
     const int version = session_.resultVersion();
     if (version == seenVersion_ && log.revision() == seenRevision_ && log.generation() == seenGeneration_) return;
     const bool newTable = version != seenVersion_;
-    bool messages = false;
+    bool messages = false, errors = false;
     const auto& entries = log.entries();
     if (log.generation() == seenGeneration_ && log.revision() > seenRevision_) {
         const std::size_t fresh = std::min<std::size_t>(log.revision() - seenRevision_, entries.size());
         for (std::size_t i = entries.size() - fresh; i < entries.size(); ++i) {
             const wb::LogKind kind = entries[i].kind;
             if (kind == wb::LogKind::Error || kind == wb::LogKind::Message || kind == wb::LogKind::Warn) messages = true;
+            if (kind == wb::LogKind::Error) errors = true;
         }
     }
+    if (log.generation() != seenGeneration_) logErrorDot_ = false;   // the log was cleared
     if (newTable) {
         requestTab_ = Tab::Results;
+        if (errors) logErrorDot_ = true;
         std::size_t scanned = 0;
         for (auto it = entries.rbegin(); it != entries.rend() && scanned < 8; ++it, ++scanned) {   // "(3.1 ms)"
             if (it->kind != wb::LogKind::Dim || it->lines.size() != 1) continue;
@@ -539,8 +563,12 @@ void GuiUi::drawQuery(const Rect& rect) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, toVec4(th.primary, 0.85f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, toVec4(th.primary, 0.7f));
         ImGui::PushStyleColor(ImGuiCol_Border, toVec4(th.primary));
-        if (ImGui::Button("##chalao", runSize)) perform(Action::Run);
+        if (ImGui::Button("##chalao", runSize)) {
+            perform(Action::Run);
+            focusEditor();
+        }
         ImGui::PopStyleColor(4);
+        toolbar_[0] = rectCentre();
         {
             const ImVec2 lo = ImGui::GetItemRectMin();
             ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
@@ -552,7 +580,11 @@ void GuiUi::drawQuery(const Rect& rect) {
         }
         ImGui::SameLine();
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), buttonH))) perform(Action::Explain);
+        if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), buttonH))) {
+            perform(Action::Explain);
+            focusEditor();
+        }
+        toolbar_[1] = rectCentre();
         ImGui::SameLine();
         const float previousW = ImGui::CalcTextSize("Pichli").x + px(24.0f);
         const float nextW = ImGui::CalcTextSize("Agli").x + px(24.0f);
@@ -565,9 +597,17 @@ void GuiUi::drawQuery(const Rect& rect) {
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rightEdge - groupW));
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
         ImGui::BeginDisabled(session_.history().size() == 0);
-        if (ImGui::Button("Pichli", ImVec2(previousW, buttonH))) perform(Action::Previous);
+        if (ImGui::Button("Pichli", ImVec2(previousW, buttonH))) {
+            perform(Action::Previous);
+            focusEditor();
+        }
+        toolbar_[2] = rectCentre();
         ImGui::SameLine();
-        if (ImGui::Button("Agli", ImVec2(nextW, buttonH))) perform(Action::Next);
+        if (ImGui::Button("Agli", ImVec2(nextW, buttonH))) {
+            perform(Action::Next);
+            focusEditor();
+        }
+        toolbar_[3] = rectCentre();
         ImGui::EndDisabled();
         ImGui::PopFont();
         if (statusW > 0) {
@@ -626,8 +666,14 @@ void GuiUi::drawResults(const Rect& rect) {
                 drawResultsTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Log", nullptr, wanted == Tab::Log ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+            const bool logOpen = ImGui::BeginTabItem("Log", nullptr, wanted == Tab::Log ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None);
+            if (logErrorDot_ && !logOpen) {   // the tab's own rect is the last item; the dot sits in its right padding
+                const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(hi.x - px(7.0f), (lo.y + hi.y) * 0.5f), px(3.0f), toU32(th.error));
+            }
+            if (logOpen) {
                 activeTab_ = Tab::Log;
+                logErrorDot_ = false;
                 drawLogTab();
                 ImGui::EndTabItem();
             }

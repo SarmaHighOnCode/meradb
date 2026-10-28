@@ -70,6 +70,13 @@ public:
     bool wantsFastTick() const { return toastVisible_; }   // the main loop wakes often enough to hide the toast on time
     // a toast button: where the last frame drew it (screen pixels); empty rect when no toast is shown
     ImVec2 toastButtonCentre() const { return toastButton_; }
+    // A run that made a table and also failed (DIKHAO ok; DIKHAO nahi;) shows the table: Results stays in front, and
+    // the Log tab carries a small error-coloured dot until it is opened (or the log is cleared). The error text is in
+    // the Log; a run that makes no table and fails still goes to the Log tab itself.
+    bool logErrorDot() const { return logErrorDot_; }
+    // Where the last frame drew a toolbar button (screen pixels; (-1, -1) before the first frame): Run, Explain,
+    // Previous or Next. Clicking one gives the keyboard back to the editor.
+    ImVec2 toolbarButtonCentre(Action action) const;
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
@@ -122,6 +129,9 @@ private:
     int seenVersion_ = 0;
     std::size_t seenRevision_ = 0, seenGeneration_ = 0;
     bool logFollow_ = true;
+    bool logErrorDot_ = false;
+    ImVec2 toolbar_[4] = {ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1)};
+    void focusEditor();
     bool badgeShown_ = false;
     void drawToast(const ImVec2& display, float statusHeight);
     void drawQuitOverlay(const ImVec2& display);

@@ -1252,3 +1252,152 @@ TEST_CASE("gui dialogs: every overlay draws in both themes, at several scales an
         }
     }
 }
+
+// ---------------------------------------------------------------- fix round: the small things
+
+TEST_CASE("gui editor: a key that changes nothing does not throw the redo steps away", "[gui][headless][editor][undo]") {
+    Screen s;
+    s.click(s.at(0, 0));
+    s.type("ab");
+    REQUIRE(s.text() == "ab");
+    s.press(ImGuiKey_Z, true);
+    REQUIRE(s.text().empty());
+    s.press(ImGuiKey_Backspace);   // at the very start: nothing to delete
+    s.press(ImGuiKey_Delete);      // at the very end of an empty text
+    CHECK(s.text().empty());
+    s.press(ImGuiKey_Y, true);
+    CHECK(s.text() == "ab");
+}
+
+TEST_CASE("gui toolbar: Chalao, Samjhao, Pichli and Agli give the keyboard back to the editor", "[gui][headless][toolbar]") {
+    Screen s;
+    s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1);");
+    REQUIRE(s.rig.settle());
+    for (const Action action : {Action::Run, Action::Explain, Action::Previous, Action::Next}) {
+        s.buffer().setText("DIKHAO * SE t;");
+        s.click(s.at(0, 2));
+        REQUIRE(s.ui.editor().focused());
+        const ImVec2 button = s.ui.toolbarButtonCentre(action);
+        REQUIRE(button.x > 0.0f);
+        s.click(button);
+        s.rig.settle();
+        s.frames(3);
+        CHECK(s.ui.editor().focused());
+        const std::string before = s.text();
+        s.type("Q");
+        CHECK(s.text().size() == before.size() + 1);   // the key reached the editor without another click
+        CHECK(s.text().find('Q') != std::string::npos);
+    }
+}
+
+TEST_CASE("gui tabs: a run with a table and an error shows Results and marks Log with an error dot", "[gui][headless][tabs]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1),(2); DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    s.frames(4);
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    CHECK(s.ui.logErrorDot());
+    s.ui.showTab(GuiUi::Tab::Log);   // looking at the log clears the dot
+    s.frames(4);
+    CHECK(s.ui.tab() == GuiUi::Tab::Log);
+    CHECK_FALSE(s.ui.logErrorDot());
+    // an error without a table goes to the Log tab itself, no dot needed
+    s.ui.showTab(GuiUi::Tab::Results);
+    s.frames(3);
+    REQUIRE(s.run("DIKHAO * SE nahi_hai;"));
+    CHECK(s.ui.tab() == GuiUi::Tab::Log);
+    CHECK_FALSE(s.ui.logErrorDot());
+    // a clean run leaves no dot, and clearing the log removes one
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    CHECK_FALSE(s.ui.logErrorDot());
+    REQUIRE(s.run("DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    CHECK(s.ui.logErrorDot());
+    s.ui.perform(Action::ClearLog);
+    s.frames(4);
+    CHECK_FALSE(s.ui.logErrorDot());
+}
+
+// Dear ImGui warns (a red tooltip, and its debug state) when two items under the mouse share an ID. This sweeps the
+// mouse over the whole window in every state and fails on the first such conflict.
+namespace {
+
+int idConflicts(Screen& s, float width, float height) {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    int conflicts = 0;
+    for (float y = 4.0f; y < height; y += 23.0f) {
+        for (float x = 4.0f; x < width; x += 41.0f) {
+            ImGui::GetIO().AddMousePosEvent(x, y);
+            s.frames(1);
+            if (g.DebugDrawIdConflictsId != 0 || g.HoveredIdPreviousFrameItemCount > 1) ++conflicts;
+        }
+    }
+    return conflicts;
+}
+
+}  // namespace
+
+TEST_CASE("gui ids: no two widgets share an ID under the mouse in any panel, tab or dialog", "[gui][headless][ids]") {
+    Screen s;
+    ImGui::GetIO().ConfigDebugHighlightIdConflicts = true;
+    const float w = ImGui::GetIO().DisplaySize.x, h = ImGui::GetIO().DisplaySize.y;
+    CHECK(idConflicts(s, w, h) == 0);   // the empty layout
+
+    REQUIRE(s.run("BANAO TABLE t (a ANK, naam TEXT); DAALO MEIN t MAAN (1,'x'),(2,'y'),(3,'z'); SHURU; DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    s.ui.grid().select(1, 1);
+    s.ui.schemaTree().setFocused(true);
+    s.frames(3);
+    CHECK(idConflicts(s, w, h) == 0);   // results, selected cell, transaction badge, schema tree
+
+    s.ui.showTab(GuiUi::Tab::Log);
+    s.frames(4);
+    CHECK(idConflicts(s, w, h) == 0);   // the log
+
+    s.ui.showTab(GuiUi::Tab::Results);
+    s.buffer().setText("DIKHAO * SE t;");
+    s.click(s.at(0, 2));
+    s.frames(2);
+    CHECK(idConflicts(s, w, h) == 0);   // a focused editor
+
+    s.ui.perform(Action::ExportCsv);
+    s.frames(3);
+    REQUIRE(s.ui.toastVisible());
+    CHECK(idConflicts(s, w, h) == 0);   // the CSV toast
+
+    s.rig.session->openConnectDialog();
+    s.frames(3);
+    CHECK(idConflicts(s, w, h) == 0);
+    s.rig.session->closeModal();
+    s.frames(2);
+    s.rig.session->showHelp();
+    s.frames(3);
+    CHECK(idConflicts(s, w, h) == 0);
+    s.rig.session->closeModal();
+    s.frames(2);
+    s.ui.openPalette("t");
+    s.frames(3);
+    CHECK(idConflicts(s, w, h) == 0);
+    s.ui.commandMenu().close();
+    s.frames(2);
+    CHECK(idConflicts(s, w, h) == 0);   // and back to the plain window
+}
+
+TEST_CASE("gui ids: the conflict check used by the sweep does see a real conflict", "[gui][headless][ids]") {
+    guitest::HeadlessImGui gui;
+    ImGui::GetIO().ConfigDebugHighlightIdConflicts = true;
+    ImGui::GetIO().AddMousePosEvent(30.0f, 38.0f);
+    bool seen = false;
+    for (int i = 0; i < 4; ++i) {
+        gui.frameWith(
+            [] {
+                ImGui::SetNextWindowPos(ImVec2(0, 0));
+                ImGui::SetNextWindowSize(ImVec2(300, 200));
+                ImGui::Begin("conflict", nullptr, ImGuiWindowFlags_NoTitleBar);
+                ImGui::Button("same");
+                ImGui::Button("same");   // the same ID twice
+                ImGui::End();
+            },
+            [] {});
+        ImGuiContext& g = *ImGui::GetCurrentContext();
+        if (g.DebugDrawIdConflictsId != 0 || g.HoveredIdPreviousFrameItemCount > 1) seen = true;
+    }
+    CHECK(seen);
+}

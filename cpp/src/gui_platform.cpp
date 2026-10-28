@@ -10,6 +10,15 @@
 
 namespace meradb::gui {
 
+WindowSize minimumWindowSize(float scale) {
+    if (!(scale >= 1.0f)) scale = 1.0f;
+    if (scale > 6.0f) scale = 6.0f;
+    WindowSize size;
+    size.width = static_cast<int>(static_cast<float>(kMinLogicalWidth) * scale + 0.5f);
+    size.height = static_cast<int>(static_cast<float>(kMinLogicalHeight) * scale + 0.5f);
+    return size;
+}
+
 ImePlacement imePlacement(float x, float y, float lineHeight) {
     ImePlacement p;
     p.compositionX = p.candidateX = static_cast<int>(x);

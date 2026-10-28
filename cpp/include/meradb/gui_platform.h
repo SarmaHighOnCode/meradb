@@ -13,6 +13,14 @@ struct ImePlacement {
 };
 ImePlacement imePlacement(float x, float y, float lineHeight);
 
+// The smallest window, in physical pixels: 640 x 400 logical pixels times the monitor's content scale, so that at 200%
+// the top bar and the tabs have the room they have at 100% (at 1280 x 800 physical they used to overlap).
+struct WindowSize {
+    int width = 0, height = 0;
+};
+constexpr int kMinLogicalWidth = 640, kMinLogicalHeight = 400;
+WindowSize minimumWindowSize(float scale);
+
 // "C:\x\exports\a.csv" -> "C:\x\exports" (either slash; a bare name -> "."; a root stays a root).
 std::string folderOf(const std::string& path);
 

@@ -141,7 +141,7 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
     }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(screenshot ? 0 : 1);
-    glfwSetWindowSizeLimits(window, 640, 400, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    glfwSetWindowSizeLimits(window, kMinLogicalWidth, kMinLogicalHeight, GLFW_DONT_CARE, GLFW_DONT_CARE);   // raised with the scale below
 #if !defined(__APPLE__)   // macOS takes the icon from the application bundle
     {
         const std::vector<IconImage> icons = windowIconImages();
@@ -187,11 +187,18 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
         const ThemeMode mode = options.theme ? *options.theme : (screenshot ? ThemeMode::Dark : detectSystemTheme());
         GuiUi ui(session, fonts, mode);
 
+        float limitsScale = 1.0f;
         bool inFrame = false;
         auto frame = [&](bool present, OffscreenTarget* target) {
             if (inFrame) return;
             inFrame = true;
-            ui.prepare(screenshot ? 1.0f : contentScaleOf(window));
+            const float scale = screenshot ? 1.0f : contentScaleOf(window);
+            ui.prepare(scale);
+            if (!screenshot && scale != limitsScale) {   // the minimum is in logical pixels: it grows with the monitor's scale
+                limitsScale = scale;
+                const WindowSize least = minimumWindowSize(scale);
+                glfwSetWindowSizeLimits(window, least.width, least.height, GLFW_DONT_CARE, GLFW_DONT_CARE);
+            }
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             int framebufferWidth = 0, framebufferHeight = 0;

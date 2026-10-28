@@ -537,7 +537,7 @@ TEST_CASE("gui undo: an edit that changes nothing keeps the redo steps", "[gui][
     CHECK(again->text == "abc");
 }
 
-// ---------------------------------------------------------------- fallback fonts, IME
+// ---------------------------------------------------------------- fallback fonts, IME, window size
 
 TEST_CASE("gui fonts: the fallback list only names files that exist", "[gui][fonts]") {
     for (const FallbackFont& f : systemFallbackFonts()) {
@@ -556,4 +556,14 @@ TEST_CASE("gui ime: the composition starts at the caret and the candidate list h
     CHECK(p.candidateX == 120);
     CHECK(p.candidateY > 318);
     CHECK(p.candidateY < 330);
+}
+
+TEST_CASE("gui window: the minimum size is 640 x 400 logical pixels at any scale", "[gui][window]") {
+    CHECK(minimumWindowSize(1.0f).width == 640);
+    CHECK(minimumWindowSize(1.0f).height == 400);
+    CHECK(minimumWindowSize(2.0f).width == 1280);   // at 200% the top bar and the tabs keep the room they have at 100%
+    CHECK(minimumWindowSize(2.0f).height == 800);
+    CHECK(minimumWindowSize(1.5f).width == 960);
+    CHECK(minimumWindowSize(0.0f).width == 640);    // nonsense scales fall back to 1
+    CHECK(minimumWindowSize(100.0f).width == 3840);
 }
