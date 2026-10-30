@@ -36,3 +36,13 @@ TEST_CASE("ROUND to tens does not wrap an INT around", "[gaps][scalar]") {
     REQUIRE(q(e, "DIKHAO ROUND(9223372036854775804, -1), ROUND(15, -1), ROUND(-15, -1), ROUND(14, -1);") ==
             "9223372036854775800|20|-20|10");
 }
+
+TEST_CASE("Date functions read the whole text, not its first ten characters", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO YEAR('2024-01-01 garbage');"), ContainsSubstring("valid DATETIME"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('2024-01-01 garbage' AS DATE);"), ContainsSubstring("valid DATETIME"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO DATE_FORMAT('2024-01-01 99:99:99', '%H');"), ContainsSubstring("valid DATETIME"));
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-01-01 10:20', '%H:%i');") == "10:20");
+    REQUIRE(q(e, "DIKHAO YEAR('2024-01-01T10:20:30'), DATEDIFF('2024-01-15 23:00:00', '2024-01-14 01:00:00');") == "2024|1");
+}

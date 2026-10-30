@@ -150,15 +150,15 @@ DateTime dateTimeOf(const Value& v, const char* fn) {
         dt.date = std::get<Date>(v.data);
     } else if (isTextValue(v)) {
         const std::string& s = std::get<std::string>(v.data);
-        bool hasTime = s.size() >= 19 && (s[10] == ' ' || s[10] == 'T') && allDigits(s, 11, 2) && s[13] == ':' &&
-                       allDigits(s, 14, 2) && s[16] == ':' && allDigits(s, 17, 2);
-        if (hasTime) {
-            dt.hour = std::atoi(s.substr(11, 2).c_str());
-            dt.minute = std::atoi(s.substr(14, 2).c_str());
-            dt.second = std::atoi(s.substr(17, 2).c_str());
+        if (s.size() > 10) {  // a date and a time: all of it must be valid, parseDateTime gives 'YYYY-MM-DD HH:MM:SS'
+            const std::string full = parseDateTime(s);
+            dt.hour = std::atoi(full.substr(11, 2).c_str());
+            dt.minute = std::atoi(full.substr(14, 2).c_str());
+            dt.second = std::atoi(full.substr(17, 2).c_str());
+            dt.date = parseDate(full.substr(0, 10));
+        } else {
+            dt.date = parseDate(s);
         }
-        bool trimmed = s.size() > 10 && (s[10] == ' ' || s[10] == 'T');
-        dt.date = parseDate(trimmed ? s.substr(0, 10) : s);
     } else {
         throw ExecutionError(std::string(fn) + " ko DATE (ya 'YYYY-MM-DD' text) chahiye, " + shown(v) + " mila");
     }
