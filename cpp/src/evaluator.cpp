@@ -265,6 +265,13 @@ double pyFloatMod(double x, double y) {
     return mod;
 }
 
+// Two ordinary numbers whose result does not fit a FLOAT: an error, as in MySQL and PostgreSQL, never `inf`.
+Value finiteResult(double result, double x, double y, const std::string& op) {
+    if (std::isfinite(x) && std::isfinite(y) && !std::isfinite(result))
+        throw ExecutionError("'" + op + "' ka result FLOAT ke liye bahut bada hai");
+    return Value(result);
+}
+
 Value arithmetic(const std::string& op, const Value& left, const Value& right) {
     if (op == "+" && isText(left) && isText(right))
         return Value(std::get<std::string>(left.data) + std::get<std::string>(right.data));  // 'Ra' + 'vi'
@@ -279,9 +286,7 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
             return Value(checkedMul(x, y, op));
         }
         double x = toDouble(left), y = toDouble(right);
-        if (op == "+") return Value(x + y);
-        if (op == "-") return Value(x - y);
-        return Value(x * y);
+        return finiteResult(op == "+" ? x + y : op == "-" ? x - y : x * y, x, y, op);
     }
     if ((op == "/" || op == "%" || op == "DIV") && toDouble(right) == 0) throw ExecutionError("Zero se divide nahi kar sakte");
     if (op == "/") {
@@ -295,7 +300,7 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
             if (x % y == 0) return Value(x / y);
             return Value(pyTrueDivide(x, y));
         }
-        return Value(toDouble(left) / toDouble(right));
+        return finiteResult(toDouble(left) / toDouble(right), toDouble(left), toDouble(right), op);
     }
     if (op == "DIV") {
         if (bothInt) {

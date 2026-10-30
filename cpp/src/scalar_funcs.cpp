@@ -278,8 +278,11 @@ Value powerValue(const Value& a, const Value& b) {
         }
         if (fits) return Value(result);
     }
-    double r = std::pow(asDouble(a), asDouble(b));
+    const double x = asDouble(a), y = asDouble(b);
+    if (x == 0 && y < 0) throw ExecutionError("POWER: 0 ki negative power nahi hoti (zero se divide jaisa)");
+    double r = std::pow(x, y);
     if (std::isnan(r)) return Value();
+    if (std::isinf(r) && std::isfinite(x) && std::isfinite(y)) throw ExecutionError("POWER ka result FLOAT ke liye bahut bada hai");
     return Value(r);
 }
 

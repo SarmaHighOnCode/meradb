@@ -133,3 +133,23 @@ TEST_CASE("The smallest INT can be written as a literal", "[gaps][literal]") {
     run(e, "PREPARE p FROM 'DIKHAO ?';");
     REQUIRE(q(e, "EXECUTE p USING -9223372036854775808;") == "-9223372036854775808");
 }
+
+TEST_CASE("A FLOAT result too big to hold is an error, not inf", "[gaps][float]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(0, -1);"), ContainsSubstring("POWER"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(0.0, -2.5);"), ContainsSubstring("POWER"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(10, 400);"), ContainsSubstring("POWER"));
+    run(e, "BANAO TABLE f (x FLOAT);");
+    const std::string big(300, '9');
+    run(e, "DAALO MEIN f MAAN (" + big + ".0), (" + big + ".0);");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x * x SE f;"), ContainsSubstring("FLOAT"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x / 0.000000000000001 SE f;"), ContainsSubstring("FLOAT"));
+    const std::string huge(400, '9');
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO " + huge + ".0;"), ContainsSubstring("FLOAT"));
+    run(e, "BANAO TABLE g (x FLOAT);");
+    const std::string nearMax = "15" + std::string(307, '0') + ".0";  // 1.5e308
+    run(e, "DAALO MEIN g MAAN (" + nearMax + "), (" + nearMax + ");");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO KUL(x) SE g;"), ContainsSubstring("FLOAT"));
+    REQUIRE(q(e, "DIKHAO POWER(2, -1), POWER(0, 0), POWER(0, 2), POWER(-8, 0.5), SQRT(-1);") == "0.5|1|0|KHALI|KHALI");
+}
