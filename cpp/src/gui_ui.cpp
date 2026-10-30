@@ -603,20 +603,31 @@ void GuiUi::drawQuery(const Rect& rect) {
         const char* status = quitting ? "band ho raha hai..." : (session_.busy() ? "chal raha hai..." : "");
         const float statusW = status[0] != '\0' ? ImGui::CalcTextSize(status).x + px(24.0f) : 0.0f;   // text + spinner
         const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-        const float groupW = previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(8.0f) : 0.0f);
+        const std::string walk = session_.historyLabel();   // "3/7": where Pichli / Agli stands
+        const float walkW = walk.empty() ? 0.0f : ImGui::CalcTextSize(walk.c_str()).x + px(8.0f);
+        const float groupW = walkW + previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(8.0f) : 0.0f);
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rightEdge - groupW));
+        if (!walk.empty()) {
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            dl->AddText(ImVec2(at.x, at.y + (buttonH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.muted), walk.c_str());
+            ImGui::Dummy(ImVec2(walkW - px(8.0f), buttonH));
+            ImGui::SameLine();
+        }
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        ImGui::BeginDisabled(session_.history().size() == 0);
+        const bool noHistory = session_.history().size() == 0;
+        ImGui::BeginDisabled(noHistory);
         if (ImGui::Button("Pichli", ImVec2(previousW, buttonH))) {
             perform(Action::Previous);
             focusEditor();
         }
+        ImGui::SetItemTooltip("%s", noHistory ? "Abhi koi purani query nahi: pehle kuch chalao" : "Pichli query (Alt+Up)");
         toolbar_[2] = rectCentre();
         ImGui::SameLine();
         if (ImGui::Button("Agli", ImVec2(nextW, buttonH))) {
             perform(Action::Next);
             focusEditor();
         }
+        ImGui::SetItemTooltip("%s", noHistory ? "Abhi koi purani query nahi: pehle kuch chalao" : "Agli query, aakhir mein aapka likha text wapas (Alt+Down)");
         toolbar_[3] = rectCentre();
         ImGui::EndDisabled();
         ImGui::PopFont();

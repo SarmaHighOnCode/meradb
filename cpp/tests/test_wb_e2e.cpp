@@ -272,11 +272,9 @@ TEST_CASE("wbe2e history with Ctrl+Up and Ctrl+Down", "[wbe2e]") {
 
     const std::string draft = rig.s().editor().text();   // local mode: Ctrl+Down past the end brings this back
     rig.ui->setFocus(Panel::Log);
-    CHECK(rig.press(Event::ArrowUpCtrl));
-    CHECK(rig.s().editor().text() == "DIKHAO * SE t;");
-    CHECK(rig.ui->focus() == Panel::Editor);
-    CHECK(rig.press(Event::ArrowUpCtrl));
+    CHECK(rig.press(Event::ArrowUpCtrl));   // "DIKHAO * SE t;" is already in the editor: passed over
     CHECK(rig.s().editor().text() == "DAALO MEIN t MAAN (1);");
+    CHECK(rig.ui->focus() == Panel::Editor);
     CHECK(rig.press(Event::ArrowUpCtrl));
     CHECK(rig.s().editor().text() == "BANAO TABLE t (a ANK);");
     CHECK(rig.press(Event::ArrowUpCtrl));   // stays at the oldest
@@ -291,7 +289,7 @@ TEST_CASE("wbe2e history with Ctrl+Up and Ctrl+Down", "[wbe2e]") {
     // The cursor goes to the end of the recalled text.
     CHECK(rig.press(Event::ArrowUpCtrl));
     rig.type(" --x");
-    CHECK(rig.s().editor().text() == "DIKHAO * SE t; --x");
+    CHECK(rig.s().editor().text() == "DAALO MEIN t MAAN (1); --x");
 }
 
 TEST_CASE("wbe2e the schema tree: expand, insert a column, run a table, switch database", "[wbe2e]") {

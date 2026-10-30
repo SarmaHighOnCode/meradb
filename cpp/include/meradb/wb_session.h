@@ -91,6 +91,7 @@ public:
     const Result* lastResult() const { return lastResult_ ? &*lastResult_ : nullptr; }
     int resultVersion() const { return resultVersion_; }                       // bumps on every new table
     const History& history() const { return history_; }
+    std::string historyLabel() const;                // "3/7" while Pichli / Agli is on an entry, else ""
     // The queries run so far in the current database, oldest first, kept in <data>/.history/<db>.jsonl (local mode
     // only; empty and disabled for a server connection). savedVersion() bumps whenever the list changes.
     const std::vector<SavedQuery>& savedQueries() const { return saved_; }

@@ -225,3 +225,189 @@ TEST_CASE("Looking at an old query with Pichli never overwrites the saved script
         CHECK(QueryStore(dir.path.string()).loadScript("main") == "DIKHAO * SE a; -- badla");
     }
 }
+
+// ---- Pichli / Agli as the user meets them ----
+
+namespace {
+// A local session on a fake backend: "ISTEMAL x;" changes the database on the worker, like the real one.
+struct WalkRig {
+    TempDir dir;
+    ManualPoster poster;
+    FakeBackend* fake = nullptr;
+    std::unique_ptr<Session> session;
+    explicit WalkRig(const std::vector<std::string>& savedInMain = {}, const std::string& script = "") {
+        QueryStore store(dir.path.string());
+        for (const std::string& q : savedInMain) store.append("main", {q, ""});
+        if (!script.empty()) store.saveScript("main", script);
+        auto owned = std::make_unique<FakeBackend>();
+        fake = owned.get();
+        fake->desc = "local (" + dir.path.string() + ")";
+        FakeBackend* f = fake;
+        fake->beforeRun = [f](const std::string& text) {
+            const std::string prefix = "ISTEMAL ";
+            if (text.rfind(prefix, 0) == 0 && text.back() == ';') f->db = text.substr(prefix.size(), text.size() - prefix.size() - 1);
+        };
+        SessionOptions opts;
+        opts.dataDir = dir.path.string();
+        session = std::make_unique<Session>(std::move(owned), std::move(opts), poster.poster());
+        REQUIRE(poster.pumpIdle(*session));
+    }
+    Session& s() { return *session; }
+    void run(const std::string& text) {
+        s().runText(text);
+        REQUIRE(poster.pumpIdle(s()));
+    }
+    std::string text() { return s().editor().text(); }
+    std::string savedScript(const std::string& db = "main") { return QueryStore(dir.path.string()).loadScript(db); }
+};
+}  // namespace
+
+TEST_CASE("Pichli after running the editor's own text shows the query before it, the first press already", "[wb][querystore][walk]") {
+    WalkRig rig;
+    rig.run("a;");
+    rig.s().editor().setText("b;");
+    rig.s().runEditorText();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    rig.s().historyStep(-1);
+    CHECK(rig.text() == "a;");   // not "b;" again: that press would change nothing on screen
+}
+
+TEST_CASE("Pichli compares without the blanks a run strips off", "[wb][querystore][walk]") {
+    WalkRig rig;
+    rig.run("a;");
+    rig.s().editor().setText("b;\n");
+    rig.s().runEditorText();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    rig.s().historyStep(-1);
+    CHECK(rig.text() == "a;");
+}
+
+TEST_CASE("Agli goes back down the list and then brings the draft back", "[wb][querystore][walk]") {
+    WalkRig rig({"a;", "b;"});
+    rig.s().editor().setText("mera script");
+    rig.s().historyStep(-1);
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "a;");
+    rig.s().historyStep(1);
+    CHECK(rig.text() == "b;");
+    rig.s().historyStep(1);
+    CHECK(rig.text() == "mera script");
+}
+
+TEST_CASE("The walk tells where it is, so a press at the end of the list is not a dead button", "[wb][querystore][walk]") {
+    WalkRig rig({"a;", "b;"});
+    CHECK(rig.s().historyLabel().empty());
+    rig.s().historyStep(-1);
+    CHECK(rig.s().historyLabel() == "2/2");
+    rig.s().historyStep(-1);
+    CHECK(rig.s().historyLabel() == "1/2");
+    rig.s().historyStep(-1);      // the oldest: the text stays, the label says why
+    CHECK(rig.s().historyLabel() == "1/2");
+    CHECK(rig.text() == "a;");
+    rig.s().historyStep(1);
+    rig.s().historyStep(1);
+    CHECK(rig.s().historyLabel().empty());
+}
+
+TEST_CASE("Running an old query from Pichli does not cost the script", "[wb][querystore][walk]") {
+    WalkRig rig({"a;", "b;"}, "-- mera script");
+    rig.s().historyStep(-1);
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "a;");
+    rig.s().runEditorText();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    rig.s().persistEditor(true);                  // the autosave of the next frame
+    CHECK(rig.savedScript() == "-- mera script");
+    rig.s().historyStep(1);                       // the run moved the walk to the newest end
+    CHECK(rig.text() == "-- mera script");
+}
+
+TEST_CASE("Agli with no walk going on never touches the writing area", "[wb][querystore][walk]") {
+    SECTION("local") {
+        WalkRig rig({"a;"});
+        rig.s().editor().setText("likh raha hoon");
+        rig.s().historyStep(1);
+        CHECK(rig.text() == "likh raha hoon");
+    }
+    SECTION("server: no store, the text is still not wiped") {
+        ManualPoster poster;
+        Session s(std::make_unique<FakeBackend>(), SessionOptions{}, poster.poster());
+        REQUIRE(poster.pumpIdle(s));
+        s.runText("a;");
+        REQUIRE(poster.pumpIdle(s));
+        s.editor().setText("likh raha hoon");
+        s.historyStep(1);
+        CHECK(s.editor().text() == "likh raha hoon");
+    }
+}
+
+TEST_CASE("On a server connection Agli past the newest entry brings the draft back too", "[wb][querystore][walk]") {
+    ManualPoster poster;
+    Session s(std::make_unique<FakeBackend>(), SessionOptions{}, poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    s.runText("a;");
+    REQUIRE(poster.pumpIdle(s));
+    s.editor().setText("mera draft");
+    s.historyStep(-1);
+    REQUIRE(s.editor().text() == "a;");
+    s.historyStep(1);
+    CHECK(s.editor().text() == "mera draft");
+}
+
+TEST_CASE("An edit of a shown entry is the new draft, on a server connection too", "[wb][querystore][walk]") {
+    ManualPoster poster;
+    Session s(std::make_unique<FakeBackend>(), SessionOptions{}, poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    s.runText("a;");
+    s.runText("b;");
+    REQUIRE(poster.pumpIdle(s));
+    s.editor().setText("purana draft");
+    s.historyStep(-1);
+    s.editor().setText("b; -- badla");
+    s.historyStep(1);    // no autosave ended the walk here: the edit must still not be lost
+    CHECK(s.editor().text() == "b; -- badla");
+}
+
+TEST_CASE("Stepping on after editing a shown entry does not save the next entry as the script", "[wb][querystore][walk]") {
+    WalkRig rig({"a;", "b;"}, "-- script");
+    rig.s().historyStep(-1);
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "a;");
+    rig.s().editor().setText("a; -- badla");
+    rig.s().persistEditor(true);          // real work: saved, and the walk is over
+    REQUIRE(rig.savedScript() == "a; -- badla");
+    rig.s().historyStep(1);               // goes on through the list
+    CHECK(rig.text() == "b;");
+    rig.s().persistEditor(true);
+    CHECK(rig.savedScript() == "a; -- badla");
+    rig.s().historyStep(1);
+    CHECK(rig.text() == "a; -- badla");
+}
+
+TEST_CASE("The draft of one database never lands in another", "[wb][querystore][walk]") {
+    WalkRig rig({"a;"}, "-- main ka script");
+    QueryStore(rig.dir.path.string()).saveScript("college", "-- college ka script");
+    QueryStore(rig.dir.path.string()).append("college", {"c;", ""});
+    rig.s().historyStep(-1);              // walking in main when the card opens college
+    REQUIRE(rig.text() == "a;");
+    rig.s().openDatabase("college");
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    REQUIRE(rig.text() == "-- college ka script");
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "c;");
+    rig.s().historyStep(1);
+    CHECK(rig.text() == "-- college ka script");
+    CHECK(rig.savedScript("main") == "-- main ka script");
+}
+
+TEST_CASE("A text typed just before Pichli is saved, even inside the save delay", "[wb][querystore][walk]") {
+    WalkRig rig({"a;"});
+    rig.s().editor().setText("-- pehle");
+    rig.s().persistEditor(true);
+    rig.s().editor().setText("-- abhi likha");
+    rig.s().persistEditor();                     // inside the delay: not written yet
+    rig.s().historyStep(-1);
+    rig.s().persistEditor(true);
+    CHECK(rig.savedScript() == "-- abhi likha");
+}
+

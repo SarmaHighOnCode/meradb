@@ -152,18 +152,19 @@ TEST_CASE("wbui window history keys work from any panel and focus the editor", "
     rig.runStatement("DIKHAO 1;");
     rig.runStatement("DIKHAO 2;");
     rig.ui->setFocus(Panel::Tree);
-    CHECK(rig.press(Event::ArrowUpCtrl));
-    CHECK(rig.s().editor().text() == "DIKHAO 2;");
+    CHECK(rig.press(Event::ArrowUpCtrl));   // "DIKHAO 2;" is already in the editor: passed over
+    CHECK(rig.s().editor().text() == "DIKHAO 1;");
     CHECK(rig.ui->focus() == Panel::Editor);
     rig.ui->setFocus(Panel::Log);
-    CHECK(rig.press(keys::ctrl('P')));
+    CHECK(rig.press(keys::ctrl('P')));      // the oldest: it stays
     CHECK(rig.s().editor().text() == "DIKHAO 1;");
     CHECK(rig.ui->focus() == Panel::Editor);
     rig.ui->setFocus(Panel::Results);
     CHECK(rig.press(Event::ArrowDownCtrl));
     CHECK(rig.s().editor().text() == "DIKHAO 2;");
-    CHECK(rig.press(keys::ctrl('N')));
-    CHECK(rig.s().editor().text().empty());
+    CHECK(rig.press(keys::ctrl('N')));      // past the newest: the text from before the walk
+    CHECK(rig.s().editor().text() == "DIKHAO 2;");
+    CHECK(rig.s().historyLabel().empty());
 }
 
 TEST_CASE("wbui window Ctrl+S exports only after a result", "[wbui]") {

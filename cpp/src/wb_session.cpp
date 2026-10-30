@@ -274,7 +274,8 @@ void Session::runText(const std::string& raw) {
     const std::string text = pytext::strip(raw);
     if (text.empty()) return;
     history_.add(text);  // the echo line follows when the statement starts (echoOnWorker)
-    stepping_ = false;
+    // Running the entry on screen is still only a look at an old query: the script stays kept, Agli brings it back.
+    if (stepping_ && editor_.text() != steppedText_) stepping_ = false;
     switchScriptTo_.clear();   // a card's ISTEMAL that failed must not swap the writing area on a later typed ISTEMAL
     enqueueRun(text);
 }
@@ -341,6 +342,7 @@ void Session::applySnapshot(const Snapshot& s) {
             switchScriptTo_.clear();
             persistEditor(true);   // the last edits of the database being left, inside the save delay
             seedHistory();
+            stepping_ = false;     // the walk belonged to the database being left
             scriptDb_ = header_.db;
             editor_.setText(store_.loadScript(scriptDb_));
             lastScript_ = editor_.text();
@@ -412,22 +414,42 @@ void Session::explainEditorText() {
 }
 
 // Pichli / Agli. The text that was in the writing area before the walk is kept as a draft: Agli past the newest entry
-// puts it back instead of leaving the area empty (so a script is never lost by looking at an old query).
+// puts it back instead of leaving the area empty (so a script is never lost by looking at an old query). An entry equal
+// to the text on screen is passed over, or the press would change nothing and look broken. keepWork = false follows
+// tui.py exactly (the workbench_diff probe compares against it).
 void Session::historyStep(int delta) {
-    if (store_.enabled() && !stepping_ && delta < 0) {   // local mode: the writing area is a kept script
-        draft_ = editor_.text();
+    if (!options_.keepWork) {
+        if (auto t = history_.step(delta)) {
+            editor_.setText(*t);
+            focusRequest_ = Panel::Editor;
+        }
+        return;
+    }
+    if (history_.size() == 0) return;
+    const std::string current = editor_.text();
+    if (stepping_ && current != steppedText_) stepping_ = false;   // the entry was edited: that is the new draft
+    if (!stepping_) {
+        if (delta > 0 && history_.position() >= history_.size()) return;   // nothing newer and nothing to bring back
+        persistEditor(true);   // the draft may be younger than the save delay, and the walk does not save
+        draft_ = current;
         stepping_ = true;
     }
-    if (auto t = history_.step(delta)) {
-        if (store_.enabled() && t->empty() && delta > 0) {   // past the newest entry
-            if (stepping_) editor_.setText(draft_);
-            stepping_ = false;
-        } else {
-            editor_.setText(*t);
-            steppedText_ = editor_.text();
-        }
-        focusRequest_ = Panel::Editor;
+    const std::string shown = pytext::strip(current);
+    std::optional<std::string> entry = history_.step(delta);
+    while (!entry->empty() && *entry == shown && (delta > 0 || history_.position() > 0)) entry = history_.step(delta);
+    focusRequest_ = Panel::Editor;
+    if (entry->empty()) {   // past the newest entry
+        editor_.setText(draft_);
+        stepping_ = false;
+    } else {
+        if (*entry != shown) editor_.setText(*entry);
+        steppedText_ = editor_.text();
     }
+}
+
+std::string Session::historyLabel() const {
+    if (!stepping_ || history_.position() >= history_.size()) return "";
+    return std::to_string(history_.position() + 1) + "/" + std::to_string(history_.size());
 }
 
 void Session::exportCsv() {

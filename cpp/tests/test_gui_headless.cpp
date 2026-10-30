@@ -396,16 +396,37 @@ TEST_CASE("gui panels: Pichli and Agli walk the history with the keys", "[gui][h
     s.press(ImGuiKey_F5);
     REQUIRE(s.rig.settle());
     s.frames(3);
-    s.press(ImGuiKey_UpArrow, false, false, true);       // Alt+Up
-    CHECK(s.text() == "DIKHAO * SE h;");
-    s.press(ImGuiKey_UpArrow, true);                     // Ctrl+Up
+    s.press(ImGuiKey_UpArrow, false, false, true);       // Alt+Up: the entry equal to the text on screen is passed over
     CHECK(s.text() == "BANAO TABLE h (a ANK);");
-    s.press(ImGuiKey_DownArrow, false, false, true);     // Alt+Down
+    CHECK(s.rig.session->historyLabel() == "1/2");
+    s.press(ImGuiKey_UpArrow, true);                     // Ctrl+Up: this is the oldest, it stays
+    CHECK(s.text() == "BANAO TABLE h (a ANK);");
+    s.press(ImGuiKey_DownArrow, false, false, true);     // Alt+Down: the newest entry
     CHECK(s.text() == "DIKHAO * SE h;");
-    s.press(ImGuiKey_DownArrow, true);                   // Ctrl+Down
-    CHECK(s.text() == "DIKHAO * SE h;");                 // past the newest entry: the text from before the walk comes back
+    CHECK(s.rig.session->historyLabel() == "2/2");
+    s.press(ImGuiKey_DownArrow, true);                   // Ctrl+Down: past it, the text from before the walk comes back
+    CHECK(s.text() == "DIKHAO * SE h;");
+    CHECK(s.rig.session->historyLabel().empty());
     s.press(ImGuiKey_Z, true);                           // a history step is one undo step
     CHECK(s.text() == "BANAO TABLE h (a ANK);");
+}
+
+TEST_CASE("gui toolbar: a click on Pichli and on Agli changes the text, the first click already", "[gui][headless][toolbar]") {
+    Screen s;
+    s.click(s.at(0, 0));
+    s.type("BANAO TABLE h (a ANK);");
+    s.press(ImGuiKey_Enter, true);
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    s.buffer().setText("DIKHAO * SE h;");
+    s.click(s.ui.toolbarButtonCentre(Action::Run));
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    s.click(s.ui.toolbarButtonCentre(Action::Previous));
+    CHECK(s.text() == "BANAO TABLE h (a ANK);");
+    s.click(s.ui.toolbarButtonCentre(Action::Next));
+    CHECK(s.text() == "DIKHAO * SE h;");
+    CHECK(s.ui.editor().focused());
 }
 
 TEST_CASE("gui panels: a double click on a table runs its rows, on a column inserts its name", "[gui][headless][panels]") {
