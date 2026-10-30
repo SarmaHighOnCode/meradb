@@ -245,7 +245,12 @@ Value roundValue(const Value& x, const Value* digitsArg) {
         for (int64_t i = 0; i < -digits; ++i) p *= 10;
         int64_t r = v % p;
         int64_t base = v - r;
-        if ((r < 0 ? -r : r) * 2 >= p) base += v < 0 ? -p : p;  // half away from zero
+        if ((r < 0 ? -r : r) * 2 >= p) {  // half away from zero
+            int64_t step = v < 0 ? -p : p;
+            if ((step > 0 && base > I64_MAX - step) || (step < 0 && base < I64_MIN - step))
+                throw ExecutionError("ROUND ka result INT ke liye bahut bada hai (8-byte limit)");
+            base += step;
+        }
         return Value(base);
     }
     double d = std::get<double>(x.data);
