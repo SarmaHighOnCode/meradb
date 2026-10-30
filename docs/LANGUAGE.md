@@ -877,8 +877,9 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   its freshly re-run query -- see the VIEWs section above and `docs/ARCHITECTURE.md`.
 - **No username = superuser.** Privilege checking only ever applies to a session that
   authenticated with `-U/--user` against a running server -- every embedded/`--local`
-  session, and every test in this project, is unaffected. See "Users & privileges" above
-  and `docs/SERVER.md`.
+  session, and every test in this project, is unaffected. A *server* refuses a connection
+  without a username once users exist and no shared password is set. See "Users & privileges"
+  above and `docs/SERVER.md`.
 - **Triggers and stored procedures run with the invoking session's own privileges**, not
   "definer rights" -- a restricted user needs grants on every table their trigger/procedure
   touches, not just the one they directly wrote to.

@@ -152,6 +152,14 @@ class ClientHandler(socketserver.StreamRequestHandler):
 
         user = hello.get("user")
         ip = self.client_address[0]
+        # No username = superuser. That is only fair while no account exists (the first connection makes the first
+        # user) or when the shared password was given. `--local` is the way back in, so nobody can be locked out.
+        if not user and not server.password and server.instance.users.has_logins():
+            send(self.wfile, {"ok": False, "error": "Is server par users bane hue hain -- username ke saath login karo "
+                                                    "(-U naam -W). Poora access: server par --password lagao, ya server "
+                                                    "band karke --local chalao"})
+            server.log(f"{peer}  bina username login mana (users bane hue hain, shared password nahi)")
+            return
         if (user or server.password) and server.login_locked(ip):
             # the same answer as a wrong password: it tells a guesser nothing
             send(self.wfile, {"ok": False, "error": "User ya password galat hai" if user else "Password galat hai"})

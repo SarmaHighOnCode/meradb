@@ -486,21 +486,21 @@ TEST_CASE("security damaged data files never crash the engine", "[security][corr
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 TEST_CASE("security a restricted user cannot shut the server down", "[security][server]") {
-    RunningServer server;
+    RunningServer server("adminpw");  // with users present, the superuser session needs the shared password
     server.instance().users().create("ravi", "pw");
     RawClient ravi(server.port());
     REQUIRE(ravi.hello("pw", nullptr, "ravi").value("ok", false));
     CHECK_FALSE(ravi.request(requestOf("shutdown")).value("ok", true));
     sleepMs(300);
     CHECK_FALSE(server.stopped());
-    RawClient admin(server.port());  // the superuser session `meradb stop` uses still can
-    REQUIRE(admin.hello().value("ok", false));
+    RawClient admin(server.port());  // the superuser session `meradb stop -W` uses still can
+    REQUIRE(admin.hello("adminpw").value("ok", false));
     CHECK(admin.request(requestOf("shutdown")).value("ok", false));
     CHECK(waitFor([&] { return server.stopped(); }));
 }
 
 TEST_CASE("security a restricted user does not get the server's status details", "[security][server]") {
-    RunningServer server;
+    RunningServer server("adminpw");
     server.instance().users().create("ravi", "pw");
     RawClient ravi(server.port());
     REQUIRE(ravi.hello("pw", nullptr, "ravi").value("ok", false));
@@ -508,15 +508,15 @@ TEST_CASE("security a restricted user does not get the server's status details",
     CHECK(reply.value("ok", false));
     for (const char* key : {"data_dir", "databases", "pid", "sessions", "started"}) CHECK_FALSE(reply.contains(key));
     RawClient admin(server.port());
-    REQUIRE(admin.hello().value("ok", false));
+    REQUIRE(admin.hello("adminpw").value("ok", false));
     CHECK(admin.request(requestOf("status")).contains("databases"));
 }
 
 TEST_CASE("security the schema request shows a restricted user only what it was granted", "[security][server]") {
-    RunningServer server;
+    RunningServer server("adminpw");
     server.instance().users().create("ravi", "pw");
     RawClient admin(server.port());
-    REQUIRE(admin.hello().value("ok", false));
+    REQUIRE(admin.hello("adminpw").value("ok", false));
     admin.query("BANAO TABLE topsecret (salary INT);"
                 "BANAO TABLE mine (id INT, note TEXT);"
                 "BANAO TABLE partly (id INT, hiddencol INT);"

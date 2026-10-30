@@ -81,12 +81,13 @@ std::string madadMarkdown() {
 void ConnectDialog::load(const wb::ConnectDefaults& defaults) {
     copyInto(host_, sizeof host_, defaults.host);
     copyInto(port_, sizeof port_, defaults.port);
+    user_[0] = '\0';
     password_[0] = '\0';
     database_[0] = '\0';
 }
 
 void ConnectDialog::submit(wb::Session& session, bool local) {
-    session.connect(wb::makeConnectRequest(local, host_, port_, password_, database_));
+    session.connect(wb::makeConnectRequest(local, host_, port_, password_, database_, user_));
     password_[0] = '\0';   // do not keep it around
 }
 
@@ -147,6 +148,11 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     ImGui::SetNextItemWidth(portWidth);
     if (ImGui::InputText("##port", port_, sizeof port_, fieldFlags | ImGuiInputTextFlags_CallbackCharFilter, digitsOnly)) connect = true;
     remember(kPort);
+
+    label("Username (agar server par users hain)");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("##user", user_, sizeof user_, fieldFlags)) connect = true;
+    remember(kUser);
 
     label("Password (agar server par hai)");
     ImGui::SetNextItemWidth(-FLT_MIN);

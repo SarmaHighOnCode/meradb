@@ -13,9 +13,10 @@ using namespace ftxui;
 namespace {
 
 constexpr int kConnectWidth = 64;
-constexpr int kConnectHeight = 15;
+constexpr int kConnectHeight = 17;
 
-const char* const kLabels[] = {"Host", "Port", "Password (agar server par hai)", "Database (optional)"};
+const char* const kLabels[] = {"Host", "Port", "Password (agar server par hai)", "Database (optional)",
+                              "Username (agar server par users hain)"};
 const char* const kButtonLabels[] = {"[ Connect ]", "[ Local mode ]", "[ Cancel ]"};
 
 // A text field of `width` cells; the active one shows the cursor as an inverse cell and scrolls to keep it in view.

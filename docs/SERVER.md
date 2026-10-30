@@ -19,7 +19,7 @@ a **server** process owns the data files, and **clients** connect to it over TCP
 | Data folder | per-user folder (below) | `-D` / `MERADB_DATA` |
 | Password | none | `--password` on the server; `-W` / `MERADB_PASSWORD` on clients |
 | Server address for clients | `127.0.0.1` | `-H` / `MERADB_HOST` |
-| Username (per-user login) | none (superuser) | `-U` / `MERADB_USER` on clients |
+| Username (per-user login) | none | `-U` / `MERADB_USER` on clients; required once users exist, see below |
 
 ## Install once
 
@@ -121,7 +121,7 @@ meradb start --host 0.0.0.0 --password s3cret
 ```
 
 Opens the server to your LAN. A password is required for this: without one the server refuses
-to start, because a connection with no password is a superuser. (`MERADB_ALLOW_NO_PASSWORD=1`
+to start, because until the first user exists a connection with no password is a superuser. (`MERADB_ALLOW_NO_PASSWORD=1`
 overrides that if you really mean it.) Prefer `MERADB_PASSWORD` to `--password` on shared
 machines: command-line arguments are visible in the process list.
 
@@ -154,8 +154,7 @@ on Linux and macOS it is written owner-only, on Windows it inherits the folder's
 
 ## Users and privileges
 
-**This is a security-relevant behaviour: understand it before deploying MeraDB for
-real use.** There are two completely separate ways to authenticate:
+There are two completely separate ways to authenticate:
 
 1. **The single shared server password** (`--password` / `-W` above) -- anyone who knows
    it connects as an unrestricted **superuser**. This is what every example above uses.
@@ -168,18 +167,43 @@ real use.** There are two completely separate ways to authenticate:
 meradb shell -U ravi -W        # log in as ravi (asks for ravi's password)
 ```
 
-**The rule that matters: no username = superuser.** A session that connects WITHOUT
-`-U`/`MERADB_USER` at all -- which is every embedded/`--local` session, every existing
-script, and the default for `meradb shell`/`workbench`/`run` -- is **never** subject to
-privilege checks, even if `users.json` has users and grants in it. Privilege enforcement
-only ever switches on for a session that explicitly authenticated as a specific,
-non-superuser username. This keeps the feature 100% backward compatible: nothing about
-existing scripts, the REPL, or embedded use changes just because someone somewhere ran
-`BANAO USER`.
+**The rule that matters: a server connection without a username is a superuser only if
+nothing else protects the server.** What it gets depends on the server:
+
+| The server has | A connection without a username |
+|---|---|
+| no users, no shared password | superuser (this is how the first user gets made) |
+| a shared password (`--password`) | superuser, if it gives that password |
+| users, and no shared password | **refused**, with a message saying how to log in |
+
+So as soon as `BANAO USER` has run on a server without a shared password, everyone has to log in:
+
+```bash
+meradb shell -U ravi -W          # the shell: asks for ravi's password
+meradb run -U ravi -W script.mdb # a script
+meradb workbench -U ravi -W      # the terminal workbench
+meradb gui -U ravi -W            # the desktop window (its Connect dialog has a Username box too)
+```
+
+Set `MERADB_USER` and `MERADB_PASSWORD` instead of the options to save typing. A role never
+counts as a user here (a role cannot log in), and a session that was already open when the
+first user was made stays open.
+
+**Getting superuser back.** A user made with `BANAO USER` is restricted, so with users and no
+shared password nobody on the server is a superuser. There are two ways back, and neither can be
+locked out, because both need access to the computer and not to any account:
+
+```bash
+meradb stop --force              # `meradb stop` needs a superuser too, so it says the same
+meradb shell --local             # full access, straight to the data folder
+```
+
+or restart the server with `meradb start --password s3cret`, then `meradb shell -W`.
 
 A username is meaningless with `--local` (there's no server, so nothing to authenticate
 against) -- passing `-U` there is noted and ignored, not an error, since `--local` has
-always meant "trust the person running this process completely".
+always meant "trust the person running this process completely". The same holds for an
+embedded `Engine`.
 
 Once a session HAS authenticated as a specific user, it can only run `DIKHAO`/`DAALO`/
 `BADLO`/`MITAO` against tables/views it has been granted the matching privilege on via

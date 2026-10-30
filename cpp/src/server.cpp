@@ -276,6 +276,15 @@ void Server::serveConnection(Connection& connection) {
         const bool hasUser = pyTruthy(userField);
         const std::string user = hasUser ? pyStr(*userField) : "";
         const std::string password = pyTruthy(passwordField) ? pyStr(*passwordField) : "";
+        // No username = superuser. That is only fair while no account exists (the first connection makes the first
+        // user) or when the shared password was given. `--local` is the way back in, so nobody can be locked out.
+        if (!hasUser && options_.password.empty() && !instance_->users().names().empty()) {
+            protocol::send(socket, failure("Is server par users bane hue hain -- username ke saath login karo (-U naam -W). "
+                                           "Poora access: server par --password lagao, ya server band karke --local chalao"),
+                           &stop_);
+            log(peer + "  bina username login mana (users bane hue hain, shared password nahi)");
+            return;
+        }
         if (hasUser || !options_.password.empty()) {
             if (loginLocked(peerIp)) {  // the same answer as a wrong password: it tells a guesser nothing
                 protocol::send(socket, failure(hasUser ? "User ya password galat hai" : "Password galat hai"), &stop_);

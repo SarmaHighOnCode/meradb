@@ -119,6 +119,7 @@ ConnectForm::ConnectForm(const std::string& host, const std::string& port) {
     fields_[1].setText(port);
     fields_[2] = LineEdit("", true);
     fields_[3] = LineEdit();
+    fields_[4] = LineEdit();
     fields_[0].selectAll();   // the first field starts with the focus
 }
 
@@ -151,7 +152,7 @@ FormAction ConnectForm::enter() const {
 }
 
 ConnectRequest ConnectForm::request(bool local) const {
-    return makeConnectRequest(local, fields_[0].text(), fields_[1].text(), fields_[2].text(), fields_[3].text());
+    return makeConnectRequest(local, fields_[0].text(), fields_[1].text(), fields_[2].text(), fields_[3].text(), fields_[4].text());
 }
 
 }  // namespace meradb::wb

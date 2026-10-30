@@ -77,6 +77,10 @@ class UserStore:
     def exists(self, name: str) -> bool:
         return name in self.users
 
+    def has_logins(self) -> bool:
+        """Is there any account that can log in? (A role written by the C++ engine cannot.)"""
+        return any(not (isinstance(u, dict) and u.get("role") is True) for u in self.users.values())
+
     def create(self, name: str, password: str) -> None:
         if name in self.users:
             raise ExecutionError(f"User '{name}' pehle se hai")

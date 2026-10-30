@@ -106,8 +106,7 @@ TEST_CASE("hardening_server odd hello fields never crash the handshake", "[harde
         } catch (const net::NetError&) {
         }
     }
-    CHECK(serverStillWorks(s));
-    RawClient login(s.port());
+    RawClient login(s.port());  // with a user present no username is refused: this login is the proof the server still works
     CHECK(login.hello("pw", nullptr, 5)["ok"] == true);
 }
 

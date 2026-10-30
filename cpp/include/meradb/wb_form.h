@@ -41,10 +41,10 @@ private:
 
 enum class FormAction { None, Connect, Local, Cancel };
 
-// tui.py ConnectScreen: Host, Port, Password, Database, then the buttons Connect / Local mode / Cancel.
+// tui.py ConnectScreen: Host, Port, Password, Database (plus Username, which tui.py does not have), then the buttons Connect / Local mode / Cancel.
 class ConnectForm {
 public:
-    static constexpr int kFields = 4;
+    static constexpr int kFields = 5;
     static constexpr int kButtons = 3;
     ConnectForm(const std::string& host, const std::string& port);   // password hidden; port digits only
     LineEdit& field(int i) { return fields_[static_cast<std::size_t>(i)]; }
@@ -56,10 +56,10 @@ public:
     // Enter: on a field = Connect (Textual: Input.Submitted); on a button = that button. Escape = Cancel.
     FormAction enter() const;
     FormAction escape() const { return FormAction::Cancel; }
-    ConnectRequest request(bool local) const;   // makeConnectRequest(local, host, port, password, database)
+    ConnectRequest request(bool local) const;   // makeConnectRequest(local, host, port, password, database, user)
 private:
     void focusChanged();
-    std::array<LineEdit, 4> fields_;
+    std::array<LineEdit, 5> fields_;
     int active_ = 0;
 };
 

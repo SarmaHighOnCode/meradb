@@ -267,6 +267,7 @@ def check_logins(cli: str) -> list[str]:
                                            query("BANAO TABLE z (x INT)"), query("DIKHAO TABLES")]),
                     exchange(server.port, [dict(HELLO, user="asha", password="wrong")]),
                     exchange(server.port, [dict(HELLO, user="ghost", password="x")]),
+                    exchange(server.port, [HELLO]),  # users exist, no shared password: no username is refused
                 ]
     # C++ only: a restricted user may name a database in hello (USE is open to every user), so that case is not
     # compared against the Python engine, which refuses it.
