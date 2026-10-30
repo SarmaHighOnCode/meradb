@@ -163,9 +163,7 @@ TEST_CASE("client_server users over the wire get exactly what they were granted"
     auto ddl = ravi.runScript("BANAO TABLE t2 (a INT)");
     CHECK(ddl[0].error.find("superuser nahi hai") != std::string::npos);
 
-    Connection nobody(to(s));  // no user= at all: exactly the unrestricted behaviour
-    nobody.execute("DAALO MEIN students MAAN (3, 'Anjali')");
-    CHECK(rowsOf(nobody, "DIKHAO * SE students").size() == 2);
+    CHECK_THROWS_AS(Connection(to(s)), ConnectionFailed);  // no user= at all: refused once users exist
 }
 
 TEST_CASE("client_server concurrent clients do not lose or corrupt writes", "[client_server]") {
