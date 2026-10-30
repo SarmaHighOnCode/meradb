@@ -737,7 +737,16 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
     if (!user) return;  // superuser: checking is skipped entirely
     using namespace ast;
     if (auto* ex = dynamic_cast<const Explain*>(&stmt)) {
-        checkPrivileges(*ex->statement);
+        // A plan never runs the query, so nothing re-checks the sides of a set operation later: check them here.
+        auto checkExplained = [this](auto& self, const Statement& inner) -> void {
+            if (auto* setOp = dynamic_cast<const SetOp*>(&inner)) {
+                self(self, *setOp->left);
+                self(self, *setOp->right);
+            } else {
+                checkPrivileges(inner);
+            }
+        };
+        checkExplained(checkExplained, *ex->statement);
         return;
     }
     if (dynamic_cast<const SetOp*>(&stmt)) return;  // execSetOp re-enters executeStatement for each side
