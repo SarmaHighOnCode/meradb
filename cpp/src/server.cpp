@@ -178,6 +178,29 @@ void Server::noteLogin(const std::string& ip, bool succeeded) {
     }
 }
 
+bool Server::beginHashing() {
+    std::unique_lock<std::mutex> guard(hashingMutex_);
+    if (options_.maxConcurrentLogins > 0) {
+        const auto giveUp = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                                    std::chrono::duration<double>(options_.loginHashWaitSeconds));
+        while (hashing_ >= options_.maxConcurrentLogins) {
+            if (stop_ || std::chrono::steady_clock::now() >= giveUp) return false;
+            hashingFree_.wait_for(guard, std::chrono::milliseconds(50));
+        }
+    }
+    ++hashing_;
+    if (hashing_ > peakHashing_) peakHashing_ = hashing_;
+    return true;
+}
+
+void Server::endHashing() {
+    {
+        std::lock_guard<std::mutex> guard(hashingMutex_);
+        --hashing_;
+    }
+    hashingFree_.notify_one();
+}
+
 void Server::reap(bool everything) {
     for (auto it = connections_.begin(); it != connections_.end();) {
         if (everything || (*it)->finished.load()) {
@@ -197,6 +220,7 @@ void Server::serveForever() {
     std::string lastFailure;
     clock::time_point lastLogged;
     bool atConnectionLimit = false;
+    clock::time_point lastAddressNote;
     while (!stop_) {
         net::Socket accepted;
         try {
@@ -227,9 +251,29 @@ void Server::serveForever() {
             continue;
         }
         atConnectionLimit = false;
+        const std::string peerIp = accepted.peerAddress();
+        if (options_.maxConnectionsPerAddress > 0) {
+            int fromThisAddress = 0;
+            for (const auto& open : connections_)
+                if (open->peerIp == peerIp) ++fromThisAddress;
+            if (fromThisAddress >= options_.maxConnectionsPerAddress) {
+                const auto now = clock::now();
+                if (now - lastAddressNote >= std::chrono::seconds(10)) {  // a flood of refusals must not flood the log too
+                    log(peerIp + "  is address ke connections ki limit (" + std::to_string(options_.maxConnectionsPerAddress) +
+                        ") poori -- naye connection mana");
+                    lastAddressNote = now;
+                }
+                try {
+                    protocol::send(accepted, failure("Is address se bahut zyada connections hain -- thodi der baad try karo"), &stop_);
+                } catch (const net::NetError&) {
+                }
+                continue;
+            }
+        }
 
         auto connection = std::make_unique<Connection>();
         connection->socket = std::move(accepted);
+        connection->peerIp = peerIp;
         Connection* raw = connection.get();
         try {
             raw->thread = std::thread([this, raw] {
@@ -250,7 +294,7 @@ void Server::serveForever() {
 // Engine (and any transaction it opens) never changes threads.
 void Server::serveConnection(Connection& connection) {
     net::Socket& socket = connection.socket;
-    const std::string peerIp = socket.peerAddress();
+    const std::string& peerIp = connection.peerIp;
     const std::string peer = peerIp + ":" + std::to_string(socket.peerPort());
     try {
         protocol::MessageReader reader(socket, options_.maxMessageBytes, &stop_);
@@ -294,7 +338,20 @@ void Server::serveConnection(Connection& connection) {
             if (hasUser) {
                 // A per-user login SUPERSEDES the shared server password entirely.
                 // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
-                if (!instance_->users().verify(user, password)) {
+                if (!beginHashing()) {
+                    protocol::send(socket, failure("Server abhi busy hai -- thodi der baad login karo"), &stop_);
+                    log(peer + "  login mana (bahut saare login ek saath)");
+                    return;
+                }
+                bool verified = false;
+                try {
+                    verified = instance_->users().verify(user, password);
+                } catch (...) {
+                    endHashing();
+                    throw;
+                }
+                endHashing();
+                if (!verified) {
                     noteLogin(peerIp, false);
                     protocol::send(socket, failure("User ya password galat hai"), &stop_);
                     log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
@@ -349,7 +406,14 @@ void Server::serveConnection(Connection& connection) {
         protocol::send(socket, ready, &stop_);
 
         // ---- 2. request loop ----
+        using clock = std::chrono::steady_clock;
+        auto lastWork = clock::now();
         for (;;) {
+            const double idleLimit = session.inTransaction() ? options_.idleTransactionTimeoutSeconds : options_.idleTimeoutSeconds;
+            if (idleLimit > 0)
+                reader.setDeadline(lastWork + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(idleLimit)));
+            else
+                reader.setDeadline(std::nullopt);
             std::optional<Json> request;
             try {
                 request = reader.receive();
@@ -357,7 +421,21 @@ void Server::serveConnection(Connection& connection) {
                 protocol::send(socket, failure(std::string("[Protocol Galti] ") + e.what()), &stop_);
                 continue;
             }
-            if (!request) break;  // client closed the connection (or the server is stopping)
+            if (!request) {  // client closed the connection (or the server is stopping, or the session sat idle)
+                if (!stop_ && reader.deadlinePassed()) {
+                    const bool inTransaction = session.inTransaction();
+                    log(peer + "  idle time poora -- session band" + (inTransaction ? ", transaction WAPAS" : ""));
+                    // Whatever the client asks next gets this as its answer, then the closed connection.
+                    protocol::send(socket,
+                                   failure(inTransaction ? "Session bahut der khali raha: transaction WAPAS kar diya aur connection band -- dobara connect karo"
+                                                         : "Session bahut der khali raha: connection band -- dobara connect karo"),
+                                   &stop_, options_.sendStallSeconds);
+                }
+                break;  // the Cleanup above rolls the transaction back, on this thread
+            }
+            const Json* requestType = field(*request, "type");
+            const bool isWork = requestType != nullptr && requestType->is_string() &&
+                                (requestType->get_ref<const std::string&>() == "query" || requestType->get_ref<const std::string&>() == "schema");
             bool stopConnection = false;
             Json reply;
             try {
@@ -366,7 +444,8 @@ void Server::serveConnection(Connection& connection) {
                 log(peer + "  INTERNAL ERROR\n" + e.what());
                 reply = failure(std::string("[Internal Galti] ") + e.what());
             }
-            protocol::send(socket, reply, &stop_);
+            protocol::send(socket, reply, &stop_, options_.sendStallSeconds);
+            if (isWork) lastWork = clock::now();
             if (stopConnection) break;
         }
     } catch (const net::NetError&) {
@@ -467,8 +546,37 @@ std::string plainText(const Json& j) { return j.is_string() ? j.get<std::string>
 
 }  // namespace
 
+std::string applyLimitEnvironment(ServerOptions& options) {
+    std::string problem;
+    auto number = [&](const char* name, auto store) {
+        const std::optional<std::string> text = sys::getEnv(name);
+        if (!text || text->empty()) return;
+        std::size_t used = 0;
+        double value = -1;
+        try {
+            value = std::stod(*text, &used);
+        } catch (const std::exception&) {
+            used = 0;
+        }
+        if (used != text->size() || !(value >= 0) || value > 1e15) {
+            if (problem.empty()) problem = std::string(name) + " ek number (0 ya zyada) hona chahiye: '" + *text + "'";
+            return;
+        }
+        store(value);
+    };
+    number("MERADB_MAX_CONNECTIONS_PER_ADDRESS", [&](double v) { options.maxConnectionsPerAddress = static_cast<int>(std::min(v, 1e9)); });
+    number("MERADB_IDLE_TIMEOUT", [&](double v) { options.idleTimeoutSeconds = v; });
+    number("MERADB_IDLE_TRANSACTION_TIMEOUT", [&](double v) { options.idleTransactionTimeoutSeconds = v; });
+    return problem;
+}
+
 int serve(ServerOptions options) {
     namespace fs = std::filesystem;
+    const std::string badSetting = applyLimitEnvironment(options);
+    if (!badSetting.empty()) {
+        std::cerr << "Server start nahi hua: " << badSetting << "\n";
+        return 1;
+    }
     options.dataDir = absolutePathOf(options.dataDir);
     std::error_code ec;
     if (fs::is_directory(pathOf(options.dataDir), ec)) {

@@ -143,11 +143,24 @@ Limits the server applies:
 | Size of the hello | 64 KB |
 | Size of any later message | 64 MB |
 | Connections at once | 256; further ones are told so and closed |
+| Connections at once from one address | 64 (`MERADB_MAX_CONNECTIONS_PER_ADDRESS`) |
+| A session that does nothing | closed after 8 hours (`MERADB_IDLE_TIMEOUT`, in seconds) |
+| A session that does nothing inside a transaction | rolled back and closed after 5 minutes (`MERADB_IDLE_TRANSACTION_TIMEOUT`, in seconds) |
+| A client that does not read its reply | dropped after 2 minutes without progress |
+| Logins hashing a password at once | 4; the others wait up to 5 seconds, then hear the server is busy |
 | Wrong passwords in a row from one address | 10, then that address is refused for 30 seconds |
 
-The lockout is per address, so everyone behind one address shares it. A logged-in session has
-no idle limit, and there is no limit on what one query may use: a logged-in user can still make
-the server work hard.
+The settings in brackets are read from the environment when the server starts; `0` turns a limit
+off. They apply to the C++ server (`meradb_cli`), not to the older Python one.
+
+The per-address limits count everyone behind one address together, which matters behind a proxy or
+an SSH tunnel: there, raise the connection limit or set it to `0`.
+
+Only a query or a schema request counts as doing something: a `ping` does not keep a session open.
+A session with an open transaction gets the short limit because it holds the one lock everyone else
+is waiting for. It is closed as well as rolled back, so that a client which thinks it is inside a
+transaction cannot carry on outside one without noticing. Whatever it sends next gets the reason as
+its answer, then the closed connection.
 
 Protect the data folder with ordinary file permissions. `users.json` holds password hashes:
 on Linux and macOS it is written owner-only, on Windows it inherits the folder's permissions.

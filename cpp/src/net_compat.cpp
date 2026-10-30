@@ -180,8 +180,9 @@ bool Socket::waitReadable(double seconds) {
     return waitReady(toNative(handle_), false, seconds);
 }
 
-void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
+void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop, double stallSeconds) {
     if (handle_ == kInvalid) throw NetError("socket band hai");
+    using clock = std::chrono::steady_clock;
     std::size_t sent = 0;
     if (stop != nullptr) {
         struct NonBlocking {  // blocking mode is restored on every exit path
@@ -189,17 +190,21 @@ void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
             explicit NonBlocking(Native native) : s(native) { setNonBlocking(s, true); }
             ~NonBlocking() { setNonBlocking(s, false); }
         } mode(toNative(handle_));
+        auto lastProgress = clock::now();
         while (sent < data.size()) {
             std::size_t chunk = std::min<std::size_t>(data.size() - sent, 1u << 16);
             IoLen n = ::send(toNative(handle_), data.data() + sent, static_cast<IoCap>(chunk), 0);
             if (n >= 0) {
                 sent += static_cast<std::size_t>(n);
+                lastProgress = clock::now();
                 continue;
             }
             int e = lastError();
             if (isInterrupted(e)) continue;
             if (!isTimeout(e)) throw NetError(errorText(e));  // timeout here = would block: no room yet
             if (stop->load()) throw NetError("server band ho raha hai");  // only a blocked send gives up
+            if (stallSeconds > 0 && std::chrono::duration<double>(clock::now() - lastProgress).count() >= stallSeconds)
+                throw NetError("timed out");
             waitReady(toNative(handle_), true, 0.1);
         }
         return;
