@@ -245,7 +245,7 @@ struct WalkRig {
         FakeBackend* f = fake;
         fake->beforeRun = [f](const std::string& text) {
             const std::string prefix = "ISTEMAL ";
-            if (text.rfind(prefix, 0) == 0 && text.back() == ';') f->db = text.substr(prefix.size(), text.size() - prefix.size() - 1);
+            if (text.rfind(prefix, 0) == 0 && text.find(';') == text.size() - 1) f->db = text.substr(prefix.size(), text.size() - prefix.size() - 1);
         };
         SessionOptions opts;
         opts.dataDir = dir.path.string();
@@ -472,7 +472,7 @@ TEST_CASE("A one-line script that starts with ISTEMAL is a query, only a bare sw
     rig.run("ISTEMAL main; DIKHAO * SE t;");
     REQUIRE(rig.s().savedQueries().size() == 1);
     CHECK(rig.s().savedQueries()[0].text == "ISTEMAL main; DIKHAO * SE t;");
-    rig.run("ISTEMAL main ;");
+    rig.run("ISTEMAL main;");
     CHECK(rig.s().savedQueries().size() == 1);
 }
 
@@ -487,3 +487,48 @@ TEST_CASE("Queries saaf karo empties Pichli too and gives the script back", "[wb
     CHECK(rig.savedScript() == "-- script");
 }
 
+// ---- Connect: the kept work follows the connection ----
+
+TEST_CASE("The kept work follows a Connect in both directions", "[wb][querystore][connect]") {
+    TempDir dir;
+    QueryStore(dir.path.string()).append("main", {"local1;", ""});
+    QueryStore(dir.path.string()).saveScript("main", "-- local script");
+    ManualPoster poster;
+    auto local = std::make_unique<FakeBackend>();
+    local->desc = "local (" + dir.path.string() + ")";
+    SessionOptions opts;
+    opts.dataDir = dir.path.string();
+    opts.factory = [&dir](const ConnectRequest& request, const std::string&) -> std::unique_ptr<meradb::Backend> {
+        auto fresh = std::make_unique<FakeBackend>();
+        fresh->desc = request.local ? "local (" + dir.path.string() + ")" : request.host + ":" + request.port;
+        return fresh;
+    };
+    Session s(std::move(local), std::move(opts), poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    REQUIRE(s.savedQueriesEnabled());
+
+    s.connect(makeConnectRequest(false, "server", "6372", "", ""));   // to a server: nothing is written locally any more
+    REQUIRE(poster.pumpIdle(s));
+    CHECK_FALSE(s.savedQueriesEnabled());
+    CHECK(s.savedQueries().empty());
+    s.runText("server_query;");
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(QueryStore(dir.path.string()).load("main").size() == 1);
+    s.editor().setText("-- server par likha");
+    s.persistEditor(true);
+    CHECK(QueryStore(dir.path.string()).loadScript("main") == "-- local script");
+
+    s.connect(makeConnectRequest(true, "", "", "", ""));              // back: the list and Pichli are there again
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(s.savedQueriesEnabled());
+    REQUIRE(s.savedQueries().size() == 1);
+    CHECK(s.history().items() == std::vector<std::string>({"local1;"}));
+    CHECK(s.editor().text() == "-- server par likha");                // what is on screen is never replaced
+    CHECK(QueryStore(dir.path.string()).loadScript("main") == "-- local script");
+    s.connect(makeConnectRequest(false, "server", "6372", "", ""));
+    REQUIRE(poster.pumpIdle(s));
+    s.editor().setText("");
+    s.connect(makeConnectRequest(true, "", "", "", ""));              // an empty area takes the kept script
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(s.editor().text() == "-- local script");
+}

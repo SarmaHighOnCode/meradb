@@ -538,6 +538,20 @@ void Session::applyConnect(const ConnectOutcome& out) {
         return;
     }
     log_.addText(LogKind::Connected, "Connected: " + out.snapshot->description);
+    // The queries and the script are kept in the local folder, for local mode only (see the constructor).
+    const bool keep = options_.keepWork && !options_.dataDir.empty() && out.snapshot->description.rfind("local", 0) == 0;
+    if (keep != store_.enabled()) {
+        endWalk();
+        if (!keep) persistEditor(true);
+        store_ = QueryStore(keep ? options_.dataDir : std::string());
+        saved_.clear();
+        savedDb_.clear();    // back in local mode, applySnapshot below loads the list and the history
+        ++savedVersion_;
+        history_ = History();
+        scriptDb_ = keep ? out.snapshot->db : std::string();
+        if (keep && !scriptDb_.empty() && pytext::strip(editor_.text()).empty()) editor_.setText(store_.loadScript(scriptDb_));
+        lastScript_ = editor_.text();   // text brought from the server is saved only once it changes
+    }
     applySnapshot(*out.snapshot);
 }
 
