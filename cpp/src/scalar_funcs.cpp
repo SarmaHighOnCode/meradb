@@ -136,13 +136,6 @@ struct DateTime {
     Date date{0};
 };
 
-bool allDigits(const std::string& s, size_t pos, size_t n) {
-    if (pos + n > s.size()) return false;
-    for (size_t i = pos; i < pos + n; ++i)
-        if (s[i] < '0' || s[i] > '9') return false;
-    return true;
-}
-
 // A DATE, or 'YYYY-MM-DD' text, or 'YYYY-MM-DD HH:MM:SS' text (what NOW() returns).
 DateTime dateTimeOf(const Value& v, const char* fn) {
     DateTime dt;
