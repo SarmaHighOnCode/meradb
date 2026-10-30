@@ -87,6 +87,17 @@ struct Session::Snapshot {
 
 constexpr const char* kUnknownFailure = "anjaan galti hui";
 
+// "ISTEMAL x;" and nothing else: a database switch is not a query to go back to. A script that starts with one is.
+static bool isBareSwitch(const std::string& raw) {
+    std::string text = pytext::strip(raw);
+    if (text.size() < 8) return false;
+    std::string head = text.substr(0, 8);
+    for (char& ch : head) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    if (head != "ISTEMAL ") return false;
+    if (text.back() == ';') text.pop_back();
+    return text.find_first_of(";\n") == std::string::npos;
+}
+
 static std::string describeCurrentException() {  // inside a catch block
     try {
         throw;
@@ -98,6 +109,7 @@ static std::string describeCurrentException() {  // inside a catch block
 }
 
 struct Session::RunOutcome {
+    std::string text;      // what was run
     std::vector<Result> results;
     double ms = 0;
     bool failed = false;
@@ -230,13 +242,12 @@ void Session::echoOnWorker(const std::string& text, bool addToHistory) {
         if (addToHistory) history_.add(text);
         const std::string where = db ? *db : header_.db;
         log_.add(echoEntry(where, text));
-        std::string head = pytext::strip(text).substr(0, 8);
-        for (char& ch : head) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        const bool isSwitch = head == "ISTEMAL " && text.find('\n') == std::string::npos;   // a database switch is no query
-        if (store_.enabled() && !where.empty() && !isSwitch) {
+        if (store_.enabled() && !where.empty() && !isBareSwitch(text)) {
             SavedQuery q{text, QueryStore::nowStamp()};
             store_.append(where, q);
             if (where == savedDb_) {
+                // queued behind a database switch: that switch brought this database's history after runText added it
+                if (history_.size() == 0 || history_.items().back() != text) history_.add(text);
                 saved_.push_back(std::move(q));
                 ++savedVersion_;
             }
@@ -260,6 +271,7 @@ void Session::enqueueRun(const std::string& text) {
     ++pending_;
     worker_.post([this, text] {
         auto out = std::make_shared<RunOutcome>();
+        out->text = text;
         echoOnWorker(text, false);
         runOnWorker(text, *out);
         postUi([this, out]() {
@@ -319,7 +331,7 @@ void Session::openDatabase(const std::string& name) {
     enqueueRun("ISTEMAL " + name + ";");   // not added to the history: it is not a query to go back to
 }
 
-// Pichli / Agli walk through the queries saved for the database (from the constructor and when a card opens one).
+// Pichli / Agli walk through the queries saved for the database: from the start, and whenever the database changes.
 void Session::seedHistory() {
     history_ = History();
     for (const SavedQuery& q : saved_) history_.add(q.text);
@@ -337,7 +349,10 @@ void Session::applySnapshot(const Snapshot& s) {
         header_.description = s.description;
         header_.db = s.db;
         header_.inTransaction = s.inTransaction;
-        if (store_.enabled() && header_.db != savedDb_) reloadSaved();
+        if (store_.enabled() && header_.db != savedDb_) {   // the Queries tab and Pichli show the same database, always
+            reloadSaved();
+            seedHistory();
+        }
         if (store_.enabled() && !switchScriptTo_.empty() && switchScriptTo_ == header_.db) {   // opened from the Home cards
             switchScriptTo_.clear();
             persistEditor(true);   // the last edits of the database being left, inside the save delay
@@ -378,7 +393,10 @@ void Session::applyRun(RunOutcome out) {
     std::snprintf(buf, sizeof buf, "(%.1f ms)", out.ms);
     log_.addText(LogKind::Dim, buf);
     if (shown != nullptr) showResult(std::move(*shown));
+    const std::string dbBefore = savedDb_;
     if (out.snapshot) applySnapshot(*out.snapshot);
+    // a script that moved to another database was saved under the old one, but it was just run: Pichli still reaches it
+    if (store_.enabled() && savedDb_ != dbBefore && !isBareSwitch(out.text)) history_.add(out.text);
 }
 
 void Session::clearLog() { log_.clear(); }

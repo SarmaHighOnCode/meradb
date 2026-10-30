@@ -411,3 +411,68 @@ TEST_CASE("A text typed just before Pichli is saved, even inside the save delay"
     CHECK(rig.savedScript() == "-- abhi likha");
 }
 
+// ---- the history follows the database, however it was opened ----
+
+TEST_CASE("A typed ISTEMAL brings the history of that database, not a mix", "[wb][querystore][history]") {
+    WalkRig rig({"main1;"});
+    QueryStore(rig.dir.path.string()).append("college", {"college1;", ""});
+    QueryStore(rig.dir.path.string()).append("college", {"college2;", ""});
+    rig.run("ISTEMAL college;");
+    CHECK(rig.s().history().items() == std::vector<std::string>({"college1;", "college2;"}));
+    REQUIRE(rig.s().savedQueries().size() == 2);       // the Queries tab and Pichli agree
+    rig.s().historyStep(-1);
+    CHECK(rig.text() == "college2;");
+}
+
+TEST_CASE("A table opened from the tree of another database stays in the history", "[wb][querystore][history]") {
+    WalkRig rig({"main1;"});
+    QueryStore(rig.dir.path.string()).append("college", {"college1;", ""});
+    rig.s().runText("ISTEMAL college;");   // what activating the row queues: the switch, then the statement
+    rig.s().runText("DIKHAO * SE t SIRF 100;");
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    CHECK(rig.s().history().items() == std::vector<std::string>({"college1;", "DIKHAO * SE t SIRF 100;"}));
+}
+
+TEST_CASE("A script that switches the database stays reachable with Pichli", "[wb][querystore][history]") {
+    WalkRig rig;
+    rig.fake->beforeRun = [f = rig.fake](const std::string&) { f->db = "college"; };
+    rig.run("BANAO DATABASE college; ISTEMAL college; DIKHAO * SE t;");
+    CHECK(rig.s().currentDb() == "college");
+    CHECK(rig.s().history().items() == std::vector<std::string>({"BANAO DATABASE college; ISTEMAL college; DIKHAO * SE t;"}));
+}
+
+TEST_CASE("The queries of a database come back with Pichli after a restart", "[wb][querystore][history]") {
+    TempDir dir;
+    auto make = [&](ManualPoster& poster) {
+        auto owned = std::make_unique<FakeBackend>();
+        owned->desc = "local (" + dir.path.string() + ")";
+        SessionOptions opts;
+        opts.dataDir = dir.path.string();
+        return std::make_unique<Session>(std::move(owned), std::move(opts), poster.poster());
+    };
+    {
+        ManualPoster poster;
+        auto s = make(poster);
+        REQUIRE(poster.pumpIdle(*s));
+        s->runText("a;");
+        s->runText("b;");
+        REQUIRE(poster.pumpIdle(*s));
+    }
+    ManualPoster poster;
+    auto s = make(poster);
+    REQUIRE(poster.pumpIdle(*s));
+    s->historyStep(-1);
+    CHECK(s->editor().text() == "b;");
+    s->historyStep(-1);
+    CHECK(s->editor().text() == "a;");
+}
+
+TEST_CASE("A one-line script that starts with ISTEMAL is a query, only a bare switch is not", "[wb][querystore][history]") {
+    WalkRig rig;
+    rig.run("ISTEMAL main; DIKHAO * SE t;");
+    REQUIRE(rig.s().savedQueries().size() == 1);
+    CHECK(rig.s().savedQueries()[0].text == "ISTEMAL main; DIKHAO * SE t;");
+    rig.run("ISTEMAL main ;");
+    CHECK(rig.s().savedQueries().size() == 1);
+}
+
