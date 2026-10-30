@@ -72,6 +72,9 @@ Value evaluate(const ast::Expr& expr, const Row& row, const SubqueryResults* sub
 
 // Used by JAHAN/JINKA: only exactly SACH counts. KHALI (unknown) does not.
 bool isTrue(const Value& v);
+// The answer of a condition clause (JAHAN, PAR, JINKA, TAB, IF ...): KHALI does not hold, and anything but SACH / JHOOTH
+// is an error instead of a silent "no" (JAHAN 1 used to return no rows at all).
+bool conditionHolds(const Value& v, const char* clause);
 
 // ---- utilities used by the planner and the engine ----
 
@@ -101,5 +104,7 @@ void findSubqueries(const ast::Expr& expr, std::vector<const ast::Expr*>& out);
 std::string aggKey(const ast::FuncCall& func);
 // A readable column header for a SELECT expression, e.g. `umar + 1`.
 std::string exprLabel(const ast::Expr& expr);
+// Tells apart any two different expressions: unlike the header text it spells out AGAR and every digit of a FLOAT.
+std::string exprKey(const ast::Expr& expr);
 
 }  // namespace meradb

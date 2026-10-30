@@ -72,6 +72,7 @@ class FuncCall(Expr):
 
     name: str  # upper-case, as typed: "GINO", "COUNT", ...
     arg: Expr
+    distinct: bool = False  # KUL(ALAG x): each different value once
 
 
 @dataclass
@@ -91,6 +92,15 @@ class InSubquery(Expr):
     left: Expr
     subquery: Subquery
     negated: bool = False
+
+
+@dataclass
+class LikeEscape(Expr):
+    """`text JAISA pattern ESCAPE escape` (plain JAISA stays a BinaryOp)."""
+
+    text: Expr
+    pattern: Expr
+    escape: Expr
 
 
 @dataclass
@@ -308,22 +318,30 @@ class Select(Statement):
     having: Optional[Expr] = None
     order_by: list[OrderItem] = field(default_factory=list)
     limit: Optional[int] = None
+    offset: Optional[int] = None  # SIRF n OFFSET m  /  SIRF m, n
     distinct: bool = False
     # `columns[i] KAHO aliases[i]` -- None where there is no alias. Same
     # length as `columns`. Kept as a parallel list (not wrapped into `columns`)
     # so `columns` stays a plain list[Expr], like before KAHO existed.
     aliases: list[Optional[str]] = field(default_factory=list)
+    # A subquery that is a set operation: (DIKHAO a SE x SANYUKT DIKHAO b SE y). When set, it is the whole query and
+    # every field above is empty.
+    compound: Optional["SetOp"] = None
 
 
 @dataclass
 class SetOp(Statement):
-    """`left SANYUKT|SAAJHA|CHHODKAR right` -- UNION/INTERSECT/EXCEPT, dedupe-only
-    (no ALL variant, see docs/LANGUAGE.md). Left-associative chaining nests these
-    (`a SANYUKT b SANYUKT c` -> SetOp(SetOp(a, b), c))."""
+    """`left SANYUKT [ALL]|SAAJHA|CHHODKAR right` -- UNION/INTERSECT/EXCEPT. Left-associative chaining nests these
+    (`a SANYUKT b SANYUKT c` -> SetOp(SetOp(a, b), c)). order_by / limit / offset, written after the last side, apply
+    to the whole result."""
 
     op: str  # "SANYUKT" | "SAAJHA" | "CHHODKAR"
     left: Statement
     right: Statement
+    all: bool = False  # SANYUKT ALL keeps the copies
+    order_by: list[OrderItem] = field(default_factory=list)
+    limit: Optional[int] = None
+    offset: Optional[int] = None
 
 
 @dataclass

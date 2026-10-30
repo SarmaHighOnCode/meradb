@@ -162,6 +162,12 @@ Value computeAggregate(const FuncCall& func, const std::vector<Row>& groupRows) 
             if (!isInt(v) && !isDouble(v))
                 throw ExecutionError(exprLabel(func) + ": " + name + " sirf numbers ke saath chalta hai");
         Value total = pySum(values, exprLabel(func));
+        if (isDouble(total) && !std::isfinite(std::get<double>(total.data))) {
+            bool ordinary = true;  // a stored inf / nan stays what it is; only a sum that outgrew FLOAT is an error
+            for (const auto& v : values)
+                if (isDouble(v) && !std::isfinite(std::get<double>(v.data))) ordinary = false;
+            if (ordinary) throw ExecutionError(exprLabel(func) + ": " + name + " ka result FLOAT ke liye bahut bada hai");
+        }
         if (name == "KUL") return total;
         auto n = static_cast<int64_t>(values.size());
         // Python: total / len(values) -- int / int is correctly-rounded true division

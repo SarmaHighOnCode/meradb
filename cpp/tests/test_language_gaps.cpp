@@ -1,0 +1,358 @@
+// cpp/tests/test_language_gaps.cpp -- bugs and small language gaps found reviewing the procedural code, type conversion,
+// dates and the expression grammar. Each case was a wrong answer, a silent no-op or a parse error before it was fixed.
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
+#include "meradb/engine.h"
+#include "meradb/errors.h"
+#include "golden_runner.h"
+#include "test_util.h"
+
+using namespace meradb;
+using Catch::Matchers::ContainsSubstring;
+using meradb_test::TempDir;
+
+namespace {
+
+Result run(Engine& e, const std::string& sql) { return meradb_test::runLast(e, sql); }
+
+std::string flat(const Result& r) {
+    std::string out;
+    for (size_t i = 0; i < r.rows.size(); ++i) {
+        if (i) out += ";";
+        for (size_t j = 0; j < r.rows[i].size(); ++j) out += (j ? "|" : "") + formatValue(r.rows[i][j]);
+    }
+    return out;
+}
+
+std::string q(Engine& e, const std::string& sql) { return flat(run(e, sql)); }
+
+}  // namespace
+
+TEST_CASE("ROUND to tens does not wrap an INT around", "[gaps][scalar]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO ROUND(9223372036854775807, -1);"), ContainsSubstring("ROUND"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO ROUND(-9223372036854775807, -1);"), ContainsSubstring("ROUND"));
+    REQUIRE(q(e, "DIKHAO ROUND(9223372036854775804, -1), ROUND(15, -1), ROUND(-15, -1), ROUND(14, -1);") ==
+            "9223372036854775800|20|-20|10");
+}
+
+TEST_CASE("Date functions read the whole text, not its first ten characters", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO YEAR('2024-01-01 garbage');"), ContainsSubstring("valid DATETIME"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('2024-01-01 garbage' AS DATE);"), ContainsSubstring("valid DATETIME"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO DATE_FORMAT('2024-01-01 99:99:99', '%H');"), ContainsSubstring("valid DATETIME"));
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-01-01 10:20', '%H:%i');") == "10:20");
+    REQUIRE(q(e, "DIKHAO YEAR('2024-01-01T10:20:30'), DATEDIFF('2024-01-15 23:00:00', '2024-01-14 01:00:00');") == "2024|1");
+}
+
+TEST_CASE("DATE_FORMAT knows the MySQL time specifiers", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-03-05 13:02:09', '%S %T %r %h %I %l %k %c %p %q');") ==
+            "09 13:02:09 01:02:09 PM 01 01 1 13 3 PM q");
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-03-05 00:30:00', '%h %l %p');") == "12 12 AM");
+}
+
+TEST_CASE("CAST and stored functions take decimal text only", "[gaps][cast]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('0x10' AS FLOAT);"), ContainsSubstring("cast"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('0x10' AS INT);"), ContainsSubstring("cast"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('inf' AS FLOAT);"), ContainsSubstring("cast"));
+    REQUIRE(q(e, "DIKHAO CAST('1e3' AS FLOAT), CAST('-2.5' AS FLOAT);") == "1000.0|-2.5");
+    run(e, "BANAO FUNCTION same(a INT) RETURNS INT SHURU RETURN a; KHATAM;");
+    run(e, "BANAO FUNCTION samef(a FLOAT) RETURNS FLOAT SHURU RETURN a; KHATAM;");
+    // strtoll used to clamp this to the largest INT
+    REQUIRE_THROWS(e.execute("DIKHAO same('99999999999999999999');"));
+    REQUIRE_THROWS(e.execute("DIKHAO samef('0x10');"));
+    REQUIRE(q(e, "DIKHAO same('12'), samef('1.5'), samef(2);") == "12|1.5|2.0");
+}
+
+TEST_CASE("A DATE compares with text that has a time", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE d (id INT, day DATE, at DATETIME);");
+    run(e, "DAALO MEIN d MAAN (1, '2024-02-29', '2024-02-29 10:00:00'), (2, '2024-03-01', '2024-02-29 23:00:00');");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day < '2024-02-29 12:00:00' KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN at > day KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE d JAHAN day < NOW();") == "2");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day = '2024-03-01 00:00:00';") == "2");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE d JAHAN day < '2024-02-29 xx';"), ContainsSubstring("valid DATETIME"));
+}
+
+TEST_CASE("MEIN over a subquery matches a DATE with its text", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE d (id INT, day DATE, s TEXT);");
+    run(e, "DAALO MEIN d MAAN (1, '2024-02-29', '2024-02-29'), (2, '2024-03-01', 'abc');");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day MEIN ('2024-02-29');") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day MEIN (DIKHAO '2024-02-29');") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN s MEIN (DIKHAO day SE d) KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day NAHI MEIN (DIKHAO '2024-02-29');") == "2");
+}
+
+TEST_CASE("SHOW CREATE TABLE keeps every digit of a FLOAT default", "[gaps][show]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE f (a FLOAT WARNA 0.12345678901234, b FLOAT WARNA -2.5);");
+    const std::string text = formatValue(run(e, "SHOW CREATE TABLE f;").rows[0][1]);
+    REQUIRE_THAT(text, ContainsSubstring("WARNA 0.12345678901234"));
+    REQUIRE_THAT(text, ContainsSubstring("WARNA -2.5"));
+}
+
+TEST_CASE("Numbers can be written with an exponent", "[gaps][literal]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO 1e5, 2.5E-1, 1E+2, -1e2;") == "100000.0|0.25|100.0|-100.0");
+    REQUIRE(run(e, "DIKHAO 1e5;").columns[0] == "100000.0");
+    run(e, "BANAO TABLE t (e5 INT, x FLOAT);");
+    run(e, "DAALO MEIN t MAAN (7, 1e2);");
+    REQUIRE(q(e, "DIKHAO e5, x SE t;") == "7|100.0");
+    REQUIRE(q(e, "DIKHAO 2 * x, 1e2 = x SE t;") == "200.0|SACH");
+    // `1e` is not an exponent: the number 1 and then a name, as before
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1e;"), ContainsSubstring("SE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1e999;"), ContainsSubstring("FLOAT"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t SIRF 1e2;"), ContainsSubstring("whole number"));
+}
+
+TEST_CASE("The smallest INT can be written as a literal", "[gaps][literal]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO -9223372036854775808, - 9223372036854775808;") == "-9223372036854775808|-9223372036854775808");
+    REQUIRE(q(e, "DIKHAO -9223372036854775808 + 1;") == "-9223372036854775807");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 9223372036854775808;"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1 - 9223372036854775808;"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO -(-9223372036854775808);"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO - -9223372036854775808;"), ContainsSubstring("8-byte"));
+    run(e, "BANAO TABLE t (a INT WARNA -9223372036854775808, b INT);");
+    run(e, "DAALO MEIN t (b) MAAN (-9223372036854775808);");
+    REQUIRE(q(e, "DIKHAO a = b SE t;") == "SACH");
+    // a prepared statement sends this value back through the parser
+    run(e, "PREPARE p FROM 'DIKHAO ?';");
+    REQUIRE(q(e, "EXECUTE p USING -9223372036854775808;") == "-9223372036854775808");
+}
+
+TEST_CASE("A FLOAT result too big to hold is an error, not inf", "[gaps][float]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(0, -1);"), ContainsSubstring("POWER"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(0.0, -2.5);"), ContainsSubstring("POWER"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO POWER(10, 400);"), ContainsSubstring("POWER"));
+    run(e, "BANAO TABLE f (x FLOAT);");
+    const std::string big(300, '9');
+    run(e, "DAALO MEIN f MAAN (" + big + ".0), (" + big + ".0);");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x * x SE f;"), ContainsSubstring("FLOAT"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x / 0.000000000000001 SE f;"), ContainsSubstring("FLOAT"));
+    const std::string huge(400, '9');
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO " + huge + ".0;"), ContainsSubstring("FLOAT"));
+    run(e, "BANAO TABLE g (x FLOAT);");
+    const std::string nearMax = "15" + std::string(307, '0') + ".0";  // 1.5e308
+    run(e, "DAALO MEIN g MAAN (" + nearMax + "), (" + nearMax + ");");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO KUL(x) SE g;"), ContainsSubstring("FLOAT"));
+    REQUIRE(q(e, "DIKHAO POWER(2, -1), POWER(0, 0), POWER(0, 2), POWER(-8, 0.5), SQRT(-1);") == "0.5|1|0|KHALI|KHALI");
+}
+
+TEST_CASE("A condition must be a condition", "[gaps][condition]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b TEXT);");
+    run(e, "DAALO MEIN t MAAN (1, 'x');");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN 1;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN a;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN 'SACH';"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("BADLO t RAKHO a = 2 JAHAN 1;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("MITAO SE t JAHAN b;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO GINO(*) SE t JINKA 1;"), ContainsSubstring("'JINKA' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO AGAR 1 TAB 2 KHATAM;"), ContainsSubstring("'AGAR' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x.a SE t x MILAO t y PAR 1;"), ContainsSubstring("'PAR' ko SACH/JHOOTH"));
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN SACH;") == "1");
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN KHALI;") == "");
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN JHOOTH;") == "");
+    REQUIRE(q(e, "DIKHAO AGAR KHALI TAB 2 WARNA 3 KHATAM;") == "3");
+}
+
+TEST_CASE("Headers keep the brackets that change the meaning", "[gaps][label]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b INT);");
+    run(e, "DAALO MEIN t MAAN (1, 2);");
+    auto header = [&](const std::string& sql) { return run(e, sql).columns.at(0); };
+    REQUIRE(header("DIKHAO (a + 1) * 2 SE t;") == "(a + 1) * 2");
+    REQUIRE(header("DIKHAO a + 1 * 2 SE t;") == "a + 1 * 2");
+    REQUIRE(header("DIKHAO (a * 2) + 1 SE t;") == "a * 2 + 1");
+    REQUIRE(header("DIKHAO a - (b - 1) SE t;") == "a - (b - 1)");
+    REQUIRE(header("DIKHAO (a - b) - 1 SE t;") == "a - b - 1");
+    REQUIRE(header("DIKHAO -(a + 1) SE t;") == "-(a + 1)");
+    REQUIRE(header("DIKHAO NAHI (a = 1 YA b = 1) SE t;") == "NAHI (a = 1 YA b = 1)");
+    REQUIRE(header("DIKHAO (a = 1 YA b = 1) AUR a = 1 SE t;") == "(a = 1 YA b = 1) AUR a = 1");
+    REQUIRE(header("DIKHAO (a + 1) HAI KHALI SE t;") == "a + 1 HAI KHALI");
+    REQUIRE(header("DIKHAO (a = 1 YA b = 1) HAI KHALI SE t;") == "(a = 1 YA b = 1) HAI KHALI");
+    REQUIRE(header("DIKHAO KUL((a + 1) * 2) SE t;") == "KUL((a + 1) * 2)");
+}
+
+TEST_CASE("Two different aggregates never share one answer", "[gaps][aggregate]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT);");
+    run(e, "DAALO MEIN t MAAN (1), (15), (25);");
+    REQUIRE(q(e, "DIKHAO KUL((a + 1) * 2), KUL(a + 1 * 2) SE t;") == "88|47");
+    REQUIRE(q(e, "DIKHAO KUL(AGAR a > 10 TAB 1 WARNA 0 KHATAM), KUL(AGAR a > 20 TAB 1 WARNA 0 KHATAM) SE t;") == "2|1");
+    REQUIRE(q(e, "DIKHAO KUL(a * 0.12345678901), KUL(a * 0.12345678902) SE t;") != "");
+    const Result floats = run(e, "DIKHAO KUL(a * 0.12345678901), KUL(a * 0.12345678902) SE t;");
+    REQUIRE(formatValue(floats.rows[0][0]) != formatValue(floats.rows[0][1]));
+    // the same call twice is still one aggregate, found again by KRAM and JINKA
+    REQUIRE(q(e, "DIKHAO a, KUL((a + 1) * 2) SE t SAMOOH a JINKA KUL((a + 1) * 2) > 4 KRAM KUL((a + 1) * 2) ULTA;") == "25|52;15|32");
+}
+
+TEST_CASE("A column is only as grouped as what SAMOOH named", "[gaps][group]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b INT);");
+    run(e, "DAALO MEIN t MAAN (1, 1), (1, 2), (3, 3);");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a * 2 SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a + 1, b SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE(q(e, "DIKHAO a + 1, GINO(*) SE t SAMOOH a + 1 KRAM 1;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO (a + 1) * 2, GINO(*) SE t SAMOOH a + 1 KRAM 1;") == "4|2;8|1");
+    REQUIRE(q(e, "DIKHAO a + 1, GINO(*) SE t SAMOOH a KRAM 1;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO a + 1 KAHO x, GINO(*) SE t SAMOOH x KRAM x;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO AGAR a > 1 TAB 'big' WARNA 'small' KHATAM, GINO(*) SE t SAMOOH a KRAM 1;") == "big|1;small|2");
+}
+
+TEST_CASE("Comparisons chain to the left", "[gaps][grammar]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO 1 < 2 = SACH, 2 < 1 = SACH, 1 = 1 = SACH, 1 < 2 != JHOOTH;") == "SACH|JHOOTH|SACH|SACH");
+    REQUIRE(q(e, "DIKHAO 1 HAI KHALI = JHOOTH, 'a' JAISA 'a' = SACH, 2 BEECH 1 AUR 3 = SACH;") == "SACH|SACH|SACH");
+    REQUIRE_THROWS(e.execute("DIKHAO 1 < 2 < 3;"));  // SACH < 3: a BOOL is not a number here
+}
+
+TEST_CASE("JAISA can name an escape character", "[gaps][like]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (s TEXT);");
+    run(e, "DAALO MEIN t MAAN ('10%'), ('100'), ('a_b'), ('axb'), ('x!'), (KHALI);");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA '10!%' ESCAPE '!';") == "10%");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'a!_b' ESCAPE '!';") == "a_b");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'x!!' ESCAPE '!';") == "x!");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'A!_%' ESCAPE '!';") == "a_b");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s NAHI JAISA '1%' ESCAPE '!' KRAM s;") == "a_b;axb;x!");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'a#_b' escape '#';") == "a_b");
+    REQUIRE(q(e, "DIKHAO KHALI JAISA 'a' ESCAPE '!', 'a' JAISA KHALI ESCAPE '!', 'a' JAISA 'a' ESCAPE KHALI;") == "KHALI|KHALI|KHALI");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a' ESCAPE '!!';"), ContainsSubstring("ESCAPE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a' ESCAPE '';"), ContainsSubstring("ESCAPE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a!' ESCAPE '!';"), ContainsSubstring("ESCAPE"));
+    REQUIRE(run(e, "DIKHAO s JAISA 'a!_' ESCAPE '!' SE t;").columns[0] == "s JAISA 'a!_' ESCAPE '!'");
+    // not a word in the plain form: a column can still be called escape
+    run(e, "BANAO TABLE u (escape TEXT);");
+    run(e, "DAALO MEIN u MAAN ('a');");
+    REQUIRE(q(e, "DIKHAO escape SE u JAHAN escape JAISA 'a';") == "a");
+}
+
+TEST_CASE("Tables can be listed with a comma", "[gaps][from]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE a (x INT);");
+    run(e, "BANAO TABLE b (y INT);");
+    run(e, "DAALO MEIN a MAAN (1), (2);");
+    run(e, "DAALO MEIN b MAAN (2), (3);");
+    REQUIRE(q(e, "DIKHAO x, y SE a, b KRAM x, y;") == "1|2;1|3;2|2;2|3");
+    REQUIRE(q(e, "DIKHAO x, y SE a, b JAHAN x = y;") == "2|2");
+    REQUIRE(q(e, "DIKHAO p.x, q.y SE a p, b q JAHAN p.x = q.y;") == "2|2");
+    REQUIRE(q(e, "DIKHAO p.x, r.x SE a p, a r JAHAN p.x < r.x;") == "1|2");
+    REQUIRE(q(e, "DIKHAO x, y SE a, (DIKHAO y SE b JAHAN y = 3) d;") == "1|3;2|3");
+    REQUIRE(q(e, "DIKHAO a.x, b.y, c.x SE a, b MILAO a c PAR c.x = b.y JAHAN a.x = 1;") == "1|2|2");
+}
+
+TEST_CASE("SANYUKT ALL keeps the copies", "[gaps][setop]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT);");
+    run(e, "DAALO MEIN t MAAN (1), (1), (2);");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t;") == "1;1;2;1;1;2");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT DIKHAO a SE t;") == "1;2");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t KRAM 1 ULTA SIRF 3;") == "2;2;1");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t SANYUKT DIKHAO 3 KRAM a;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO 3 SANYUKT DIKHAO a SE t SANYUKT ALL DIKHAO a SE t KRAM 1 ULTA SIRF 2;") == "3;2");
+    REQUIRE_THROWS(e.execute("DIKHAO a SE t SAAJHA ALL DIKHAO a SE t;"));
+    REQUIRE_THAT(flat(run(e, "SAMJHAO DIKHAO a SE t SANYUKT ALL DIKHAO a SE t;")), ContainsSubstring("SANYUKT ALL"));
+}
+
+TEST_CASE("Set operations work inside subqueries and derived tables", "[gaps][setop][subquery]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE a (x INT);");
+    run(e, "BANAO TABLE b (y INT);");
+    run(e, "BANAO TABLE n (id INT);");
+    run(e, "DAALO MEIN a MAAN (1), (2);");
+    run(e, "DAALO MEIN b MAAN (2), (3);");
+    run(e, "DAALO MEIN n MAAN (1), (2), (3), (4);");
+    REQUIRE(q(e, "DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT DIKHAO y SE b) d KRAM z;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT ALL DIKHAO y SE b KRAM 1 ULTA SIRF 2) d;") == "3;2");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b) KRAM id;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id NAHI MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b);") == "4");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SAAJHA DIKHAO y SE b);") == "2");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a CHHODKAR DIKHAO y SE b);") == "1");
+    REQUIRE(q(e, "DIKHAO (DIKHAO x SE a JAHAN x = 1 SANYUKT DIKHAO y SE b JAHAN y = 1);") == "1");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id > ALL (DIKHAO x SE a SANYUKT DIKHAO y SE b);") == "4");
+    // correlated: each side sees the outer row
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN EXISTS (DIKHAO x SE a JAHAN x = id SANYUKT DIKHAO y SE b JAHAN y = id) KRAM id;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO x SE a JAHAN x = n.id SANYUKT DIKHAO 0 JAHAN n.id > 2 KRAM 1 SIRF 1) SE n KRAM id;") == "1|1;2|2;3|0;4|0");
+    // the plan shows it, in a view it works, and it still cannot be the whole of a view
+    REQUIRE_THAT(flat(run(e, "SAMJHAO DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b);")), ContainsSubstring("SANYUKT"));
+    run(e, "BANAO VIEW v KAHO DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT DIKHAO y SE b) d;");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE v;") == "3");
+    REQUIRE_THROWS_WITH(e.execute("BANAO VIEW w KAHO DIKHAO x SE a SANYUKT DIKHAO y SE b;"), ContainsSubstring("sirf ek DIKHAO"));
+    // a procedure parameter reaches into the sides
+    run(e, "BANAO PROCEDURE p(k INT) SHURU SET @found = (DIKHAO x SE a JAHAN x = k SANYUKT DIKHAO y SE b JAHAN y = k); KHATAM;");
+    run(e, "CHALAO p(3);");
+    REQUIRE(q(e, "DIKHAO @found;") == "3");
+}
+
+TEST_CASE("KRAM with SIRF gives what a full sort would", "[gaps][perf]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (id INT, a INT, b TEXT);");
+    run(e, "DAALO MEIN t MAAN (1, 2, 'x'), (2, 1, 'y'), (3, 2, 'w'), (4, KHALI, 'z'), (5, 1, 'x'), (6, 2, 'x');");
+    const char* tails[] = {"KRAM a", "KRAM a ULTA", "KRAM a, b", "KRAM a ULTA, b ULTA", "KRAM b, a ULTA"};
+    for (const char* tail : tails) {
+        const Result all = run(e, std::string("DIKHAO id SE t ") + tail + ";");
+        for (int offset : {0, 1, 4, 6, 9})
+            for (int limit : {0, 1, 2, 3, 6, 100}) {
+                std::string want;
+                for (size_t i = static_cast<size_t>(offset); i < all.rows.size() && i < static_cast<size_t>(offset + limit); ++i)
+                    want += (want.empty() ? "" : ";") + formatValue(all.rows[i][0]);
+                INFO(tail << " " << limit << " " << offset);
+                REQUIRE(q(e, "DIKHAO id SE t " + std::string(tail) + " SIRF " + std::to_string(limit) + " OFFSET " + std::to_string(offset) + ";") == want);
+            }
+    }
+    // ties keep the order the rows came in
+    REQUIRE(q(e, "DIKHAO id SE t KRAM a SIRF 2;") == "4;2");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM a SIRF 3;") == "4;2;5");
+    // ALAG works on the whole result
+    REQUIRE(q(e, "DIKHAO ALAG a SE t KRAM a ULTA SIRF 2;") == "2;1");
+    // the largest SIRF cannot wrap around
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 9999999999 OFFSET 9999999999;") == "");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 2147483647 OFFSET 5;") == "6");
+}
+
+TEST_CASE("Reusing a correlated answer never mixes up two outer values", "[gaps][perf]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE o (id INT, k INT, f FLOAT, s TEXT);");
+    run(e, "BANAO TABLE i (k INT, v INT);");
+    run(e, "DAALO MEIN o MAAN (1, 1, 1.0, '1'), (2, 2, 2.0, '2'), (3, 1, 1.0, '1'), (4, KHALI, KHALI, KHALI), (5, 2, 2.5, 'x');");
+    run(e, "DAALO MEIN i MAAN (1, 10), (2, 20);");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.k) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.f) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|KHALI");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.k AUR v > o.f * 5) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+    REQUIRE(q(e, "DIKHAO id SE o JAHAN EXISTS (DIKHAO 1 SE i JAHAN i.k = o.k) KRAM id;") == "1;2;3;5");
+    REQUIRE(q(e, "DIKHAO id SE o JAHAN id MEIN (DIKHAO k SE i JAHAN k = o.k) KRAM id;") == "1;2");
+    // a subquery with a stored function or a view in it is not remembered, and still answers right
+    run(e, "BANAO FUNCTION twice(x INT) RETURNS INT SHURU RETURN x * 2; KHATAM;");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO twice(o.k)) SE o KRAM id;") == "1|2;2|4;3|2;4|KHALI;5|4");
+    run(e, "BANAO VIEW vi KAHO DIKHAO k, v SE i;");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE vi JAHAN vi.k = o.k) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+}

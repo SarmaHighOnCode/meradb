@@ -93,10 +93,18 @@ bool compareNumbers(const std::string& op, const Value& a, const Value& b) {
 
 Value compare(const std::string& op, Value left, Value right) {
     // `JAHAN dob > '2005-01-01'` -- a string compared to a DATE is parsed first.
-    if (std::holds_alternative<Date>(left.data) && isText(right))
-        right = Value(parseDate(std::get<std::string>(right.data)));
-    else if (std::holds_alternative<Date>(right.data) && isText(left))
-        left = Value(parseDate(std::get<std::string>(left.data)));
+    // Text with a time part ('2005-01-01 10:00:00', what NOW() gives): the DATE means midnight of its day.
+    auto dateAgainstText = [](Value& dateSide, Value& textSide) {
+        const std::string& text = std::get<std::string>(textSide.data);
+        if (text.size() > 10) {
+            textSide = Value(parseDateTime(text));
+            dateSide = Value(std::get<Date>(dateSide.data).isoFormat() + " 00:00:00");
+        } else {
+            textSide = Value(parseDate(text));
+        }
+    };
+    if (std::holds_alternative<Date>(left.data) && isText(right)) dateAgainstText(left, right);
+    else if (std::holds_alternative<Date>(right.data) && isText(left)) dateAgainstText(right, left);
     // DATETIME values are 'YYYY-MM-DD HH:MM:SS' text; a date-only 'YYYY-MM-DD' next to one means midnight of that day
     if (isText(left) && isText(right)) {
         std::string& a = std::get<std::string>(left.data);
@@ -184,16 +192,26 @@ char32_t foldCase(char32_t c) {
 
 // naam JAISA 'R%' -- % = any characters (even none), _ = exactly one
 // character; case-insensitive, whole-string match.
-bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8) {
-    std::u32string text = decodeUtf8(textUtf8), pattern = decodeUtf8(patternUtf8);
+// `escape` (when not 0) makes the character after it stand for itself: '10!%' ESCAPE '!' is the text 10%.
+bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8, char32_t escape = 0) {
+    constexpr char32_t kAny = 0x110000, kOne = 0x110001;  // past the last Unicode character, so no text can hold them
+    std::u32string text = decodeUtf8(textUtf8), written = decodeUtf8(patternUtf8), pattern;
     for (auto& c : text) c = foldCase(c);
-    for (auto& c : pattern) c = foldCase(c);
+    for (size_t i = 0; i < written.size(); ++i) {
+        const char32_t c = written[i];
+        if (escape != 0 && c == escape) {
+            if (++i == written.size()) throw ExecutionError("JAISA pattern ESCAPE character par khatam nahi ho sakta");
+            pattern += foldCase(written[i]);
+        } else {
+            pattern += c == U'%' ? kAny : c == U'_' ? kOne : foldCase(c);
+        }
+    }
     size_t t = 0, p = 0, starP = std::u32string::npos, starT = 0;
     while (t < text.size()) {
-        if (p < pattern.size() && pattern[p] == U'%') {
+        if (p < pattern.size() && pattern[p] == kAny) {
             starP = p++;
             starT = t;
-        } else if (p < pattern.size() && (pattern[p] == U'_' || pattern[p] == text[t])) {
+        } else if (p < pattern.size() && (pattern[p] == kOne || pattern[p] == text[t])) {
             ++p;
             ++t;
         } else if (starP != std::u32string::npos) {
@@ -203,13 +221,19 @@ bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8) {
             return false;
         }
     }
-    while (p < pattern.size() && pattern[p] == U'%') ++p;
+    while (p < pattern.size() && pattern[p] == kAny) ++p;
     return p == pattern.size();
 }
 
-Value like(const Value& text, const Value& pattern) {
+Value like(const Value& text, const Value& pattern, const Value* escape = nullptr) {
     if (!isText(text) || !isText(pattern)) throw ExecutionError("JAISA sirf TEXT ke saath chalta hai");
-    return Value(likeMatch(std::get<std::string>(text.data), std::get<std::string>(pattern.data)));
+    char32_t escapeChar = 0;
+    if (escape != nullptr) {
+        const std::u32string written = isText(*escape) ? decodeUtf8(std::get<std::string>(escape->data)) : std::u32string();
+        if (written.size() != 1) throw ExecutionError("ESCAPE ko bilkul ek character chahiye");
+        escapeChar = written[0];
+    }
+    return Value(likeMatch(std::get<std::string>(text.data), std::get<std::string>(pattern.data), escapeChar));
 }
 
 // ----------------------------------------------------------- arithmetic ----
@@ -258,6 +282,13 @@ double pyFloatMod(double x, double y) {
     return mod;
 }
 
+// Two ordinary numbers whose result does not fit a FLOAT: an error, as in MySQL and PostgreSQL, never `inf`.
+Value finiteResult(double result, double x, double y, const std::string& op) {
+    if (std::isfinite(x) && std::isfinite(y) && !std::isfinite(result))
+        throw ExecutionError("'" + op + "' ka result FLOAT ke liye bahut bada hai");
+    return Value(result);
+}
+
 Value arithmetic(const std::string& op, const Value& left, const Value& right) {
     if (op == "+" && isText(left) && isText(right))
         return Value(std::get<std::string>(left.data) + std::get<std::string>(right.data));  // 'Ra' + 'vi'
@@ -272,9 +303,7 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
             return Value(checkedMul(x, y, op));
         }
         double x = toDouble(left), y = toDouble(right);
-        if (op == "+") return Value(x + y);
-        if (op == "-") return Value(x - y);
-        return Value(x * y);
+        return finiteResult(op == "+" ? x + y : op == "-" ? x - y : x * y, x, y, op);
     }
     if ((op == "/" || op == "%" || op == "DIV") && toDouble(right) == 0) throw ExecutionError("Zero se divide nahi kar sakte");
     if (op == "/") {
@@ -288,7 +317,7 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
             if (x % y == 0) return Value(x / y);
             return Value(pyTrueDivide(x, y));
         }
-        return Value(toDouble(left) / toDouble(right));
+        return finiteResult(toDouble(left) / toDouble(right), toDouble(left), toDouble(right), op);
     }
     if (op == "DIV") {
         if (bothInt) {
@@ -472,6 +501,12 @@ void findSubqueriesImpl(const Expr* expr, std::vector<const Expr*>& out) {
 
 bool isTrue(const Value& v) { return isBool(v, true); }
 
+bool conditionHolds(const Value& v, const char* clause) {
+    if (v.isNull()) return false;
+    requireBool(v, clause);
+    return std::get<bool>(v.data);
+}
+
 Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueries) {
     requireStack();
     limits::tick();
@@ -502,6 +537,15 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         bool isMember = false, sawNull = result->sawNull;
         if (result->members) {
             isMember = result->members->count(left) > 0;
+            // a DATE and its 'YYYY-MM-DD' text are the same value, as in `dob = '2005-01-01'` and MEIN ('2005-01-01')
+            if (!isMember && std::holds_alternative<Date>(left.data)) {
+                isMember = result->members->count(Value(std::get<Date>(left.data).isoFormat())) > 0;
+            } else if (!isMember && isText(left)) {
+                try {
+                    isMember = result->members->count(Value(parseDate(std::get<std::string>(left.data)))) > 0;
+                } catch (const ExecutionError&) {  // not a date: it cannot equal one
+                }
+            }
         } else {
             for (const auto& v : result->values) {
                 if (v.isNull()) sawNull = true;
@@ -523,7 +567,7 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
 
     if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
         for (auto& [cond, value] : cw->branches)
-            if (isTrue(evaluate(*cond, row, subqueries))) return evaluate(*value, row, subqueries);
+            if (conditionHolds(evaluate(*cond, row, subqueries), "AGAR")) return evaluate(*value, row, subqueries);
         return cw->elseExpr ? evaluate(*cw->elseExpr, row, subqueries) : Value();
     }
 
@@ -537,6 +581,11 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
             return host->callFunction(sf->name, args);
         }
         if (sf->name == "CAST") return castValue(args.at(0), sf->castType);
+        if (sf->name == "JAISA") {  // x JAISA pattern ESCAPE c
+            for (const auto& a : args)
+                if (a.isNull()) return Value();
+            return like(args[0], args[1], &args[2]);
+        }
         if (sf->name == "MOD") {
             if (args[0].isNull() || args[1].isNull()) return Value();
             // MySQL's MOD: the sign follows the dividend (MOD(-7, 3) = -1). The % operator keeps the engine's own rule
@@ -647,42 +696,89 @@ void findSubqueries(const Expr& expr, std::vector<const Expr*>& out) { findSubqu
 std::string aggKey(const FuncCall& func) {
     // Python uses the tuple ("agg", label), which can never equal a column
     // name; the ':' plays that role here (no identifier contains one).
-    return "agg:" + exprLabel(func);
+    return "agg:" + exprKey(func);
 }
 
-std::string exprLabel(const Expr& expr) {
+namespace {
+
+// How tightly an expression binds, in the parser's own order; a child binding less tightly than its place needs brackets.
+int labelPrecedence(const Expr& expr) {
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        if (b->op == "YA") return 1;
+        if (b->op == "AUR") return 2;
+        if (b->op == "+" || b->op == "-" || b->op == "||") return 5;
+        if (b->op == "*" || b->op == "/" || b->op == "%" || b->op == "DIV") return 6;
+        return 4;  // comparisons and JAISA
+    }
+    if (auto* u = dynamic_cast<const UnaryOp*>(&expr)) return u->op == "NAHI" ? 3 : 7;
+    if (dynamic_cast<const IsNull*>(&expr)) return 4;
+    if (auto* in = dynamic_cast<const InSubquery*>(&expr)) return in->kind == "EXISTS" ? 8 : 4;
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) return sf->name == "JAISA" ? 4 : 8;
+    return 8;
+}
+
+std::string labelOf(const Expr& expr, bool full);
+
+std::string labelAtLeast(const Expr& child, int precedence, bool full) {
+    const std::string text = labelOf(child, full);
+    return labelPrecedence(child) < precedence ? "(" + text + ")" : text;
+}
+
+std::string labelOf(const Expr& expr, bool full) {
     requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) return ref->table ? *ref->table + "." + ref->name : ref->name;
-    if (auto* lit = dynamic_cast<const Literal*>(&expr))
-        return isText(lit->value) ? pyRepr(std::get<std::string>(lit->value.data)) : formatValue(lit->value);
-    if (auto* b = dynamic_cast<const BinaryOp*>(&expr))
-        return exprLabel(*b->left) + " " + b->op + " " + exprLabel(*b->right);
+    if (auto* lit = dynamic_cast<const Literal*>(&expr)) {
+        if (isText(lit->value)) return pyRepr(std::get<std::string>(lit->value.data));
+        if (full && std::holds_alternative<double>(lit->value.data)) return pyReprFloat(std::get<double>(lit->value.data));
+        return formatValue(lit->value);
+    }
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        const int own = labelPrecedence(*b);
+        // chains lean left: a - (b - c) keeps its brackets, (a - b) - c needs none. AUR and YA do not care.
+        const int rightNeeds = own == 1 || own == 2 ? own : own + 1;
+        return labelAtLeast(*b->left, own, full) + " " + b->op + " " + labelAtLeast(*b->right, rightNeeds, full);
+    }
     if (auto* u = dynamic_cast<const UnaryOp*>(&expr))
-        return u->op == "NAHI" ? u->op + " " + exprLabel(*u->operand) : "-" + exprLabel(*u->operand);
+        return u->op == "NAHI" ? "NAHI " + labelAtLeast(*u->operand, 3, full) : "-" + labelAtLeast(*u->operand, 8, full);
     if (auto* isn = dynamic_cast<const IsNull*>(&expr))
-        return exprLabel(*isn->expr) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
+        return labelAtLeast(*isn->expr, 4, full) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
     if (auto* f = dynamic_cast<const FuncCall*>(&expr))
-        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
+        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? labelOf(*f->arg, full) : std::string()) + ")";
     if (auto* s = dynamic_cast<const Star*>(&expr)) return s->table ? *s->table + ".*" : "*";
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
         std::string out = "PEHLA(";
-        for (size_t i = 0; i < co->args.size(); ++i) out += (i ? ", " : "") + exprLabel(*co->args[i]);
+        for (size_t i = 0; i < co->args.size(); ++i) out += (i ? ", " : "") + labelOf(*co->args[i], full);
         return out + ")";
     }
-    if (dynamic_cast<const CaseWhen*>(&expr)) return "AGAR ... KHATAM";
+    if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
+        if (!full) return "AGAR ... KHATAM";
+        std::string out = "AGAR";
+        for (const auto& [cond, value] : cw->branches) out += " " + labelOf(*cond, true) + " TAB " + labelOf(*value, true);
+        if (cw->elseExpr) out += " WARNA " + labelOf(*cw->elseExpr, true);
+        return out + " KHATAM";
+    }
     if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        if (sf->name == "JAISA" && !sf->user)
+            return labelAtLeast(*sf->args[0], 4, full) + " JAISA " + labelAtLeast(*sf->args[1], 5, full) + " ESCAPE " + labelAtLeast(*sf->args[2], 5, full);
         std::string out = sf->name + "(";
-        for (size_t i = 0; i < sf->args.size(); ++i) out += (i ? ", " : "") + exprLabel(*sf->args[i]);
+        for (size_t i = 0; i < sf->args.size(); ++i) out += (i ? ", " : "") + labelOf(*sf->args[i], full);
         if (sf->name == "CAST") out += " AS " + sf->castType;
         return out + ")";
     }
     if (dynamic_cast<const Subquery*>(&expr)) return "(DIKHAO ...)";
     if (auto* in = dynamic_cast<const InSubquery*>(&expr)) {
         if (in->kind == "EXISTS") return "EXISTS (DIKHAO ...)";
-        if (in->kind == "ANY" || in->kind == "ALL") return exprLabel(*in->left) + " " + in->op + " " + in->kind + " (DIKHAO ...)";
-        return exprLabel(*in->left) + " " + (in->negated ? "NAHI " : "") + "MEIN (DIKHAO ...)";
+        const std::string left = labelAtLeast(*in->left, 4, full);
+        if (in->kind == "ANY" || in->kind == "ALL") return left + " " + in->op + " " + in->kind + " (DIKHAO ...)";
+        return left + " " + (in->negated ? "NAHI " : "") + "MEIN (DIKHAO ...)";
     }
     return "?";
 }
+
+}  // namespace
+
+std::string exprLabel(const Expr& expr) { return labelOf(expr, false); }
+
+std::string exprKey(const Expr& expr) { return labelOf(expr, true); }
 
 }  // namespace meradb

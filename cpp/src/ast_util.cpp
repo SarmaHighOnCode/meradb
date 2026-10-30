@@ -84,9 +84,36 @@ std::unique_ptr<Expr> cloneExpr(const Expr& e) {
     throw MeraDBError("cloneExpr: unhandled Expr node kind");
 }
 
+namespace {
+std::unique_ptr<Statement> cloneSide(const Statement& side);
+
+std::unique_ptr<SetOp> cloneSetOp(const SetOp& s) {
+    auto out = std::make_unique<SetOp>();
+    out->op = s.op;
+    out->all = s.all;
+    out->left = cloneSide(*s.left);
+    out->right = cloneSide(*s.right);
+    for (const auto& o : s.orderBy) {
+        OrderItem oi;
+        oi.expr = cloneExpr(*o.expr);
+        oi.descending = o.descending;
+        out->orderBy.push_back(std::move(oi));
+    }
+    out->limit = s.limit;
+    out->offset = s.offset;
+    return out;
+}
+
+std::unique_ptr<Statement> cloneSide(const Statement& side) {
+    if (auto* setOp = dynamic_cast<const SetOp*>(&side)) return cloneSetOp(*setOp);
+    return cloneSelect(static_cast<const Select&>(side));
+}
+}  // namespace
+
 std::unique_ptr<Select> cloneSelect(const Select& s) {
     requireStack();
     auto out = std::make_unique<Select>();
+    if (s.compound) out->compound = cloneSetOp(*s.compound);
     for (const auto& c : s.columns) out->columns.push_back(cloneExpr(*c));
     out->table = s.table;
     out->alias = s.alias;

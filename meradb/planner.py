@@ -122,7 +122,9 @@ def bind(expr, scope: Scope):
     if isinstance(expr, ast.IsNull):
         return ast.IsNull(bind(expr.expr, scope), expr.negated)
     if isinstance(expr, ast.FuncCall):
-        return ast.FuncCall(expr.name, bind(expr.arg, scope))
+        return ast.FuncCall(expr.name, bind(expr.arg, scope), expr.distinct)
+    if isinstance(expr, ast.LikeEscape):
+        return ast.LikeEscape(bind(expr.text, scope), bind(expr.pattern, scope), bind(expr.escape, scope))
     if isinstance(expr, ast.Coalesce):
         return ast.Coalesce([bind(a, scope) for a in expr.args])
     if isinstance(expr, ast.CaseWhen):

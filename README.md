@@ -64,13 +64,13 @@ In SQL, that's `CREATE TABLE`, `INSERT INTO`, `SELECT ... JOIN ... WHERE`, `GROU
 - **Full DML:**
   - multi-row INSERT (including `INSERT ... SELECT`), UPDATE, DELETE
   - a simplified upsert: `ON CONFLICT DO UPDATE`
-  - SELECT with `WHERE`, `ORDER BY`, `LIMIT`, `DISTINCT`, column aliases, `GROUP BY` / `HAVING`
-  - `COUNT SUM AVG MIN MAX`
-  - `LIKE`, `BETWEEN`, `IN`, `IS NULL`, arithmetic, `COALESCE`/NVL, `CASE WHEN`
-  - subqueries: scalar, `IN (subquery)`, correlated
-  - `UNION` / `INTERSECT` / `EXCEPT`
+  - SELECT with `WHERE`, `ORDER BY` (by name, alias or position), `LIMIT`, `DISTINCT`, column aliases, `GROUP BY` / `HAVING`
+  - `COUNT SUM AVG MIN MAX`, each with `DISTINCT` (`GINO(ALAG x)`)
+  - `LIKE ... ESCAPE`, `BETWEEN`, `IN`, `IS NULL`, arithmetic, `COALESCE`/NVL, `CASE WHEN`
+  - subqueries: scalar, `IN (subquery)`, correlated, and set operations inside them
+  - `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`
 - **Views:** `CREATE VIEW`/`DROP VIEW`, re-materialized fresh on every read
-- **Joins:** INNER, LEFT, RIGHT, FULL OUTER and NATURAL, with table aliases (`s.naam`)
+- **Joins:** INNER, LEFT, RIGHT, FULL OUTER and NATURAL, with table aliases (`s.naam`), and `FROM a, b`
 - **Types:** INT, FLOAT, TEXT, BOOL, DATE, `VARCHAR(n)`, `NUMBER(p,s)`
 - **Transactions:** `BEGIN / COMMIT / ROLLBACK`, with crash recovery
 - **Query plans:** `EXPLAIN` shows index lookup vs full scan and hash join vs nested loop
@@ -231,7 +231,8 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
    [Quick start](#quick-start-python-version) below, and is identical).
 5. `meradb_cli workbench` (the server is still running): press **F5** to run the editor text, **F6** for
    the query plan, **F1** for help, **Ctrl+Q** to quit.
-   Prefer a window? `meradb_cli gui` (or `meradb_gui`) opens the desktop workbench: **Ctrl+Enter** runs,
+   Prefer a window? `meradb_cli gui` (or `meradb_gui`) opens the desktop workbench: **Ctrl+Enter** runs (**Alt+Enter** / **F9**,
+   the *Yeh query* button, runs only the statement under the cursor),
    **Ctrl+K** opens the command menu, **F1** is Madad (help).
 6. `meradb_cli stop`.
 
@@ -241,7 +242,7 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
 ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
 ```
 
-There are 901 tests (899 on Linux, where three pseudo-terminal tests run and the workbench
+There are 919 tests on Windows (Linux differs by a few, where three pseudo-terminal tests run and the workbench
 comparison is skipped without Textual): unit tests for every layer, and the cross-checks that compare the
 C++ program with the Python engine (these need Python, and the workbench comparison also
 needs the `textual` package, otherwise it is reported as skipped). A full run takes a
@@ -483,6 +484,7 @@ open (`meradb:main*>`).
 |-----|--------|
 | **F5** / **Ctrl+R** | Run the editor's text, or only the selected text |
 | **F6** | Show the query plan (`SAMJHAO`) without running the query |
+| **Alt+Enter** / **F9** | Desktop workbench (`meradb_gui`) only: *Yeh query*, runs just the statement under the cursor |
 | **Ctrl+Up / Ctrl+Down** | Previous / next query from history |
 | **Ctrl+S** | Export the current results to CSV (`exports/` folder) |
 | **Ctrl+O** | Connect to another server, or switch to local mode |

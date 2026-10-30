@@ -14,6 +14,7 @@ struct Token {
     int64_t intValue = 0;
     double doubleValue = 0.0;
     bool isFloat = false;
+    bool minimumInt = false;  // the digits 9223372036854775808 right after a minus; only unary minus may take them
     int line = 1;
     int col = 1;
     int start = -1;  // byte offset into source text

@@ -587,6 +587,14 @@ void Engine::close() {
 // users & privileges (server-wide -- see users.h)
 // ============================================================================
 
+// Every plain select under a set operation, however deep the chain is.
+static void forEachSide(const ast::SetOp& setOp, const std::function<void(const ast::Select&)>& visit) {
+    for (const ast::Statement* side : {setOp.left.get(), setOp.right.get()}) {
+        if (auto* inner = dynamic_cast<const ast::SetOp*>(side)) forEachSide(*inner, visit);
+        else visit(*static_cast<const ast::Select*>(side));
+    }
+}
+
 std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
     // The FROM table plus every MILAO'd table -- NOT tables read only through a
     // VIEW's own stored query (that runs via resolveSource, never through
@@ -594,6 +602,12 @@ std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
     // by its own name).
     // A derived table (subquery in FROM) contributes the tables ITS query reads.
     std::vector<std::string> tables;
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) {
+            for (auto& inner : tablesRead(side)) tables.push_back(std::move(inner));
+        });
+        return tables;
+    }
     auto add = [&](const std::string& name, const ast::Select* derived) {
         if (derived == nullptr) {
             if (!name.empty()) tables.push_back(name);  // DIKHAO 1 + 1 has no table at all
@@ -701,6 +715,10 @@ void Engine::denyColumn(const std::string& privilege, const std::string& table, 
 // column by column, the select list, JAHAN, SAMOOH, JINKA, KRAM and the MILAO conditions may name nothing else, and `*`
 // needs every column.
 void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) {
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { checkSelectAccess(side, outer); });
+        return;
+    }
     PrivScope scope;
     scope.outer = outer;
     auto addSource = [&](const std::string& table, const std::string& alias, const ast::Select* derived) {
@@ -2846,7 +2864,7 @@ Result Engine::execUpdate(const ast::Update& stmt, const RowCheck* check) {
         for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
         auto subq = precomputeSubqueries({where.get()}, candidateRows, outerKeys);
         for (size_t i = 0; i < cands.size(); ++i)
-            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) targets.push_back(cands[i]);
+            if (conditionHolds(evaluate(*where, candidateRows[i], subq.at(i)), "JAHAN")) targets.push_back(cands[i]);
     } else {
         targets = cands;
     }
@@ -2919,7 +2937,7 @@ Result Engine::execDelete(const ast::Delete& stmt) {
         for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
         auto subq = precomputeSubqueries({where.get()}, candidateRows, scope.allKeys());
         for (size_t i = 0; i < cands.size(); ++i)
-            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) doomed.push_back(cands[i]);
+            if (conditionHolds(evaluate(*where, candidateRows[i], subq.at(i)), "JAHAN")) doomed.push_back(cands[i]);
     } else {
         doomed = cands;
     }
@@ -2998,7 +3016,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
             bool matched = false;
             for (size_t li : *partners) {
                 Row combined = combineRows(leftRows[li], rRow);
-                if (isTrue(evaluate(on, combined))) {
+                if (conditionHolds(evaluate(on, combined), "PAR")) {
                     limits::chargeRow(combined);
                     out.push_back(std::move(combined));
                     matched = true;
@@ -3033,7 +3051,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
         bool matched = false;
         for (size_t ri : *partners) {
             Row combined = combineRows(lRow, rightRows[ri]);
-            if (isTrue(evaluate(on, combined))) {  // re-check the full PAR (it may have more conditions)
+            if (conditionHolds(evaluate(on, combined), "PAR")) {  // re-check the full PAR (it may have more conditions)
                 limits::chargeRow(combined);
                 out.push_back(std::move(combined));
                 matched = true;
@@ -3053,7 +3071,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
 // Replace every ColumnRef in `expr` that does NOT resolve against the
 // subquery's OWN scope with a Literal of the matching outer-row value.
 std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub, const Row& outerRow,
-                                         const std::vector<std::string>& outerKeys, bool& fired) {
+                                         const std::vector<std::string>& outerKeys, std::set<std::string>& fired) {
     using namespace ast;
     requireStack();
     auto rec = [&](const Expr* e) -> std::unique_ptr<Expr> {
@@ -3084,7 +3102,7 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
                                      joinStrs(matches, " ya ") + " likho");
             key = matches[0];
         }
-        fired = true;
+        fired.insert(key);
         return std::make_unique<Literal>(outerRow.at(key));
     }
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
@@ -3290,6 +3308,38 @@ Scope Engine::selectSourcesScope(const ast::Select& stmt, std::vector<std::uniqu
     return scope;
 }
 
+static void checkGroupedExpr(const ast::Expr& e, const std::set<std::string>& grouped, const Scope& scope) {
+    using namespace ast;
+    if (grouped.count(exprKey(e)) || dynamic_cast<const FuncCall*>(&e)) return;
+    auto rec = [&](const Expr* child) {
+        if (child) checkGroupedExpr(*child, grouped, scope);
+    };
+    if (auto* ref = dynamic_cast<const ColumnRef*>(&e)) {
+        throw ExecutionError("Column '" + scope.display(refKey(*ref)) +
+                             "' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate "
+                             "(GINO, KUL, AUSAT...) ke andar use karo");
+    } else if (auto* b = dynamic_cast<const BinaryOp*>(&e)) {
+        rec(b->left.get());
+        rec(b->right.get());
+    } else if (auto* u = dynamic_cast<const UnaryOp*>(&e)) {
+        rec(u->operand.get());
+    } else if (auto* isn = dynamic_cast<const IsNull*>(&e)) {
+        rec(isn->expr.get());
+    } else if (auto* co = dynamic_cast<const Coalesce*>(&e)) {
+        for (const auto& a : co->args) rec(a.get());
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(&e)) {
+        for (const auto& a : sf->args) rec(a.get());
+    } else if (auto* cw = dynamic_cast<const CaseWhen*>(&e)) {
+        for (const auto& [cond, value] : cw->branches) {
+            rec(cond.get());
+            rec(value.get());
+        }
+        rec(cw->elseExpr.get());
+    } else if (auto* in = dynamic_cast<const InSubquery*>(&e)) {
+        rec(in->left.get());
+    }
+}
+
 std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) {
     auto plan = std::make_unique<SelectPlan>();
     if (stmt.table.empty() && !stmt.derived) {  // DIKHAO without SE: there is no table to read a column from
@@ -3408,15 +3458,12 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
     if (plan->grouped) {
         // In a grouped query each output row stands for a whole GROUP of rows,
         // so a bare column like `naam` has no single value -- unless we grouped by it.
+        // SAMOOH a + 1 fixes the value of a + 1 in a group, not of a: an expression is fine when the whole of it, or each
+        // column left in it, is something grouped on.
         std::set<std::string> grouped;
-        for (const auto& g : plan->groupBy)
-            for (const auto& name : columnRefKeys(g.get())) grouped.insert(name);
+        for (const auto& g : plan->groupBy) grouped.insert(exprKey(*g));
         for (const auto* e : aggSources)
-            for (const auto& name : columnRefKeys(e, true))
-                if (!grouped.count(name))
-                    throw ExecutionError("Column '" + scope.display(name) +
-                                         "' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate "
-                                         "(GINO, KUL, AUSAT...) ke andar use karo");
+            if (e) checkGroupedExpr(*e, grouped, scope);
     }
 
     plan->access = chooseAccess(*plan->tables[0], scope, plan->where.get());
@@ -3475,11 +3522,15 @@ std::vector<Row> Engine::group(const std::vector<Row>& rows, const SelectPlan& p
 
 std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, const Scope& subqueryScope,
                                                      const Row& outerRow, const std::vector<std::string>& outerKeys,
-                                                     bool& fired) {
+                                                     OuterColumnsUsed& fired) {
     auto corr = [&](const ast::Expr* e) -> std::unique_ptr<ast::Expr> {
         return e ? correlateExpr(*e, subqueryScope, outerRow, outerKeys, fired) : nullptr;
     };
     auto out = std::make_unique<ast::Select>();
+    if (stmt.compound) {  // each side has tables, so names, of its own
+        out->compound = correlateSetOp(*stmt.compound, outerRow, outerKeys, fired);
+        return out;
+    }
     for (const auto& c : stmt.columns) out->columns.push_back(corr(c.get()));
     out->table = stmt.table;
     out->alias = stmt.alias;
@@ -3510,17 +3561,135 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
     return out;
 }
 
+std::unique_ptr<ast::SetOp> Engine::correlateSetOp(const ast::SetOp& stmt, const Row& outerRow,
+                                                   const std::vector<std::string>& outerKeys, OuterColumnsUsed& fired) {
+    auto side = [&](const ast::Statement& s) -> std::unique_ptr<ast::Statement> {
+        if (auto* inner = dynamic_cast<const ast::SetOp*>(&s)) return correlateSetOp(*inner, outerRow, outerKeys, fired);
+        auto& select = static_cast<const ast::Select&>(s);
+        Scope scope = selectSourcesScope(select, nullptr);
+        return correlateSelect(select, scope, outerRow, outerKeys, fired);
+    };
+    auto out = std::make_unique<ast::SetOp>();
+    out->op = stmt.op;
+    out->all = stmt.all;
+    out->left = side(*stmt.left);
+    out->right = side(*stmt.right);
+    for (const auto& o : stmt.orderBy) {
+        ast::OrderItem item;
+        item.expr = cloneExpr(*o.expr);
+        item.descending = o.descending;
+        out->orderBy.push_back(std::move(item));
+    }
+    out->limit = stmt.limit;
+    out->offset = stmt.offset;
+    return out;
+}
+
 // Runs `sub` against one outer row and returns its Result; `fired` says
 // whether it turned out to be CORRELATED (some column resolved in the outer
 // row). If it never fires, the result doesn't depend on the outer row's
 // VALUES at all (only its KEYS, which are the same for every row of the same
 // outer query -- see precomputeSubqueries).
 Result Engine::runSubquery(const ast::Subquery& sub, const Row& outerRow, const std::vector<std::string>& outerKeys,
-                           bool& fired) {
+                           OuterColumnsUsed& fired) {
     const ast::Select& stmt = *sub.statement;
     Scope subqueryScope = selectSourcesScope(stmt, nullptr);
     auto newStmt = correlateSelect(stmt, subqueryScope, outerRow, outerKeys, fired);
     return execSelect(*newStmt);
+}
+
+namespace {
+
+// The exact bytes of a value: 1, 1.0, SACH and '1' are all different here, so a remembered answer is only ever reused for
+// the very same value.
+void appendExact(std::string& key, const Value& v) {
+    key += static_cast<char>(v.data.index());
+    std::visit([&](const auto& x) {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_same_v<T, std::string>) {
+            key += std::to_string(x.size());
+            key += ':';
+            key += x;
+        } else if constexpr (std::is_same_v<T, Date>) {
+            key += std::to_string(x.ordinal);
+            key += ':';
+        } else if constexpr (std::is_arithmetic_v<T>) {
+            key.append(reinterpret_cast<const char*>(&x), sizeof x);
+        }
+    }, v.data);
+}
+
+// Calls of stored functions anywhere in an expression, nested selects included.
+bool callsStoredFunction(const ast::Select& stmt);
+
+bool callsStoredFunction(const ast::Expr* e) {
+    using namespace ast;
+    if (e == nullptr) return false;
+    auto any = [](const auto& list) {
+        for (const auto& a : list)
+            if (callsStoredFunction(a.get())) return true;
+        return false;
+    };
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(e)) return sf->user || any(sf->args);
+    if (auto* b = dynamic_cast<const BinaryOp*>(e)) return callsStoredFunction(b->left.get()) || callsStoredFunction(b->right.get());
+    if (auto* u = dynamic_cast<const UnaryOp*>(e)) return callsStoredFunction(u->operand.get());
+    if (auto* isn = dynamic_cast<const IsNull*>(e)) return callsStoredFunction(isn->expr.get());
+    if (auto* f = dynamic_cast<const FuncCall*>(e)) return callsStoredFunction(f->arg.get());
+    if (auto* co = dynamic_cast<const Coalesce*>(e)) return any(co->args);
+    if (auto* cw = dynamic_cast<const CaseWhen*>(e)) {
+        for (const auto& [cond, value] : cw->branches)
+            if (callsStoredFunction(cond.get()) || callsStoredFunction(value.get())) return true;
+        return callsStoredFunction(cw->elseExpr.get());
+    }
+    if (auto* sub = dynamic_cast<const Subquery*>(e)) return callsStoredFunction(*sub->statement);
+    if (auto* in = dynamic_cast<const InSubquery*>(e)) return callsStoredFunction(in->left.get()) || callsStoredFunction(*in->subquery->statement);
+    return false;
+}
+
+bool callsStoredFunction(const ast::Select& stmt) {
+    if (stmt.compound) {
+        bool found = false;
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { found = found || callsStoredFunction(side); });
+        return found;
+    }
+    for (const auto& c : stmt.columns)
+        if (callsStoredFunction(c.get())) return true;
+    if (stmt.derived && callsStoredFunction(*stmt.derived)) return true;
+    for (const auto& j : stmt.joins)
+        if (callsStoredFunction(j.on.get()) || (j.derived && callsStoredFunction(*j.derived))) return true;
+    if (callsStoredFunction(stmt.where.get()) || callsStoredFunction(stmt.having.get())) return true;
+    for (const auto& g : stmt.groupBy)
+        if (callsStoredFunction(g.get())) return true;
+    for (const auto& o : stmt.orderBy)
+        if (callsStoredFunction(o.expr.get())) return true;
+    return false;
+}
+
+// Every table name a select reads, derived tables and sides included (subqueries in its expressions are not visited).
+void sourceNames(const ast::Select& stmt, std::vector<std::string>& out) {
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { sourceNames(side, out); });
+        return;
+    }
+    if (stmt.derived) sourceNames(*stmt.derived, out);
+    else if (!stmt.table.empty()) out.push_back(stmt.table);
+    for (const auto& j : stmt.joins) {
+        if (j.derived) sourceNames(*j.derived, out);
+        else if (!j.table.empty()) out.push_back(j.table);
+    }
+}
+
+}  // namespace
+
+// A stored function can read a @variable another call just set, and a view can hide such a call. Everything else in a
+// subquery depends only on the tables, which do not change while one statement computes its subqueries.
+bool Engine::sameAnswerEveryRun(const ast::Select& stmt) {
+    if (callsStoredFunction(stmt)) return false;
+    std::vector<std::string> names;
+    sourceNames(stmt, names);
+    for (const auto& name : names)
+        if (catalog().find(name) == nullptr) return false;
+    return true;
 }
 
 // One SubqueryResults per row, ready to pass into evaluate(). A subquery is
@@ -3528,7 +3697,8 @@ Result Engine::runSubquery(const ast::Subquery& sub, const Row& outerRow, const 
 // locally depends only on which KEYS the outer row has, not their values, and
 // every row here has the same keys -- so ONE dry run (against the first row)
 // decides correlated-vs-not for ALL rows: uncorrelated results are computed
-// once and shared; correlated ones are recomputed per row.
+// once and shared; correlated ones are recomputed per row, except that rows agreeing on every outer column the subquery
+// reads get the answer already computed for that combination.
 Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::Expr*>& exprs,
                                                    const std::vector<Row>& rows,
                                                    const std::vector<std::string>& outerKeys) {
@@ -3548,22 +3718,39 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
         if (auto* s = dynamic_cast<const ast::Subquery*>(node)) return *s;
         return *static_cast<const ast::InSubquery*>(node)->subquery;
     };
-    std::unordered_set<const ast::Expr*> correlated;
+    struct Correlated {
+        const ast::Expr* node;
+        std::vector<std::string> outerColumns;  // what its answer depends on
+        bool remember;
+        std::unordered_map<std::string, SubqueryResult> answers;
+    };
+    std::vector<Correlated> correlated;
     for (const auto* node : nodes) {
-        bool fired = false;
+        OuterColumnsUsed fired;
         Result result = runSubquery(subqueryOf(node), rows[0], outerKeys, fired);
-        if (fired) correlated.insert(node);
-        else out.shared[node] = reduceSubqueryResult(*node, result);
+        if (fired.empty()) out.shared[node] = reduceSubqueryResult(*node, result);
+        else correlated.push_back({node, {fired.begin(), fired.end()}, sameAnswerEveryRun(*subqueryOf(node).statement), {}});
     }
     if (!correlated.empty()) {
         out.perRow.reserve(rows.size());
+        std::string key;
         for (const auto& row : rows) {
             SubqueryResults d = out.shared;
-            for (const auto* node : nodes) {
-                if (!correlated.count(node)) continue;
-                bool fired = false;
-                Result result = runSubquery(subqueryOf(node), row, outerKeys, fired);
-                d[node] = reduceSubqueryResult(*node, result);
+            for (auto& c : correlated) {
+                OuterColumnsUsed fired;
+                if (!c.remember) {
+                    Result result = runSubquery(subqueryOf(c.node), row, outerKeys, fired);
+                    d[c.node] = reduceSubqueryResult(*c.node, result);
+                    continue;
+                }
+                key.clear();
+                for (const auto& column : c.outerColumns) appendExact(key, row.at(column));
+                auto known = c.answers.find(key);
+                if (known == c.answers.end()) {
+                    Result result = runSubquery(subqueryOf(c.node), row, outerKeys, fired);
+                    known = c.answers.emplace(key, reduceSubqueryResult(*c.node, result)).first;
+                }
+                d[c.node] = known->second;
             }
             out.perRow.push_back(std::move(d));
         }
@@ -3574,6 +3761,7 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
 Result Engine::execSelect(const ast::Select& stmt) {
     requireStack();
     limits::MemoryMark memoryOfThisSelect;  // a correlated sub-select runs once per row: it must not add up
+    if (stmt.compound) return execSetOp(*stmt.compound);
     auto planPtr = planSelect(stmt);
     SelectPlan& plan = *planPtr;
     const Scope& scope = *plan.scope;
@@ -3605,7 +3793,7 @@ Result Engine::execSelect(const ast::Select& stmt) {
         auto subq = precomputeSubqueries({plan.where.get()}, rows, keys);
         std::vector<Row> kept;
         for (size_t i = 0; i < rows.size(); ++i)
-            if (isTrue(evaluate(*plan.where, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+            if (conditionHolds(evaluate(*plan.where, rows[i], subq.at(i)), "JAHAN")) kept.push_back(std::move(rows[i]));
         rows = std::move(kept);
     }
 
@@ -3616,29 +3804,45 @@ Result Engine::execSelect(const ast::Select& stmt) {
             auto subq = precomputeSubqueries({plan.having.get()}, rows, keys);
             std::vector<Row> kept;
             for (size_t i = 0; i < rows.size(); ++i)
-                if (isTrue(evaluate(*plan.having, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+                if (conditionHolds(evaluate(*plan.having, rows[i], subq.at(i)), "JINKA")) kept.push_back(std::move(rows[i]));
             rows = std::move(kept);
         }
     }
 
-    // 5. SORT (KRAM). The sort is *stable*, so sorting by the LAST key first
-    //    and the FIRST key last gives a correct multi-column sort.
-    for (auto it = plan.orderBy.rbegin(); it != plan.orderBy.rend(); ++it) {
-        const ast::Expr& expr = *it->first;
-        bool descending = it->second;
-        auto subq = precomputeSubqueries({&expr}, rows, keys);
-        std::vector<Value> sortKeys;
-        for (size_t i = 0; i < rows.size(); ++i) sortKeys.push_back(evaluate(expr, rows[i], subq.at(i)));
+    // Without ALAG, SIRF n OFFSET m needs only the first n + m rows of the sorted order: they are all that gets sorted
+    // fully and projected. ALAG drops rows only after projecting, so it needs every one.
+    size_t rowsNeeded = rows.size();
+    if (stmt.limit.has_value() && *stmt.limit >= 0 && !stmt.distinct) {
+        const size_t needed = static_cast<size_t>(*stmt.limit) + static_cast<size_t>(std::max(0, stmt.offset.value_or(0)));
+        rowsNeeded = std::min(rowsNeeded, needed);
+    }
+
+    // 5. SORT (KRAM). Equal rows keep the order they came in (the index breaks every tie).
+    if (!plan.orderBy.empty()) {
+        std::vector<std::vector<Value>> sortKeys(plan.orderBy.size());
+        for (size_t k = plan.orderBy.size(); k-- > 0;) {  // last key first: its errors come first, as they always did
+            const ast::Expr& expr = *plan.orderBy[k].first;
+            auto subq = precomputeSubqueries({&expr}, rows, keys);
+            sortKeys[k].reserve(rows.size());
+            for (size_t i = 0; i < rows.size(); ++i) sortKeys[k].push_back(evaluate(expr, rows[i], subq.at(i)));
+        }
         std::vector<size_t> order(rows.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-        if (descending)
-            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[b], sortKeys[a]); });
-        else
-            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[a], sortKeys[b]); });
+        auto before = [&](size_t a, size_t b) {
+            for (size_t k = 0; k < sortKeys.size(); ++k) {
+                if (sortLess(sortKeys[k][a], sortKeys[k][b])) return !plan.orderBy[k].second;
+                if (sortLess(sortKeys[k][b], sortKeys[k][a])) return plan.orderBy[k].second;
+            }
+            return a < b;
+        };
+        std::partial_sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(rowsNeeded), order.end(), before);
+        order.resize(rowsNeeded);
         std::vector<Row> sorted;
-        sorted.reserve(rows.size());
+        sorted.reserve(rowsNeeded);
         for (size_t idx : order) sorted.push_back(std::move(rows[idx]));
         rows = std::move(sorted);
+    } else if (rowsNeeded < rows.size()) {
+        rows.resize(rowsNeeded);
     }
 
     // 6. PROJECT (pick / compute the output columns)
@@ -3697,7 +3901,10 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
     using RowSet = std::unordered_set<std::vector<Value>, PyValuesHash, PyValuesEq>;
     std::vector<std::vector<Value>> out;
     RowSet seen;
-    if (stmt.op == "SANYUKT") {  // UNION: dedupe, preserving first-occurrence order
+    if (stmt.all) {  // UNION ALL: every row of both sides
+        out = std::move(left.rows);
+        out.insert(out.end(), right.rows.begin(), right.rows.end());
+    } else if (stmt.op == "SANYUKT") {  // UNION: dedupe, preserving first-occurrence order
         for (const auto* side : {&left.rows, &right.rows})
             for (const auto& row : *side)
                 if (seen.insert(row).second) out.push_back(row);
@@ -3818,7 +4025,7 @@ std::string sqlLiteral(const Value& v) {
     if (isIntValue(v)) return std::to_string(std::get<int64_t>(v.data));
     if (isDateValue(v)) return sqlQuote(std::get<Date>(v.data).isoFormat());
     if (isTextValue(v)) return sqlQuote(std::get<std::string>(v.data));
-    return formatValue(v);
+    return pyReprFloat(std::get<double>(v.data));  // every digit, so the default reads back as the same number
 }
 
 bool isAutoFkName(const std::string& name) {  // <table>_ibfk_<n>
@@ -4030,7 +4237,7 @@ std::unique_ptr<Engine::ViewTarget> Engine::viewTargetOf(const std::string& name
     auto parsed = parseScript(queryText);
     auto* sel = parsed.empty() ? nullptr : dynamic_cast<ast::Select*>(parsed[0].get());
     if (sel == nullptr) { reason = "definition DIKHAO nahi hai"; return nullptr; }
-    if (sel->derived || !sel->joins.empty()) { reason = "isme JOIN ya derived table hai"; return nullptr; }
+    if (sel->compound || sel->derived || !sel->joins.empty()) { reason = "isme JOIN ya derived table hai"; return nullptr; }
     if (sel->table.empty()) { reason = "isme koi table nahi hai"; return nullptr; }
     if (sel->distinct || !sel->groupBy.empty() || sel->having || sel->limit.has_value() || sel->offset.has_value()) {
         reason = "isme ALAG / SAMOOH / JINKA / SIRF hai";
@@ -4108,7 +4315,7 @@ Engine::RowCheck Engine::viewCheck(const ViewTarget& target) {
         for (const auto& r : rows) dicts.push_back(scope.row(0, r));
         auto subq = precomputeSubqueries({bound.get()}, dicts, scope.allKeys());
         for (size_t i = 0; i < dicts.size(); ++i)
-            if (!isTrue(evaluate(*bound, dicts[i], subq.at(i))))
+            if (!conditionHolds(evaluate(*bound, dicts[i], subq.at(i)), "JAHAN"))
                 throw ExecutionError("View '" + viewName +
                                      "' ki WITH CHECK OPTION ke karan row reject: ye row view ki JAHAN shart poori nahi karti");
     };
@@ -4217,7 +4424,7 @@ Result Engine::execExplain(const ast::Explain& stmt) {
         auto plan = planSelect(*sel);
         lines = explainSelect(*sel, *plan);
     } else if (auto* setOp = dynamic_cast<const ast::SetOp*>(&inner)) {
-        lines.push_back(setOp->op + " (" + setOpName(setOp->op) + ") of:");
+        lines.push_back(setOp->op + (setOp->all ? " ALL" : "") + " (" + setOpName(setOp->op) + ") of:");
         const std::pair<const ast::Statement*, const char*> sides[] = {{setOp->left.get(), "LEFT"},
                                                                        {setOp->right.get(), "RIGHT"}};
         for (const auto& [side, label] : sides) {
@@ -4257,13 +4464,14 @@ Result Engine::execExplain(const ast::Explain& stmt) {
 std::vector<std::string> Engine::explainOne(const ast::Statement& stmt) {
     requireStack();
     if (auto* setOp = dynamic_cast<const ast::SetOp*>(&stmt)) {
-        std::vector<std::string> lines{setOp->op + " (" + setOpName(setOp->op) + ") of:"};
+        std::vector<std::string> lines{setOp->op + (setOp->all ? " ALL" : "") + " (" + setOpName(setOp->op) + ") of:"};
         for (const ast::Statement* side : {setOp->left.get(), setOp->right.get()})
             for (const auto& line : explainOne(*side)) lines.push_back("  " + line);
         return lines;
     }
     auto* sel = dynamic_cast<const ast::Select*>(&stmt);
     if (sel == nullptr) throw ExecutionError("SAMJHAO sirf DIKHAO, BADLO aur MITAO ke saath chalta hai");
+    if (sel->compound) return explainOne(*sel->compound);
     auto plan = planSelect(*sel);
     return explainSelect(*sel, *plan);
 }
@@ -4339,11 +4547,10 @@ std::vector<std::string> Engine::explainSubqueries(const std::vector<const ast::
             if (!sub) sub = static_cast<const ast::InSubquery*>(node)->subquery.get();
             if (!seen.insert(sub).second) continue;
             Scope subqueryScope = selectSourcesScope(*sub->statement, nullptr);
-            bool fired = false;
+            OuterColumnsUsed fired;
             auto substituted = correlateSelect(*sub->statement, subqueryScope, dummyOuter, keys, fired);
-            auto innerPlan = planSelect(*substituted);
-            std::string firstLine = explainSelect(*substituted, *innerPlan).at(0);
-            lines.push_back(std::string("SUBQUERY (") + (fired ? "correlated" : "uncorrelated") + "): " + firstLine);
+            std::string firstLine = explainOne(*substituted).at(0);
+            lines.push_back(std::string("SUBQUERY (") + (!fired.empty() ? "correlated" : "uncorrelated") + "): " + firstLine);
         }
     }
     return lines;

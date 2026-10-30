@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <cctype>
+#include <cmath>
 
 namespace meradb {
 
@@ -122,7 +123,16 @@ std::unique_ptr<Expr> Parser::parseNot() {
 
 std::unique_ptr<Expr> Parser::parseComparison() {
     auto left = parseAdditive();
+    // Comparison operators chain to the left: 1 < 2 = SACH reads (1 < 2) = SACH
+    while (auto next = parseComparisonStep(left)) {
+        left = std::move(next);
+        spend();
+    }
+    return left;
+}
 
+// One comparison with `left` on its left side, or nullptr (`left` untouched) when none follows.
+std::unique_ptr<Expr> Parser::parseComparisonStep(std::unique_ptr<Expr>& left) {
     // x HAI KHALI  /  x HAI NAHI KHALI
     if (matchKeyword("HAI")) {
         bool negated = matchKeyword("NAHI");
@@ -167,7 +177,7 @@ std::unique_ptr<Expr> Parser::parseComparison() {
                 advance();
                 spend();
                 auto sub = std::make_unique<Subquery>();
-                sub->statement = parseSelectBody();
+                sub->statement = parseSubqueryBody();
                 expectSymbol(")");
                 auto quantified = std::make_unique<InSubquery>();
                 quantified->left = std::move(left);
@@ -179,12 +189,22 @@ std::unique_ptr<Expr> Parser::parseComparison() {
             return std::make_unique<BinaryOp>(op, std::move(left), parseAdditive());
         }
     }
-    return left;
+    return nullptr;
 }
 
 std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& left) {
     if (matchKeyword("JAISA")) {
-        return std::make_unique<BinaryOp>("JAISA", std::move(left), parseAdditive());
+        auto pattern = parseAdditive();
+        if (isSoftWord(0, "escape")) {  // x JAISA '10!%' ESCAPE '!'
+            advance();
+            auto withEscape = std::make_unique<ScalarFunc>();
+            withEscape->name = "JAISA";
+            withEscape->args.push_back(std::move(left));
+            withEscape->args.push_back(std::move(pattern));
+            withEscape->args.push_back(parseAdditive());
+            return withEscape;
+        }
+        return std::make_unique<BinaryOp>("JAISA", std::move(left), std::move(pattern));
     }
     if (matchKeyword("BEECH")) {
         auto lo = parseAdditive();  // additive stops before AUR, so this is safe
@@ -201,7 +221,7 @@ std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& lef
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
-            sub->statement = parseSelectBody();
+            sub->statement = parseSubqueryBody();
             expectSymbol(")");
             auto inSub = std::make_unique<InSubquery>();
             inSub->left = std::move(left);
@@ -253,11 +273,16 @@ std::unique_ptr<Expr> Parser::parseUnary() {
     if (checkSymbol("-")) {
         advance();
         spend();
+        if (peek().type == TokenType::Number && peek().minimumInt) {  // -9223372036854775808: the one INT whose digits alone do not fit
+            advance();
+            return std::make_unique<Literal>(Value(std::numeric_limits<int64_t>::min()));
+        }
         auto operand = parseUnary();
         // Fold unary minus directly on a numeric literal at parse time
         // (matches Python's parser-time fold in _parse_unary).
         if (auto* lit = dynamic_cast<Literal*>(operand.get())) {
-            if (std::holds_alternative<int64_t>(lit->value.data))
+            if (std::holds_alternative<int64_t>(lit->value.data) &&
+                std::get<int64_t>(lit->value.data) != std::numeric_limits<int64_t>::min())  // -(-9223372036854775808) overflows when evaluated
                 return std::make_unique<Literal>(Value(-std::get<int64_t>(lit->value.data)));
             if (std::holds_alternative<double>(lit->value.data))
                 return std::make_unique<Literal>(Value(-std::get<double>(lit->value.data)));
@@ -274,6 +299,8 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     guardStack();
     const Token& t = peek();
     if (t.type == TokenType::Number) {
+        if (t.isFloat && std::isinf(t.doubleValue)) error("Ye number FLOAT ke liye bahut bada hai");
+        if (t.minimumInt) error("Ye number INT ke liye bahut bada hai (8-byte limit)");
         advance();
         return std::make_unique<Literal>(t.isFloat ? Value(t.doubleValue) : Value(t.intValue));
     }
@@ -320,7 +347,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             if (upper == "EXISTS" && checkKeyword("DIKHAO")) {
                 advance();
                 auto sub = std::make_unique<Subquery>();
-                sub->statement = parseSelectBody();
+                sub->statement = parseSubqueryBody();
                 expectSymbol(")");
                 auto exists = std::make_unique<InSubquery>();
                 exists->subquery = std::move(sub);
@@ -403,7 +430,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
-            sub->statement = parseSelectBody();
+            sub->statement = parseSubqueryBody();
             expectSymbol(")");
             return sub;
         }
@@ -1566,6 +1593,20 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
         if (isSoftWord(0, "databases") && atEndOfStatement(1)) { advance(); return std::make_unique<ShowDatabases>(); }
     }
 
+    return parseSetChain();
+}
+
+std::unique_ptr<Select> Parser::parseSubqueryBody() {
+    auto chain = parseSetChain();
+    if (dynamic_cast<SetOp*>(chain.get())) {
+        auto wrapper = std::make_unique<Select>();
+        wrapper->compound.reset(static_cast<SetOp*>(chain.release()));
+        return wrapper;
+    }
+    return std::unique_ptr<Select>(static_cast<Select*>(chain.release()));
+}
+
+std::unique_ptr<Statement> Parser::parseSetChain() {
     std::unique_ptr<Statement> result = parseSelectBody();
     // `DIKHAO a KRAM x SIRF 2 SANYUKT DIKHAO b` sorts and cuts that side by itself. When no side but the last has such
     // clauses they are written after the whole query and apply to its whole result, as in SQL.
@@ -1575,6 +1616,10 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
         auto op = std::make_unique<SetOp>();
         op->op = advance().textValue;
         spend();
+        if (op->op == "SANYUKT" && isSoftWord(0, "all")) {  // SANYUKT ALL keeps the copies
+            advance();
+            op->all = true;
+        }
         expectKeyword("DIKHAO");
         op->left = std::move(result);
         auto right = parseSelectBody();
@@ -1618,7 +1663,7 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
             guardStack();
             spend();
             expectKeyword("DIKHAO");
-            derived = parseSelectBody();
+            derived = parseSubqueryBody();
             expectSymbol(")");
             if (!matchKeyword("KAHO") && peek().type == TokenType::Ident && peek().textValue == "as") advance();
             alias = parseAliasOpt();
@@ -1638,6 +1683,16 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
         else if (matchKeyword("DONO")) { expectKeyword("MILAO"); kind = "FULL"; }
         else if (matchKeyword("SAMAAN")) { expectKeyword("MILAO"); kind = "NATURAL"; }
         else if (matchKeyword("MILAO")) { kind = "INNER"; }
+        else if (matchSymbol(",")) {  // SE a, b: every row of a with every row of b; JAHAN does the filtering
+            Join cross;
+            cross.kind = "INNER";
+            std::optional<std::string> crossAlias;
+            parseSource(cross.table, crossAlias, cross.derived);
+            cross.alias = crossAlias ? *crossAlias : cross.table;
+            cross.on = std::make_unique<Literal>(Value(true));
+            sel->joins.push_back(std::move(cross));
+            continue;
+        }
         else break;
         Join j;
         j.kind = kind;

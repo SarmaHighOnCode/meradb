@@ -1,6 +1,6 @@
 BANAO TABLE p (id INT MUKHYA KUNJI, naam TEXT, score INT);
 DAALO MEIN p MAAN (1, 'a', 10), (2, 'b', 20);
-BANAO VIEW vv KAHO DIKHAO * SE p;
+BANAO VIEW vv KAHO DIKHAO ALAG * SE p;
 DAALO MEIN vv MAAN (1, 'a', 2);
 BADLO vv RAKHO id = 1;
 MITAO SE vv;

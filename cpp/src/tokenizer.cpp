@@ -4,6 +4,7 @@
 #include "meradb/pytext.h"
 #include <cctype>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <set>
 #include <unordered_set>
@@ -140,6 +141,15 @@ Token Tokenizer::readNumber() {
         advance();  // consume '.'
         while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
     }
+    // 1e5, 2.5E-3: an exponent makes it a FLOAT. Only when digits follow: `1e` stays the number 1 and the name e.
+    {
+        const size_t signLength = (peek(1) == '+' || peek(1) == '-') ? 1 : 0;
+        if ((peek() == 'e' || peek() == 'E') && std::isdigit(static_cast<unsigned char>(peek(1 + static_cast<int>(signLength))))) {
+            isFloat = true;
+            for (size_t i = 0; i <= signLength; ++i) advance();
+            while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
+        }
+    }
     std::string text = text_.substr(start, pos_ - start);
     Token t;
     t.type = TokenType::Number;
@@ -150,6 +160,7 @@ Token Tokenizer::readNumber() {
     if (isFloat) {
         // strtod (not stod): an over-long literal rounds to inf / 0.0 the
         // way Python's float(text) does, instead of throwing out_of_range.
+        // The parser refuses the inf when it reads the literal as a value.
         t.doubleValue = std::strtod(text.c_str(), nullptr);
     } else {
         // Python ints are unbounded and the 8-byte INT limit is only hit
@@ -158,6 +169,20 @@ Token Tokenizer::readNumber() {
         try {
             t.intValue = std::stoll(text);
         } catch (const std::out_of_range&) {
+            // -9223372036854775808 is a valid INT though its digits alone are not: right after a minus they get through
+            // and only the parser's unary minus accepts them.
+            bool afterMinus = false;
+            for (size_t i = start; i-- > 0;) {
+                const char before = text_[i];
+                if (before == ' ' || before == '\t' || before == '\r' || before == '\n') continue;
+                afterMinus = before == '-';
+                break;
+            }
+            if (afterMinus && text == "9223372036854775808") {
+                t.minimumInt = true;
+                t.intValue = std::numeric_limits<int64_t>::min();
+                return t;
+            }
             throw TokenizerError("Number " + text + " INT ke liye bahut bada hai (8-byte limit) (line " +
                                  std::to_string(startLine) + ", col " + std::to_string(startCol) + ")");
         }

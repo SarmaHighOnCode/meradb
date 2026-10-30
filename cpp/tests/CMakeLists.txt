@@ -59,6 +59,7 @@ add_executable(meradb_tests
   test_durability.cpp
   test_server_limits.cpp
   test_tls.cpp
+  test_language_gaps.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

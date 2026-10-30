@@ -137,13 +137,6 @@ struct DateTime {
     Date date{0};
 };
 
-bool allDigits(const std::string& s, size_t pos, size_t n) {
-    if (pos + n > s.size()) return false;
-    for (size_t i = pos; i < pos + n; ++i)
-        if (s[i] < '0' || s[i] > '9') return false;
-    return true;
-}
-
 // A DATE, or 'YYYY-MM-DD' text, or 'YYYY-MM-DD HH:MM:SS' text (what NOW() returns).
 DateTime dateTimeOf(const Value& v, const char* fn) {
     DateTime dt;
@@ -151,15 +144,15 @@ DateTime dateTimeOf(const Value& v, const char* fn) {
         dt.date = std::get<Date>(v.data);
     } else if (isTextValue(v)) {
         const std::string& s = std::get<std::string>(v.data);
-        bool hasTime = s.size() >= 19 && (s[10] == ' ' || s[10] == 'T') && allDigits(s, 11, 2) && s[13] == ':' &&
-                       allDigits(s, 14, 2) && s[16] == ':' && allDigits(s, 17, 2);
-        if (hasTime) {
-            dt.hour = std::atoi(s.substr(11, 2).c_str());
-            dt.minute = std::atoi(s.substr(14, 2).c_str());
-            dt.second = std::atoi(s.substr(17, 2).c_str());
+        if (s.size() > 10) {  // a date and a time: all of it must be valid, parseDateTime gives 'YYYY-MM-DD HH:MM:SS'
+            const std::string full = parseDateTime(s);
+            dt.hour = std::atoi(full.substr(11, 2).c_str());
+            dt.minute = std::atoi(full.substr(14, 2).c_str());
+            dt.second = std::atoi(full.substr(17, 2).c_str());
+            dt.date = parseDate(full.substr(0, 10));
+        } else {
+            dt.date = parseDate(s);
         }
-        bool trimmed = s.size() > 10 && (s[10] == ' ' || s[10] == 'T');
-        dt.date = parseDate(trimmed ? s.substr(0, 10) : s);
     } else {
         throw ExecutionError(std::string(fn) + " ko DATE (ya 'YYYY-MM-DD' text) chahiye, " + shown(v) + " mila");
     }
@@ -182,6 +175,7 @@ std::string padded(int n, const char* format) {
 
 std::string dateFormat(const DateTime& dt, const std::string& fmt) {
     int weekday = (dt.date.ordinal + 6) % 7;  // Monday == 0
+    const int hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
     std::string out;
     for (size_t i = 0; i < fmt.size(); ++i) {
         if (fmt[i] != '%' || i + 1 >= fmt.size()) {
@@ -197,7 +191,14 @@ std::string dateFormat(const DateTime& dt, const std::string& fmt) {
             case 'e': out += std::to_string(dt.day); break;
             case 'H': out += padded(dt.hour, "%02d"); break;
             case 'i': out += padded(dt.minute, "%02d"); break;
-            case 's': out += padded(dt.second, "%02d"); break;
+            case 's': case 'S': out += padded(dt.second, "%02d"); break;
+            case 'c': out += std::to_string(dt.month); break;
+            case 'k': out += std::to_string(dt.hour); break;
+            case 'h': case 'I': out += padded(hour12, "%02d"); break;
+            case 'l': out += std::to_string(hour12); break;
+            case 'p': out += dt.hour < 12 ? "AM" : "PM"; break;
+            case 'T': out += padded(dt.hour, "%02d") + ":" + padded(dt.minute, "%02d") + ":" + padded(dt.second, "%02d"); break;
+            case 'r': out += padded(hour12, "%02d") + ":" + padded(dt.minute, "%02d") + ":" + padded(dt.second, "%02d") + (dt.hour < 12 ? " AM" : " PM"); break;
             case 'M': out += kMonthNames[dt.month - 1]; break;
             case 'b': out += std::string(kMonthNames[dt.month - 1]).substr(0, 3); break;
             case 'W': out += kWeekdayNames[weekday]; break;
@@ -246,7 +247,12 @@ Value roundValue(const Value& x, const Value* digitsArg) {
         for (int64_t i = 0; i < -digits; ++i) p *= 10;
         int64_t r = v % p;
         int64_t base = v - r;
-        if ((r < 0 ? -r : r) * 2 >= p) base += v < 0 ? -p : p;  // half away from zero
+        if ((r < 0 ? -r : r) * 2 >= p) {  // half away from zero
+            int64_t step = v < 0 ? -p : p;
+            if ((step > 0 && base > I64_MAX - step) || (step < 0 && base < I64_MIN - step))
+                throw ExecutionError("ROUND ka result INT ke liye bahut bada hai (8-byte limit)");
+            base += step;
+        }
         return Value(base);
     }
     double d = std::get<double>(x.data);
@@ -273,14 +279,18 @@ Value powerValue(const Value& a, const Value& b) {
         }
         if (fits) return Value(result);
     }
-    double r = std::pow(asDouble(a), asDouble(b));
+    const double x = asDouble(a), y = asDouble(b);
+    if (x == 0 && y < 0) throw ExecutionError("POWER: 0 ki negative power nahi hoti (zero se divide jaisa)");
+    double r = std::pow(x, y);
     if (std::isnan(r)) return Value();
+    if (std::isinf(r) && std::isfinite(x) && std::isfinite(y)) throw ExecutionError("POWER ka result FLOAT ke liye bahut bada hai");
     return Value(r);
 }
 
 bool parseFullDouble(const std::string& text, double& out) {
     std::string t = pytext::strip(text);
-    if (t.empty()) return false;
+    // strtod also reads hexadecimal ('0x10') and 'inf' / 'nan'; none of those is a number in SQL text
+    if (t.empty() || t.find_first_of("xXnN") != std::string::npos) return false;
     char* end = nullptr;
     out = std::strtod(t.c_str(), &end);
     return end == t.c_str() + t.size() && std::isfinite(out);

@@ -58,6 +58,7 @@ private:
     std::unique_ptr<ast::Expr> parseAnd();
     std::unique_ptr<ast::Expr> parseNot();
     std::unique_ptr<ast::Expr> parseComparison();
+    std::unique_ptr<ast::Expr> parseComparisonStep(std::unique_ptr<ast::Expr>& left);
     // Handles JAISA/BEECH/MEIN. Only consumes (moves out of) `left` when one
     // of those keywords actually matches; returns nullptr and leaves `left`
     // untouched otherwise, so the caller can fall through to plain
@@ -73,6 +74,8 @@ private:
     std::unique_ptr<ast::Statement> parseStatement();      // guarded: see spend() / the Scope in parser.cpp
     std::unique_ptr<ast::Statement> parseStatementBody();  // the real statement dispatcher
     std::unique_ptr<ast::Select> parseSelectBody();
+    std::unique_ptr<ast::Statement> parseSetChain();   // a select, chained with SANYUKT / SAAJHA / CHHODKAR
+    std::unique_ptr<ast::Select> parseSubqueryBody();  // the same as one Select: subqueries and derived tables
     std::unique_ptr<ast::Statement> parseBanao();
     std::unique_ptr<ast::Statement> parseHatao();
     // Phase 2: users / privileges / procedure calls
