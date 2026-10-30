@@ -768,8 +768,13 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
         if (ins->select) checkSelectAccess(*ins->select, nullptr);
         for (const auto& row : ins->rows)
             for (const auto& e : row) checkExprSubqueries(e.get());
-        if (ins->onConflictUpdate)
-            for (const auto& assignment : *ins->onConflictUpdate) checkExprSubqueries(assignment.second.get());
+        if (ins->onConflictUpdate) {  // TAKRAAV PAR BADLO changes an existing row: that is a BADLO, not a DAALO
+            Access update = requireAccess("BADLO", ins->table);
+            for (const auto& assignment : *ins->onConflictUpdate) {
+                if (!update.covers(assignment.first)) denyColumn("BADLO", ins->table, assignment.first);
+                checkExprSubqueries(assignment.second.get());
+            }
+        }
         return;
     }
     if (auto* upd = dynamic_cast<const Update*>(&stmt)) {

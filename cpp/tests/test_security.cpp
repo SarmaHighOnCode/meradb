@@ -48,3 +48,17 @@ TEST_CASE("security EXPLAIN of a set operation needs DIKHAO on both sides", "[se
     f.admin.execute("ADHIKAR DO DIKHAO PAR hidden KO ravi;");
     CHECK(runLast(f.ravi, "SAMJHAO DIKHAO id SE hidden SANYUKT DIKHAO id SE hidden;").error.empty());
 }
+
+TEST_CASE("security TAKRAAV PAR BADLO needs BADLO, on the assigned columns", "[security][privileges]") {
+    SecFixture f;
+    f.admin.execute("ADHIKAR DO DAALO PAR pub KO ravi;");
+    CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (1, 'x', 0) TAKRAAV PAR BADLO name = 'hacked';").error ==
+          "[Execution Galti] 'ravi' ko table 'pub' par BADLO ka adhikar nahi hai");
+    CHECK(f.nameOf(1) == "a");
+    f.admin.execute("ADHIKAR DO BADLO (secret) PAR pub KO ravi;");
+    CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (1, 'x', 0) TAKRAAV PAR BADLO name = 'hacked';").error ==
+          "[Execution Galti] 'ravi' ko table 'pub' ke column 'name' par BADLO ka adhikar nahi hai");
+    CHECK(f.nameOf(1) == "a");
+    CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (1, 'x', 0) TAKRAAV PAR BADLO secret = 5;").error.empty());
+    CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (9, 'new', 0);").error.empty());  // a plain insert still only needs DAALO
+}
