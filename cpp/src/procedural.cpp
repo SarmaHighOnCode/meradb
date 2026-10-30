@@ -22,6 +22,27 @@ namespace {
 
 Value textValue(std::string s) { return Value(std::move(s)); }
 
+// A function's arguments and result are converted the way MySQL does: '1000' becomes 1000 for an INT, 5 becomes '5'
+// for a TEXT. Anything that does not convert falls through to the strict column rules (and their error).
+Value looseCoerce(const Value& value, const std::string& typeName, const std::string& name) {
+    if (auto* text = std::get_if<std::string>(&value.data)) {
+        if (typeName == "INT" || typeName == "FLOAT") {
+            const char* begin = text->c_str();
+            char* end = nullptr;
+            if (typeName == "INT") {
+                long long n = std::strtoll(begin, &end, 10);
+                if (end != begin && *end == '\0') return Value(static_cast<int64_t>(n));
+            } else {
+                double d = std::strtod(begin, &end);
+                if (end != begin && *end == '\0') return Value(d);
+            }
+        }
+    } else if (typeName == "TEXT" && !value.isNull() && !std::holds_alternative<std::string>(value.data)) {
+        return Value(formatValue(value));
+    }
+    return coerce(value, typeName, name);
+}
+
 Result messageResult(std::string message) {
     Result r;
     r.message = std::move(message);
@@ -166,10 +187,10 @@ Value Engine::callFunction(const std::string& name, const std::vector<Value>& ar
     ProcFrame frame;
     frame.isFunction = true;
     for (size_t i = 0; i < args.size(); ++i)
-        frame.vars[fn->params[i].first] = {fn->params[i].second, coerce(args[i], fn->params[i].second, fn->params[i].first)};
+        frame.vars[fn->params[i].first] = {fn->params[i].second, looseCoerce(args[i], fn->params[i].second, fn->params[i].first)};
     runBodyTree(fn->bodyText, frame);
     if (!frame.returned) throw ExecutionError("Function '" + name + "' ne RETURN nahi kiya");
-    return coerce(frame.returnValue, fn->returnType, name);
+    return looseCoerce(frame.returnValue, fn->returnType, name);
 }
 
 // ============================================================================
@@ -320,6 +341,7 @@ void Engine::runProcSelectInto(const ast::PSelectInto& node, ProcFrame& frame) {
         throw ExecutionError("SELECT ... INTO: ek se zyada rows mili (" + std::to_string(r.rows.size()) +
                              ") -- INTO ko sirf ek row chahiye");
     for (size_t i = 0; i < node.vars.size(); ++i) assignVariable(&frame, node.vars[i], r.rows[0][i]);
+    if (frame.results) frame.results->push_back(Result{});  // counts as a statement, says nothing in the summary
 }
 
 void Engine::runProcCursorOp(const ast::PCursorOp& node, ProcFrame& frame) {

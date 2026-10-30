@@ -1265,7 +1265,7 @@ Procedure 'set_office' chal gaya (1 statement(s)): 2 row(s) badal di
 +---------------------+------------+
 | NOW()               | CURDATE()  |
 +---------------------+------------+
-| 2026-10-30 08:58:49 | 2026-10-30 |
+| 2026-10-30 03:43:30 | 2026-10-30 |
 +---------------------+------------+
 1 row(s)
 
@@ -1367,7 +1367,7 @@ Table 'x_tickets' ban gaya (4 columns)
 +-----------+-----------------+----------+---------------------+
 | ticket_id | title           | severity | opened_at           |
 +-----------+-----------------+----------+---------------------+
-| 1         | Login page down | high     | 2026-10-30 08:58:49 |
+| 1         | Login page down | high     | 2026-10-30 03:43:30 |
 | 2         | Typo in report  | low      | 2026-10-30 09:15:00 |
 +-----------+-----------------+----------+---------------------+
 2 row(s)
@@ -1543,9 +1543,9 @@ Table 'x_tickets'
 +---------------+----------+---------------------+
 | name          | database | created             |
 +---------------+----------+---------------------+
-| give_raise    | palantir | 2026-10-30 08:58:49 |
-| staff_project | palantir | 2026-10-30 08:58:49 |
-| set_office    | palantir | 2026-10-30 08:58:49 |
+| give_raise    | palantir | 2026-10-30 03:43:30 |
+| staff_project | palantir | 2026-10-30 03:43:30 |
+| set_office    | palantir | 2026-10-30 03:43:30 |
 +---------------+----------+---------------------+
 3 procedure(s)
 
@@ -1645,10 +1645,10 @@ Procedure 'y_rename_team' chal gaya (1 statement(s)): 1 row(s) badal di
 +---------------+----------+---------------------+
 | name          | database | created             |
 +---------------+----------+---------------------+
-| give_raise    | palantir | 2026-10-30 08:58:49 |
-| staff_project | palantir | 2026-10-30 08:58:49 |
-| set_office    | palantir | 2026-10-30 08:58:49 |
-| y_rename_team | palantir | 2026-10-30 08:58:50 |
+| give_raise    | palantir | 2026-10-30 03:43:30 |
+| staff_project | palantir | 2026-10-30 03:43:30 |
+| set_office    | palantir | 2026-10-30 03:43:30 |
+| y_rename_team | palantir | 2026-10-30 03:43:30 |
 +---------------+----------+---------------------+
 4 procedure(s)
 
@@ -1696,15 +1696,13 @@ Role y_auditor 'intern' se wapas le liya
 
 'intern' se 'palantir.employees' par DIKHAO ka adhikar wapas le liya
 
-+-------------+
-| database    |
-+-------------+
-| college     |
-| college_lab |
-| main        |
-| palantir    |
-+-------------+
-4 database(s)
++----------+
+| database |
++----------+
+| main     |
+| palantir |
++----------+
+2 database(s)
 
 +--------------------+
 | view               |
@@ -1731,6 +1729,134 @@ Table 'y_team' hata diya
 Table 'y_log' hata diya
 
 Role 'y_auditor' hata diya
+
+Table 'z_acct' ban gaya (3 columns)
+
+Table 'z_log' ban gaya (1 columns)
+
+2 row(s) daal di
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
+1 row(s) badal di
+
+Savepoint 's1' set ho gaya
+
+1 row(s) badal di
+
+Savepoint 's1' tak WAPAS -- uske baad ke changes undo ho gaye (transaction abhi khula hai)
+
+Savepoint 's1' hata diya (changes jaise ke taise rahe)
+
+Transaction PAKKA -- saare changes save ho gaye
+
++----+-------+
+| id | paisa |
++----+-------+
+| 1  | 900   |
+| 2  | 500   |
++----+-------+
+2 row(s)
+
+autocommit = 0 (ab har badlav transaction mein; PAKKA se save, WAPAS se undo)
+
+1 row(s) daal di
+
+Transaction WAPAS -- saare changes undo ho gaye
+
+autocommit = 1 (har statement turant save; khula transaction PAKKA ho gaya)
+
++---------+
+| GINO(*) |
++---------+
+| 2       |
++---------+
+1 row(s)
+
+Trigger 'z_neg' ban gaya (PEHLE BADLO PAR z_acct)
+
+Trigger 'z_clamp' ban gaya (PEHLE DAALO PAR z_acct)
+
+Trigger 'z_seen' ban gaya (BAAD DAALO PAR z_acct)
+
+1 row(s) daal di
+
++----+-------+
+| id | paisa |
++----+-------+
+| 4  | 5000  |
++----+-------+
+1 row(s)
+
+[Execution Galti] paisa negative nahi ho sakta
+
++-------+
+| paisa |
++-------+
+| 900   |
++-------+
+1 row(s)
+
+Procedure 'z_jod' ban gaya (2 parameter(s))
+
++-------+
+| total |
++-------+
+| 55    |
++-------+
+Procedure 'z_jod' chal gaya (0 statement(s)): 
+
++----+
+| @t |
++----+
+| 55 |
++----+
+1 row(s)
+
+Function 'z_bonus' ban gaya (2 parameter(s), RETURNS INT)
+
++-------+--------------------+
+| naam  | z_bonus(paisa, 10) |
++-------+--------------------+
+| asha  | 90                 |
+| ravi  | 50                 |
+| dhani | 500                |
++-------+--------------------+
+3 row(s)
+
++---------+----------+---------+---------------------+
+| name    | database | returns | created             |
++---------+----------+---------+---------------------+
+| z_bonus | palantir | INT     | 2026-10-30 03:43:30 |
++---------+----------+---------+---------------------+
+1 function(s)
+
+Prepared statement 'z_p' tayyar (1 ? placeholder)
+
+@id = 2
+
++------+
+| naam |
++------+
+| ravi |
++------+
+1 row(s)
+
+Prepared statement 'z_p' hata diya
+
+Function 'z_bonus' hata diya
+
+Procedure 'z_jod' hata diya
+
+Trigger 'z_seen' hata diya
+
+Trigger 'z_clamp' hata diya
+
+Trigger 'z_neg' hata diya
+
+Table 'z_log' hata diya
+
+Table 'z_acct' hata diya
 
 +-------------------+
 | table             |

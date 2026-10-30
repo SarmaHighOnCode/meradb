@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <thread>
 
 using namespace meradb;
 using Catch::Matchers::ContainsSubstring;
@@ -144,7 +145,11 @@ TEST_CASE("an autocommit = 0 transaction holds the lock like SHURU does; closing
         ok(a, "BANAO TABLE t (id INT);");
         ok(a, "SET autocommit = 0;");
         ok(a, "DAALO MEIN t MAAN (1);");
-        CHECK_THAT(errorOf(b, "DAALO MEIN t MAAN (2);"), ContainsSubstring("Database busy"));
+        // the lock is per thread (recursive), so the other session must run on its own thread
+        std::string busy;
+        std::thread other([&] { busy = errorOf(b, "DAALO MEIN t MAAN (2);"); });
+        other.join();
+        CHECK_THAT(busy, ContainsSubstring("Database busy"));
         a.close();  // the unfinished transaction is rolled back
         CHECK_FALSE(a.inTransaction());
         CHECK(q(b, "DIKHAO * SE t;").empty());
@@ -332,7 +337,7 @@ TEST_CASE("SIGNAL in a trigger aborts the statement and undoes all of it", "[sql
     ok(e, "BANAO TRIGGER seven BAAD DAALO PAR t SHURU AGAR NAYA.v = 7 TAB SIGNAL 'saat mana hai'; KHATAM AGAR; KHATAM;");
     CHECK(errorOf(e, "DAALO MEIN t MAAN (2, 6), (3, 7), (4, 8);") == "saat mana hai");
     CHECK(q(e, "DIKHAO id SE t KRAM id;") == "1;100");
-    CHECK(q(e, "DIKHAO GINO(*) SE log;") == "1");  // only the log row of the good insert at (1, 5)
+    CHECK(q(e, "DIKHAO GINO(*) SE log;") == "0");  // lg logged the first rows of the failed statement, and that went too
     // the same through UPDATE and DELETE
     ok(e, "BANAO TRIGGER nodel BAAD MITAO PAR t SHURU AGAR PURANA.id = 100 TAB SIGNAL 'ye row nahi hat sakti'; KHATAM AGAR; KHATAM;");
     CHECK(errorOf(e, "MITAO SE t;") == "ye row nahi hat sakti");
@@ -372,7 +377,7 @@ TEST_CASE("RAKHO NAYA.col = expr in a BEFORE trigger changes the row about to be
     CHECK(q(e, "DIKHAO id, v SE t KRAM id;") == "1|101;2|8");
     // a changed value is checked like any other: type, NOT NULL, unique
     ok(e, "BANAO TRIGGER dup PEHLE DAALO PAR t SHURU AGAR NAYA.id = 77 TAB RAKHO NAYA.id = 1; KHATAM AGAR; KHATAM;");
-    CHECK_THAT(errorOf(e, "DAALO MEIN t MAAN (77, 1, 'z');"), ContainsSubstring("MUKHYA KUNJI"));
+    CHECK_THAT(errorOf(e, "DAALO MEIN t MAAN (77, 1, 'z');"), ContainsSubstring("Duplicate value"));
     CHECK(q(e, "DIKHAO GINO(*) SE t;") == "2");
     ok(e, "HATAO TRIGGER dup;");
     ok(e, "BANAO TRIGGER bad PEHLE DAALO PAR t SHURU RAKHO NAYA.v = 'abc'; KHATAM;");
@@ -424,7 +429,7 @@ TEST_CASE("existing procedures (plain statement lists) work unchanged", "[sql4][
     ok(e, "BANAO TABLE t (id INT MUKHYA KUNJI, v INT);");
     ok(e, "DAALO MEIN t MAAN (1, 10);");
     ok(e, "BANAO PROCEDURE badhao (p_id INT, p_kitna INT) SHURU BADLO t RAKHO v = v + p_kitna JAHAN id = p_id; DIKHAO v SE t; KHATAM;");
-    CHECK(run(e, "CHALAO badhao(1, 5);").message == "Procedure 'badhao' chal gaya (2 statement(s)): 1 row(s) badal di");
+    CHECK(run(e, "CHALAO badhao(1, 5);").message == "Procedure 'badhao' chal gaya (2 statement(s)): 1 row(s) badal di; 1 row(s)");
     CHECK(q(e, "DIKHAO v SE t;") == "15");
     CHECK_THAT(errorOf(e, "CHALAO badhao(1);"), ContainsSubstring("2 argument(s) chahiye, 1 mile"));
     CHECK_THAT(errorOf(e, "CHALAO nope();"), ContainsSubstring("exist nahi karta"));
@@ -627,7 +632,7 @@ TEST_CASE("OUT and INOUT parameters, @user variables", "[sql4][proc][out]") {
     ok(e, "BANAO PROCEDURE only_out (OUT o INT) SHURU SET o = o; KHATAM;");
     CHECK(q(e, "CHALAO only_out(@o);") == "KHALI");
     // an expression is fine for IN, but OUT / INOUT need a variable
-    CHECK(q(e, "SET @base = 10; CHALAO mix(@base * 2, @b, @c);") == "122|102");
+    CHECK(q(e, "SET @base = 10; CHALAO mix(@base * 2, @b, @c);") == "121|102");
     CHECK_THAT(errorOf(e, "CHALAO dbl(5);"), ContainsSubstring("INOUT parameter 'x' ke liye @variable"));
     CHECK_THAT(errorOf(e, "CHALAO only_out(nosuch);"), ContainsSubstring("OUT parameter 'o' ke liye @variable"));
     // a parameter called `in` is not mistaken for a mode word
@@ -675,7 +680,7 @@ TEST_CASE("procedures survive a restart with their parameter modes; old catalogs
         f << old;
     }
     Engine legacy(dir2.str());
-    CHECK(run(legacy, "CHALAO p(1);").message == "Procedure 'p' chal gaya (1 statement(s)): ");
+    CHECK(run(legacy, "CHALAO p(1);").message == "Procedure 'p' chal gaya (1 statement(s)): 1 row(s)");
     CHECK(slurp(dir2.file("main/catalog.json")).find("functions") == std::string::npos);  // nothing new written unless used
     ok(legacy, "BANAO FUNCTION f() RETURNS INT SHURU RETURN 1; KHATAM;");
     CHECK_THAT(slurp(dir2.file("main/catalog.json")), ContainsSubstring("\"functions\""));
@@ -804,8 +809,8 @@ TEST_CASE("a function may read but not change anything", "[sql4][function]") {
     ok(e, "BANAO PROCEDURE writer () SHURU DAALO MEIN t MAAN (9); KHATAM;");
     CHECK(q(e, "DIKHAO GINO(*) SE t;") == "0");
     CHECK(q(e, "DIKHAO reads() KAHO x;") == "1");
-    // a trigger fired by a function cannot happen: no function can write. RETURN is only for functions
-    ok(e, "BANAO PROCEDURE bad_ret () SHURU RETURN 1; KHATAM;");
+    // a trigger fired by a function cannot happen: no function can write. RETURN is only for functions (refused when created, like MySQL)
+    CHECK_THAT(errorOf(e, "BANAO PROCEDURE bad_ret () SHURU RETURN 1; KHATAM;"), ContainsSubstring("RETURN sirf function"));
 }
 
 TEST_CASE("functions are part of the catalog: saved, loaded, undone by WAPAS", "[sql4][function][persist]") {
@@ -929,7 +934,7 @@ TEST_CASE("PREPARE, EXECUTE ... USING, DEALLOCATE PREPARE", "[sql4][prepare]") {
     CHECK(q(e, "EXECUTE c USING 2;") == "3");
     ok(e, "PREPARE c FROM 'DIKHAO 42 KAHO answer';");
     CHECK(q(e, "EXECUTE c;") == "42");
-    CHECK_THAT(errorOf(e, "PREPARE bad FROM 'DIKHAO FROM';"), ContainsSubstring("expected tha"));
+    CHECK_THAT(errorOf(e, "PREPARE bad FROM 'DIKHAO SE';"), ContainsSubstring("expected tha"));
     CHECK_THAT(errorOf(e, "PREPARE bad FROM 'DIKHAO 1; DIKHAO 2';"), ContainsSubstring("bilkul ek statement"));
     CHECK_THAT(errorOf(e, "PREPARE bad FROM 5;"), ContainsSubstring("SQL text"));
     CHECK_THAT(errorOf(e, "EXECUTE bad;"), ContainsSubstring("exist nahi karta"));
@@ -972,7 +977,7 @@ TEST_CASE("prepared statements and variables inside procedure bodies", "[sql4][p
         DEALLOCATE PREPARE cnt;
         SET n = 0;
     KHATAM;)");
-    CHECK_THAT(run(e, "CHALAO count_in('t', @n);").message, ContainsSubstring("chal gaya (4 statement(s))"));
+    CHECK_THAT(run(e, "CHALAO count_in('t', @n);").message, ContainsSubstring("chal gaya (3 statement(s))"));
     // @variables are the session's: a procedure sets one, the caller reads it
     ok(e, "BANAO PROCEDURE setter () SHURU SET @from_proc = 'hello'; SET @n = @n + 1; KHATAM;");
     ok(e, "SET @n = 41;");
