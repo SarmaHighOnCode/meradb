@@ -146,6 +146,7 @@ add_library(meradb_core STATIC
   src/fs_sync.cpp
   src/table.cpp
   src/planner.cpp
+  src/query_limits.cpp
   src/pyvalue.cpp
   src/evaluator.cpp
   src/aggregates.cpp

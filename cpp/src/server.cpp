@@ -5,6 +5,7 @@
 #include "meradb/datatypes.h"
 #include "meradb/errors.h"
 #include "meradb/pytext.h"
+#include "meradb/query_limits.h"
 #include "meradb/sys_compat.h"
 #include <algorithm>
 #include <cctype>
@@ -115,6 +116,10 @@ bool mayHoldPassword(const std::string& text) {
         }
     }
     return sensitive();
+}
+
+std::string replyTooBig(std::size_t limit) {
+    return "[Execution Galti] Result bahut bada hai (limit " + std::to_string(limit / (1024 * 1024)) + " MB) -- JAHAN ya SIRF lagao";
 }
 
 Json failure(const std::string& message) {
@@ -444,7 +449,7 @@ void Server::serveConnection(Connection& connection) {
                 log(peer + "  INTERNAL ERROR\n" + e.what());
                 reply = failure(std::string("[Internal Galti] ") + e.what());
             }
-            protocol::send(socket, reply, &stop_, options_.sendStallSeconds);
+            sendReply(socket, reply);
             if (isWork) lastWork = clock::now();
             if (stopConnection) break;
         }
@@ -453,6 +458,21 @@ void Server::serveConnection(Connection& connection) {
     } catch (const std::exception& e) {
         log(peer + "  INTERNAL ERROR\n" + e.what());
     }
+}
+
+// The one place a reply is turned into bytes: past the limit the client gets an error it can show, instead of a line
+// its reader refuses (it would call that a broken connection).
+void Server::sendReply(net::Socket& socket, Json& reply) {
+    std::string wire = pyjson::dump(reply) + "\n";
+    if (options_.maxReplyBytes > 0 && wire.size() > options_.maxReplyBytes && reply.contains("results")) {
+        Result refused;
+        refused.error = replyTooBig(options_.maxReplyBytes);
+        Json results = Json::array();
+        results.push_back(protocol::resultToJson(refused));
+        reply["results"] = std::move(results);
+        wire = pyjson::dump(reply) + "\n";
+    }
+    socket.sendAll(wire, &stop_, options_.sendStallSeconds);
 }
 
 Json Server::dispatch(Engine& session, const Json& request, const std::string& peerIp, const std::string& peer,
@@ -470,12 +490,39 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
                                                                        : collapseWhitespace(text, 200)));
         std::vector<Result> results;
         try {
+            limits::Limits queryLimits;
+            queryLimits.seconds = options_.maxQuerySeconds;
+            queryLimits.memoryBytes = options_.maxQueryMemoryBytes;
+            queryLimits.valueBytes = options_.maxValueBytes;
+            queryLimits.stop = &stop_;
+            std::optional<limits::Scope> scope;
+            if (queryLimits.seconds > 0 || queryLimits.memoryBytes > 0 || queryLimits.valueBytes > 0) scope.emplace(queryLimits);
             results = session.runScript(text);
         } catch (const std::exception& e) {
             log(peer + "  INTERNAL ERROR\n" + e.what());
             Result failed;
             failed.error = std::string("[Internal Galti] ") + e.what();
             results.push_back(std::move(failed));
+        }
+        // Refused before encoding: the JSON tree of a huge result would cost several times the result itself.
+        std::size_t replyBytes = 0;
+        for (auto& r : results) {
+            if (options_.maxResultRows > 0 && r.rows.size() > options_.maxResultRows) {
+                r = Result();
+                r.error = "[Execution Galti] Result mein bahut zyada rows hain (limit " + std::to_string(options_.maxResultRows) +
+                          ") -- JAHAN ya SIRF lagao, ya server par MERADB_MAX_RESULT_ROWS badhao";
+                continue;
+            }
+            for (const auto& row : r.rows) {
+                for (const auto& value : row) {
+                    const auto* cell = std::get_if<std::string>(&value.data);
+                    replyBytes += cell != nullptr ? cell->size() + 3 : 2;
+                }
+            }
+            if (options_.maxReplyBytes > 0 && replyBytes > options_.maxReplyBytes) {
+                r = Result();
+                r.error = replyTooBig(options_.maxReplyBytes);
+            }
         }
         Json encoded = Json::array();
         for (const auto& r : results) {
@@ -567,6 +614,10 @@ std::string applyLimitEnvironment(ServerOptions& options) {
     number("MERADB_MAX_CONNECTIONS_PER_ADDRESS", [&](double v) { options.maxConnectionsPerAddress = static_cast<int>(std::min(v, 1e9)); });
     number("MERADB_IDLE_TIMEOUT", [&](double v) { options.idleTimeoutSeconds = v; });
     number("MERADB_IDLE_TRANSACTION_TIMEOUT", [&](double v) { options.idleTransactionTimeoutSeconds = v; });
+    number("MERADB_MAX_QUERY_SECONDS", [&](double v) { options.maxQuerySeconds = v; });
+    number("MERADB_MAX_QUERY_MEMORY_MB", [&](double v) { options.maxQueryMemoryBytes = static_cast<std::size_t>(v * 1024 * 1024); });
+    number("MERADB_MAX_RESULT_ROWS", [&](double v) { options.maxResultRows = static_cast<std::size_t>(v); });
+    number("MERADB_MAX_VALUE_MB", [&](double v) { options.maxValueBytes = static_cast<std::size_t>(v * 1024 * 1024); });
     return problem;
 }
 

@@ -1,5 +1,6 @@
 // cpp/src/engine.cpp -- mirrors meradb/engine.py
 #include "meradb/fs_util.h"
+#include "meradb/query_limits.h"
 #include "meradb/engine.h"
 #include "meradb/aggregates.h"
 #include "meradb/ast_util.h"
@@ -373,6 +374,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
     for (const auto& stmt : statements) {
         try {
             results.push_back(guarded(*stmt));
+            limits::chargeRows(results.back().rows);  // these stay in memory until the whole reply has been sent
         } catch (const MeraDBError& e) {
             Result r;
             r.error = e.formatted();
@@ -385,6 +387,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
 Result Engine::executeStatement(const ast::Statement& stmt) {
     StackBase base;
     requireStack();
+    limits::MemoryMark memoryOfThisStatement;
     ScopedSessionHost sessionHost(this);  // @variables and stored functions, for every expression this statement evaluates
     // Hold the instance lock for the statement (waiting at most lockTimeoutSeconds).
     auto guard = acquireLock(instance_->lockTimeoutSeconds);
@@ -2944,6 +2947,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
             for (size_t li : *partners) {
                 Row combined = combineRows(leftRows[li], rRow);
                 if (isTrue(evaluate(on, combined))) {
+                    limits::chargeRow(combined);
                     out.push_back(std::move(combined));
                     matched = true;
                 }
@@ -2978,6 +2982,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
         for (size_t ri : *partners) {
             Row combined = combineRows(lRow, rightRows[ri]);
             if (isTrue(evaluate(on, combined))) {  // re-check the full PAR (it may have more conditions)
+                limits::chargeRow(combined);
                 out.push_back(std::move(combined));
                 matched = true;
                 matchedRight[ri] = true;
@@ -3516,6 +3521,7 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
 
 Result Engine::execSelect(const ast::Select& stmt) {
     requireStack();
+    limits::MemoryMark memoryOfThisSelect;  // a correlated sub-select runs once per row: it must not add up
     auto planPtr = planSelect(stmt);
     SelectPlan& plan = *planPtr;
     const Scope& scope = *plan.scope;
@@ -3591,6 +3597,7 @@ Result Engine::execSelect(const ast::Select& stmt) {
     for (size_t i = 0; i < rows.size(); ++i) {
         std::vector<Value> out;
         for (const auto* e : outputPtrs) out.push_back(evaluate(*e, rows[i], projSubq.at(i)));
+        limits::chargeRow(out);
         outRows.push_back(std::move(out));
     }
 

@@ -1,5 +1,6 @@
 // cpp/src/evaluator.cpp -- mirrors meradb/evaluator.py
 #include "meradb/evaluator.h"
+#include "meradb/query_limits.h"
 #include "meradb/aggregates.h"
 #include "meradb/errors.h"
 #include "meradb/stack_guard.h"
@@ -473,6 +474,7 @@ bool isTrue(const Value& v) { return isBool(v, true); }
 
 Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueries) {
     requireStack();
+    limits::tick();
     if (auto* lit = dynamic_cast<const Literal*>(&expr)) return lit->value;
 
     if (dynamic_cast<const Subquery*>(&expr) || dynamic_cast<const InSubquery*>(&expr)) {
@@ -548,7 +550,9 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
             if (num(r) != 0.0 && (num(r) < 0.0) != (num(args[0]) < 0.0)) r = arithmetic("-", r, args[1]);
             return r;
         }
-        return callScalarFunc(sf->name, args);
+        Value result = callScalarFunc(sf->name, args);
+        if (const auto* text = std::get_if<std::string>(&result.data)) limits::checkText(text->size());
+        return result;
     }
 
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) {

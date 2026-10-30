@@ -150,6 +150,26 @@ Limits the server applies:
 | Logins hashing a password at once | 4; the others wait up to 5 seconds, then hear the server is busy |
 | Wrong passwords in a row from one address | 10, then that address is refused for 30 seconds |
 
+What one query request (one message, however many statements it holds) may use:
+
+| Limit | Value |
+|---|---|
+| Time | 120 seconds (`MERADB_MAX_QUERY_SECONDS`) |
+| Rows held in memory, estimated | 2048 MB (`MERADB_MAX_QUERY_MEMORY_MB`) |
+| Rows in one result | 5,000,000 (`MERADB_MAX_RESULT_ROWS`) |
+| One text value (a `CONCAT` that keeps doubling) | 64 MB (`MERADB_MAX_VALUE_MB`); all of a session's `@variables` together four times that |
+| The reply | 64 MB, which is the most the clients can read |
+
+Past a limit the statement gets an ordinary error and the session carries on, with its transaction
+still open if it had one. The error says which limit it was. Every session counts here, the superuser
+too. `--local` and an embedded `Engine` have none of these limits: there the only one who suffers is
+the one who asked.
+
+The time limit is checked while expressions are evaluated and the memory figure is an estimate, so a
+query can run a little past them. Because one lock lets only one statement run at a time, one query's
+limit is close to the limit for the whole server; the replies waiting to be sent to slow clients come
+on top of that.
+
 The settings in brackets are read from the environment when the server starts; `0` turns a limit
 off. They apply to the C++ server (`meradb_cli`), not to the older Python one.
 

@@ -60,6 +60,13 @@ struct ServerOptions {
     // others wait up to loginHashWaitSeconds and are then told the server is busy. 0 = no limit.
     int maxConcurrentLogins = 4;
     double loginHashWaitSeconds = 5.0;
+    // What one query request may use (see query_limits.h). The clients give up on a reply after 60 s and cannot read
+    // one over 64 MB, so these lie above what a client can use anyway. 0 = no limit. An embedded or --local Engine has none.
+    double maxQuerySeconds = 120.0;
+    std::size_t maxQueryMemoryBytes = std::size_t{2048} * 1024 * 1024;
+    std::size_t maxValueBytes = protocol::kMaxMessageBytes;
+    std::size_t maxResultRows = 5000000;
+    std::size_t maxReplyBytes = protocol::kMaxMessageBytes;
     // After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
     // loginLockSeconds whatever it sends (and costs no hashing). 0 = no limit.
     int loginFailureLimit = 10;
@@ -105,6 +112,7 @@ private:
     void noteLogin(const std::string& ip, bool succeeded);
     bool beginHashing();  // false: the server stayed too busy for too long
     void endHashing();
+    void sendReply(net::Socket& socket, protocol::Json& reply);
 
     struct LoginFailures {
         int count = 0;

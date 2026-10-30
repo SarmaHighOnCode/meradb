@@ -1,5 +1,6 @@
 // cpp/src/planner.cpp -- mirrors meradb/planner.py
 #include "meradb/planner.h"
+#include "meradb/query_limits.h"
 #include "meradb/aggregates.h"
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
@@ -44,6 +45,7 @@ std::vector<std::string> Scope::keys(size_t i) const {
 }
 
 std::unordered_map<std::string, Value> Scope::row(size_t i, const std::vector<Value>& values) const {
+    limits::chargeRow(values);
     std::unordered_map<std::string, Value> r;
     auto ks = keys(i);
     for (size_t j = 0; j < ks.size() && j < values.size(); ++j) r[ks[j]] = values[j];  // zip()

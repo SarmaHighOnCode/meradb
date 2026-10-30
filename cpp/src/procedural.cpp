@@ -5,6 +5,7 @@
 // A body is parsed fresh on every run (parser_proc.cpp); ordinary statements inside it keep going through
 // executeStatement, so privileges, FK rules and triggers apply exactly as for a statement typed by hand.
 #include "meradb/aggregates.h"
+#include "meradb/query_limits.h"
 #include "meradb/ast_util.h"
 #include "meradb/engine.h"
 #include "meradb/errors.h"
@@ -239,6 +240,7 @@ void Engine::assignVariable(ProcFrame* frame, const std::string& name, Value val
     if (!name.empty() && name[0] == '@') {
         if (functionDepth_ > 0) throw ExecutionError("Function ke andar @variable nahi badla ja sakta");
         userVars_[name] = std::move(value);
+        limits::checkVariables(userVars_);
         return;
     }
     if (size_t dot = name.find('.'); dot != std::string::npos) {

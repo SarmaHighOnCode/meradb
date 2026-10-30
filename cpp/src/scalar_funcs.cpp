@@ -3,6 +3,7 @@
 #include "meradb/errors.h"
 #include "meradb/pytext.h"
 #include "meradb/pyvalue.h"
+#include "meradb/query_limits.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -391,7 +392,11 @@ Value callScalarFunc(const std::string& upperName, const std::vector<Value>& arg
     if (name == "RTRIM") return Value(pytext::rstrip(valueAsText(args[0])));
     if (name == "CONCAT") {
         std::string out;
-        for (const auto& a : args) out += valueAsText(a);
+        for (const auto& a : args) {
+            const std::string piece = valueAsText(a);
+            limits::checkText(out.size() + piece.size());
+            out += piece;
+        }
         return Value(out);
     }
     if (name == "SUBSTRING") {
@@ -421,6 +426,7 @@ Value callScalarFunc(const std::string& upperName, const std::vector<Value>& arg
         while (true) {
             size_t hit = s.find(from, at);
             if (hit == std::string::npos) break;
+            limits::checkText(out.size() + (hit - at) + to.size());
             out += s.substr(at, hit - at) + to;
             at = hit + from.size();
         }
