@@ -1393,6 +1393,22 @@ TEST_CASE("gui queries: a thousand saved queries draw only what is in view", "[g
     CHECK(s.ui.queryRowCentre(0).x < 0.0f);
 }
 
+TEST_CASE("gui home: a database named with capitals opens properly", "[gui][headless][home]") {
+    Screen s;
+    s.buffer().setText("-- main ka script");
+    s.rig.session->persistEditor(true);
+    s.rig.session->runText("BANAO DATABASE Naya;");
+    s.rig.session->openDatabase("Naya");
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    CHECK(s.rig.session->currentDb() == "naya");
+    CHECK(s.text().empty());                             // the writing area of the new database
+    s.buffer().setText("-- naya ka script");
+    s.rig.session->persistEditor(true);
+    CHECK(wb::QueryStore(s.rig.data.str()).loadScript("naya") == "-- naya ka script");
+    CHECK(wb::QueryStore(s.rig.data.str()).loadScript("main") == "-- main ka script");
+}
+
 TEST_CASE("gui results: a script's every table can be opened, and the grid and the CSV follow", "[gui][headless][resultsets]") {
     Screen s;
     REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK, c ANK); DAALO MEIN t MAAN (1); DAALO MEIN u MAAN (2, 3), (4, 5); "

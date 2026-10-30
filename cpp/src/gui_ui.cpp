@@ -1029,7 +1029,10 @@ void GuiUi::drawHome(const ImVec2& display) {
                     bool valid = !newDbName_.empty() && !std::isdigit(static_cast<unsigned char>(newDbName_[0]));
                     for (unsigned char ch : newDbName_) valid = valid && (std::isalnum(ch) || ch == '_');
                     if (!valid) newDbError_ = "Naam mein sirf letters, digits aur _ (digit se shuru nahi).";
-                    else if (std::find(names.begin(), names.end(), newDbName_) != names.end()) newDbError_ = "Ye database pehle se hai.";
+                    std::string folded = newDbName_;   // "Naya" and "naya" are one database to the engine
+                    for (char& ch : folded) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    if (!valid) {
+                    } else if (std::find(names.begin(), names.end(), folded) != names.end()) newDbError_ = "Ye database pehle se hai.";
                     else {
                         session_.runText("BANAO DATABASE " + newDbName_ + ";");
                         session_.openDatabase(newDbName_);

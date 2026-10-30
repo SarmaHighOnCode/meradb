@@ -389,7 +389,10 @@ void Session::persistEditor(bool force) {
     lastScriptWrite_ = now;
 }
 
-void Session::openDatabase(const std::string& name) {
+void Session::openDatabase(const std::string& asTyped) {
+    std::string name = asTyped;   // the engine folds a name to lower case; the answer is compared with this
+    for (char& ch : name)
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
     if (name.empty()) return;
     if (name == header_.db) return;
     persistEditor(true);
