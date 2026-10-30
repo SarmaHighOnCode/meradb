@@ -32,6 +32,8 @@ int decimalDigit(char32_t codePoint);
 // decimal digits of any script with single underscores BETWEEN digits. nullopt where Python raises ValueError;
 // a value beyond long long saturates (callers range-check).
 std::optional<long long> parseInt(const std::string& text);
+// The same, for a caller that must not get a wrong number: a value too big for a long long is nullopt, not the largest one.
+std::optional<long long> parseIntExact(const std::string& text);
 
 std::string lstrip(const std::string& text);
 std::string rstrip(const std::string& text);

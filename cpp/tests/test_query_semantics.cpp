@@ -179,3 +179,24 @@ TEST_CASE("KRAM and SIRF after a set operation apply to the whole result", "[sem
     // a SELECT in a view keeps its own clauses
     REQUIRE(q(e, "DIKHAO id SE (DIKHAO id SE t KRAM id ULTA SIRF 1) d;") == "5");
 }
+
+TEST_CASE("Aggregates take ALAG (DISTINCT)", "[semantics][aggregate]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    REQUIRE(q(e, "DIKHAO GINO(ALAG a), KUL(ALAG a), AUSAT(ALAG a), GINO(a), KUL(a) SE t;") == "3|60|20.0|4|70");
+    REQUIRE(q(e, "DIKHAO COUNT(DISTINCT b), NYUNTAM(ALAG a) SE t;") == "3|10");
+    REQUIRE(q(e, "DIKHAO b, GINO(ALAG a) SE t SAMOOH b KRAM b;") == "KHALI|1;x|1;y|0;z|1");
+    REQUIRE(q(e, "DIKHAO a, GINO(ALAG b) KAHO c SE t SAMOOH a JINKA GINO(ALAG b) = 1 KRAM a SIRF 1;") == "KHALI|1");
+    REQUIRE(run(e, "DIKHAO GINO(ALAG a) SE t;").columns[0] == "GINO(ALAG a)");
+    REQUIRE_THROWS(e.execute("DIKHAO GINO(ALAG *) SE t;"));
+}
+
+TEST_CASE("CAST of a too-big text to INT is an error, not the largest INT", "[semantics][cast]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS(e.execute("DIKHAO CAST('9999999999999999999999' AS INT);"));
+    REQUIRE_THROWS(e.execute("DIKHAO CAST('-9999999999999999999999' AS INT);"));
+    REQUIRE(q(e, "DIKHAO CAST('9223372036854775807' AS INT), CAST('-9223372036854775808' AS INT), CAST(' 12 ' AS INT);") ==
+            "9223372036854775807|-9223372036854775808|12");
+}

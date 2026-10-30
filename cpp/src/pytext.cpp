@@ -272,7 +272,8 @@ int decimalDigit(char32_t codePoint) {
     return offset < 10 ? static_cast<int>(offset) : -1;
 }
 
-std::optional<long long> parseInt(const std::string& raw) {
+namespace {
+std::optional<long long> parseIntChecked(const std::string& raw, bool& overflow) {
     // int() strips str.isspace() characters except U+001C..U+001F (checked against CPython for every code point).
     struct Ch {
         char32_t cp;
@@ -296,12 +297,16 @@ std::optional<long long> parseInt(const std::string& raw) {
         ++first;
     }
     constexpr long long kMax = std::numeric_limits<long long>::max();
-    long long value = 0;
+    // counted in unsigned: the most negative long long is one more than kMax
+    unsigned long long value = 0;
+    const unsigned long long limit = static_cast<unsigned long long>(kMax) + (negative ? 1 : 0);
     bool lastWasDigit = false;
     for (std::size_t i = first; i < last; ++i) {
         const int d = decimalDigit(chars[i].cp);
         if (d >= 0) {
-            value = value > (kMax - d) / 10 ? kMax : value * 10 + d;  // saturates
+            const auto digit = static_cast<unsigned long long>(d);
+            if (value > (limit - digit) / 10) overflow = true;
+            else value = value * 10 + digit;
             lastWasDigit = true;
         } else if (chars[i].cp == '_' && lastWasDigit && i + 1 < last) {
             lastWasDigit = false;
@@ -310,7 +315,22 @@ std::optional<long long> parseInt(const std::string& raw) {
         }
     }
     if (!lastWasDigit) return std::nullopt;
-    return negative ? -value : value;
+    if (overflow) return negative ? -kMax : kMax;
+    if (negative) return value == limit ? std::numeric_limits<long long>::min() : -static_cast<long long>(value);
+    return static_cast<long long>(value);
+}
+}  // namespace
+
+std::optional<long long> parseInt(const std::string& raw) {  // saturates
+    bool overflow = false;
+    return parseIntChecked(raw, overflow);
+}
+
+std::optional<long long> parseIntExact(const std::string& raw) {
+    bool overflow = false;
+    std::optional<long long> value = parseIntChecked(raw, overflow);
+    if (overflow) return std::nullopt;
+    return value;
 }
 
 }  // namespace meradb::pytext
