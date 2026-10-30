@@ -281,9 +281,10 @@ feature working at all:
   (one `Instance`) can hold several databases, and a login is a property of the server, not
   of any one database -- exactly the split real databases make between "server-level
   logins" and "database-level objects". Passwords are hashed with
-  `hashlib.pbkdf2_hmac("sha256", ..., 100_000 iterations)` and a random per-user salt --
-  stdlib only, no bcrypt/passlib, "good enough for a teaching project", explicitly not
-  production-grade (no configurable work factor, no pepper, no lockout).
+  `hashlib.pbkdf2_hmac("sha256", ..., 600_000 iterations)` and a random per-user salt --
+  stdlib only, no bcrypt/passlib. Each entry records its own `iterations`; an entry without
+  that key is an old 100,000 one and is upgraded at its next successful login. Repeated wrong
+  passwords lock the address out for a while. No pepper.
 - **Backward compatibility is the whole design constraint here.** `Engine.user` defaults
   to `None`, meaning superuser/unrestricted -- `Engine._check_privileges()` (in
   `engine.py`, called once from `execute_statement()` before every statement) returns

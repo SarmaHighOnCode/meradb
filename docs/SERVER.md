@@ -120,7 +120,10 @@ Asks for the password when connecting.
 meradb start --host 0.0.0.0 --password s3cret
 ```
 
-Opens the server to your LAN. Always use a password when you do this.
+Opens the server to your LAN. A password is required for this: without one the server refuses
+to start, because a connection with no password is a superuser. (`MERADB_ALLOW_NO_PASSWORD=1`
+overrides that if you really mean it.) Prefer `MERADB_PASSWORD` to `--password` on shared
+machines: command-line arguments are visible in the process list.
 
 ```bash
 meradb shell -H 192.168.1.20 -W
@@ -128,8 +131,26 @@ meradb shell -H 192.168.1.20 -W
 
 Connects from another machine on the network.
 
-The password travels as plain text (there is no encryption).
-That's fine on your own machine or LAN, but not across the internet.
+Passwords, queries and results all travel as plain text (there is no encryption), so anyone
+who can watch the network can read them. Use it on your own machine or a LAN you trust; to
+cross anything else, put it inside an SSH tunnel or a VPN.
+
+Limits the server applies:
+
+| Limit | Value |
+|---|---|
+| Time to send the first message (the hello) | 10 seconds in all, slow sending does not extend it |
+| Size of the hello | 64 KB |
+| Size of any later message | 64 MB |
+| Connections at once | 256; further ones are told so and closed |
+| Wrong passwords in a row from one address | 10, then that address is refused for 30 seconds |
+
+The lockout is per address, so everyone behind one address shares it. A logged-in session has
+no idle limit, and there is no limit on what one query may use: a logged-in user can still make
+the server work hard.
+
+Protect the data folder with ordinary file permissions. `users.json` holds password hashes:
+on Linux and macOS it is written owner-only, on Windows it inherits the folder's permissions.
 
 ## Users and privileges
 
