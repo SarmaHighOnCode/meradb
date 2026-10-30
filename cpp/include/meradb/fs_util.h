@@ -57,6 +57,12 @@ void syncFolderOf(const std::string& utf8);  // the folder holding this file
 // Every file and folder under this folder, then the folder itself. False if a file could not be synced.
 bool syncTree(const std::string& utf8);
 
+// Rights for a file holding a secret: its owner and nobody else. A new file has them from the first moment, under a name
+// that must not exist yet (a link planted there is not written through); false if it could not be made and written.
+// restrictToOwner is for a file that already exists, best effort.
+bool writeNewPrivateFile(const std::string& utf8, const std::string& bytes);
+void restrictToOwner(const std::string& utf8);
+
 // os.path.abspath: relative to the working directory, "" and "." mean the working directory itself,
 // "." and ".." parts and doubled separators are folded away and a trailing separator is dropped
 // (except on a root). Returns the input unchanged if the working directory cannot be read.

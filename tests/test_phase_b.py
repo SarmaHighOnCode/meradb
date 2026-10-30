@@ -376,11 +376,11 @@ class UsersOverTheWireTest(unittest.TestCase):
         self.assertTrue(results[0].error)
         self.assertIn("superuser nahi hai", results[0].error)
 
-    def test_no_username_connection_is_still_unrestricted(self):
-        conn = self.connect()  # no user= at all -- exactly today's behaviour
-        conn.execute("DAALO MEIN students MAAN (3, 'Anjali')")
-        result = conn.execute("DIKHAO * SE students")[0]
-        self.assertEqual(len(result.rows), 2)
+    def test_no_username_connection_is_refused_once_users_exist(self):
+        with self.assertRaises(Exception) as caught:
+            self.connect()  # no user= at all, and this server has no shared password
+        self.assertIn("-U", str(caught.exception))
+        self.assertIn("--local", str(caught.exception))
 
 
 if __name__ == "__main__":

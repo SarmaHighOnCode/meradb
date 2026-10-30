@@ -162,6 +162,10 @@ bool waitReady(Native s, bool forWrite, double timeoutSeconds) {
 
 void Socket::close() {
     if (handle_ == kInvalid) return;
+    if (secure_) {
+        secure_->closeNotify();  // best effort; the peer takes a close without it as a cut connection
+        secure_.reset();
+    }
     closeNative(toNative(handle_));
     handle_ = kInvalid;
 }
@@ -177,11 +181,30 @@ void Socket::shutdownBoth() {
 
 bool Socket::waitReadable(double seconds) {
     if (handle_ == kInvalid) throw NetError("socket band hai");
+    if (secure_) return secure_->waitReadable(seconds);
     return waitReady(toNative(handle_), false, seconds);
 }
 
-void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
+int Socket::peekByte(double seconds, const std::atomic<bool>* stop) {
+    if (handle_ == kInvalid) return -1;
+    using clock = std::chrono::steady_clock;
+    const auto started = clock::now();
+    for (;;) {
+        if (stop != nullptr && stop->load()) return -1;
+        if (waitReady(toNative(handle_), false, std::min(seconds, 0.1))) break;
+        if (std::chrono::duration<double>(clock::now() - started).count() >= seconds) return -1;
+    }
+    char byte = 0;
+    return ::recv(toNative(handle_), &byte, 1, MSG_PEEK) == 1 ? static_cast<unsigned char>(byte) : -1;
+}
+
+void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop, double stallSeconds) {
     if (handle_ == kInvalid) throw NetError("socket band hai");
+    if (secure_) {
+        secure_->write(data, stop, stallSeconds);
+        return;
+    }
+    using clock = std::chrono::steady_clock;
     std::size_t sent = 0;
     if (stop != nullptr) {
         struct NonBlocking {  // blocking mode is restored on every exit path
@@ -189,17 +212,21 @@ void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
             explicit NonBlocking(Native native) : s(native) { setNonBlocking(s, true); }
             ~NonBlocking() { setNonBlocking(s, false); }
         } mode(toNative(handle_));
+        auto lastProgress = clock::now();
         while (sent < data.size()) {
             std::size_t chunk = std::min<std::size_t>(data.size() - sent, 1u << 16);
             IoLen n = ::send(toNative(handle_), data.data() + sent, static_cast<IoCap>(chunk), 0);
             if (n >= 0) {
                 sent += static_cast<std::size_t>(n);
+                lastProgress = clock::now();
                 continue;
             }
             int e = lastError();
             if (isInterrupted(e)) continue;
             if (!isTimeout(e)) throw NetError(errorText(e));  // timeout here = would block: no room yet
             if (stop->load()) throw NetError("server band ho raha hai");  // only a blocked send gives up
+            if (stallSeconds > 0 && std::chrono::duration<double>(clock::now() - lastProgress).count() >= stallSeconds)
+                throw NetError("timed out");
             waitReady(toNative(handle_), true, 0.1);
         }
         return;
@@ -219,6 +246,7 @@ void Socket::sendAll(const std::string& data, const std::atomic<bool>* stop) {
 
 std::size_t Socket::recvSome(char* buffer, std::size_t capacity) {
     if (handle_ == kInvalid) throw NetError("socket band hai");
+    if (secure_) return secure_->read(buffer, capacity);
     for (;;) {
         IoLen n = ::recv(toNative(handle_), buffer, static_cast<IoCap>(capacity), 0);
         if (n >= 0) return static_cast<std::size_t>(n);
@@ -231,6 +259,10 @@ std::size_t Socket::recvSome(char* buffer, std::size_t capacity) {
 
 void Socket::setReceiveTimeout(double seconds) {
     if (handle_ == kInvalid) return;
+    if (secure_) {
+        secure_->setTimeout(seconds);
+        return;
+    }
 #ifdef _WIN32
     DWORD ms = seconds <= 0 ? 0 : static_cast<DWORD>(std::max(1.0, seconds * 1000.0));  // 0 would mean "wait forever"
     ::setsockopt(toNative(handle_), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof ms);
@@ -340,6 +372,24 @@ Socket acceptWithTimeout(Socket& listener, double timeoutSeconds) {
     setNoDelay(c);
     return accepted;
 }
+
+long rawSend(std::intptr_t handle, const void* data, std::size_t size) noexcept {
+    const IoLen n = ::send(toNative(handle), static_cast<const char*>(data), static_cast<IoCap>(size), 0);
+    if (n >= 0) return static_cast<long>(n);
+    const int e = lastError();
+    return isTimeout(e) || isInterrupted(e) ? kRawWouldBlock : kRawFailed;
+}
+
+long rawRecv(std::intptr_t handle, void* data, std::size_t size) noexcept {
+    const IoLen n = ::recv(toNative(handle), static_cast<char*>(data), static_cast<IoCap>(size), 0);
+    if (n >= 0) return static_cast<long>(n);
+    const int e = lastError();
+    return isTimeout(e) || isInterrupted(e) ? kRawWouldBlock : kRawFailed;
+}
+
+bool waitHandle(std::intptr_t handle, bool forWrite, double seconds) { return waitReady(toNative(handle), forWrite, seconds); }
+
+void setHandleNonBlocking(std::intptr_t handle, bool on) { setNonBlocking(toNative(handle), on); }
 
 bool portOpen(const std::string& host, int port, double timeoutSeconds) {
     try {

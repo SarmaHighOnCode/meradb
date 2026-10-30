@@ -41,7 +41,8 @@ int parsePort(const std::string& text) {
 }  // namespace
 
 ConnectRequest makeConnectRequest(bool local, const std::string& host, const std::string& port,
-                                  const std::string& password, const std::string& database) {
+                                  const std::string& password, const std::string& database,
+                                  const std::string& user, const std::string& tls) {
     ConnectRequest r;
     r.local = local;
     r.host = pytext::strip(host);
@@ -52,6 +53,12 @@ ConnectRequest makeConnectRequest(bool local, const std::string& host, const std
     if (!pw.empty()) r.password = pw;
     const std::string db = pytext::strip(database);
     if (!db.empty()) r.database = db;
+    const std::string name = pytext::strip(user);
+    if (!name.empty()) r.user = name;
+    // The TLS field: empty = plain, "on" = TLS trusting the computer's roots, anything else = the certificate file to trust.
+    const std::string tlsText = pytext::strip(tls);
+    r.tls = !tlsText.empty();
+    if (r.tls && tlsText != "on") r.tlsCaFile = tlsText;
     return r;
 }
 
@@ -112,6 +119,9 @@ std::unique_ptr<Backend> defaultBackendFactory(const ConnectRequest& request, co
     options.port = parsePort(request.port);
     options.password = request.password;
     options.database = request.database;
+    options.user = request.user;
+    options.tls = request.tls;
+    options.tlsCaFile = request.tlsCaFile;
     return std::unique_ptr<Backend>(new Connection(options));
 }
 

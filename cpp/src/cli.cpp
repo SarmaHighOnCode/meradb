@@ -79,23 +79,25 @@ const char* kUsage =
 std::string subcommandUsage(const std::string& command) {
     if (command == "server")
         return "usage: meradb server [-h] [-D DATA] [--host HOST] [--port PORT]\n"
-               "                     [--password PASSWORD] [-v]\n";
+               "                     [--password PASSWORD] [-v] [--tls-cert TLS_CERT]\n"
+               "                     [--tls-key TLS_KEY]\n";
     if (command == "start")
         return "usage: meradb start [-h] [-D DATA] [--host HOST] [--port PORT]\n"
-               "                    [--password PASSWORD] [-v]\n";
+               "                    [--password PASSWORD] [-v] [--tls-cert TLS_CERT]\n"
+               "                    [--tls-key TLS_KEY]\n";
     if (command == "stop") return "usage: meradb stop [-h] [-D DATA] [-W] [--force]\n";
     if (command == "status") return "usage: meradb status [-h] [-D DATA] [-W]\n";
     if (command == "shell")
         return "usage: meradb shell [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
-               "                    [-U USER] [--local]\n";
+               "                    [-U USER] [--local] [--tls] [--tls-ca TLS_CA]\n";
     if (command == "workbench")
         return "usage: meradb workbench [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
-               "                        [-U USER] [--local]\n";
+               "                        [-U USER] [--local] [--tls] [--tls-ca TLS_CA]\n";
     if (command == "gui")
         return "usage: meradb gui [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
-               "                  [-U USER] [--local]\n";
+               "                  [-U USER] [--local] [--tls] [--tls-ca TLS_CA]\n";
     return "usage: meradb run [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]\n"
-           "                  [-U USER] [--local]\n"
+           "                  [-U USER] [--local] [--tls] [--tls-ca TLS_CA]\n"
            "                  files [files ...]\n";
 }
 
@@ -179,7 +181,10 @@ std::string subcommandHelp(const std::string& command, const std::string& dataDi
                "                        0.0.0.0)\n"
                "  --port PORT           TCP port (default 6372, ya MERADB_PORT)\n"
                "  --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)\n"
-               "  -v, --verbose         har query log karo\n";
+               "  -v, --verbose         har query log karo\n"
+               "  --tls-cert TLS_CERT   TLS certificate file (--tls-key ke saath); phir har\n"
+               "                        connection TLS hoga\n"
+               "  --tls-key TLS_KEY     TLS private key file (--tls-cert ke saath)\n";
     } else {
         if (client) {
             out += "  -H HOST, --host HOST  server ka address (default 127.0.0.1, ya MERADB_HOST)\n"
@@ -192,7 +197,11 @@ std::string subcommandHelp(const std::string& command, const std::string& dataDi
         if (client) {
             out += "  -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --\n"
                    "                        privileges ke saath, server-wide password ki jagah\n"
-                   "  --local               server ke bina, seedha data folder kholo\n";
+                   "  --local               server ke bina, seedha data folder kholo\n"
+                   "  --tls                 TLS se connect karo aur certificate check karo (ya\n"
+                   "                        MERADB_TLS=1)\n"
+                   "  --tls-ca TLS_CA       is certificate file par bharosa karo (ya\n"
+                   "                        MERADB_TLS_CA); --tls apne aap lag jata hai\n";
         }
     }
     return out;
@@ -330,7 +339,7 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
             const std::string& inlineValue = piece.inlineValue;
             const bool isFlag = name == "-h" || name == "--help" || ((isClient || isControl) && (name == "-W" || name == "--password")) ||
                                 (isServer && (name == "-v" || name == "--verbose")) || (args.command == "stop" && name == "--force") ||
-                                (isClient && name == "--local");
+                                (isClient && (name == "--local" || name == "--tls"));
             if (isFlag && hasInline) {
                 args.error = "argument " + optionDisplayName(name, isServer) + ": ignored explicit argument '" + inlineValue + "'";
                 args.errorInSubcommand = true;
@@ -391,6 +400,17 @@ CliArgs parseCliArgs(std::vector<std::string> argv) {
                 args.user = text;
             } else if (isClient && name == "--local") {
                 args.local = true;
+            } else if (isClient && name == "--tls") {
+                args.tls = true;
+            } else if (isClient && name == "--tls-ca") {
+                if (!value(text)) return args;
+                args.tlsCa = text;
+            } else if (isServer && name == "--tls-cert") {
+                if (!value(text)) return args;
+                args.tlsCert = text;
+            } else if (isServer && name == "--tls-key") {
+                if (!value(text)) return args;
+                args.tlsKey = text;
             } else if (args.command == "run" && !filesClosed && (arg.empty() || arg[0] != '-' || arg == "-")) {
                 args.files.push_back(arg);
             } else {
@@ -444,6 +464,12 @@ std::unique_ptr<Backend> openBackend(const CliArgs& args) {
         return openLocal(args);
     }
 
+    // Asking for TLS is an explicit choice too: no fallback to anything without it, local mode included.
+    std::string tlsCa = args.tlsCa.value_or(sys::getEnv("MERADB_TLS_CA").value_or(""));
+    const std::string tlsSetting = sys::getEnv("MERADB_TLS").value_or("");
+    const bool tlsAsked = args.tls || !tlsCa.empty() || tlsSetting == "1" || tlsSetting == "on" || tlsSetting == "true";
+    bool useTls = tlsAsked;
+
     // Flags are an explicit choice (no fallback to local mode if that server is down);
     // MERADB_HOST / MERADB_PORT only change the defaults.
     const bool explicitTarget = args.host.has_value() || args.port.has_value();
@@ -460,6 +486,10 @@ std::unique_ptr<Backend> openBackend(const CliArgs& args) {
         auto info = protocol::readPidFile(absolute(args.dataDir));  // a server on another port for this folder?
         port = (info && info->contains("port")) ? static_cast<int>((*info)["port"].get<std::int64_t>())
                                                 : protocol::kDefaultPort;
+        if (info && !tlsAsked && info->value("tls", false)) {  // this folder's server on this computer: its pid file says how
+            useTls = true;
+            tlsCa = info->value("tls_cert", std::string());
+        }
     }
 
     ConnectOptions options;
@@ -468,10 +498,14 @@ std::unique_ptr<Backend> openBackend(const CliArgs& args) {
     if (password && !password->empty()) options.password = password;
     options.database = args.database;
     options.user = args.user;
+    options.tls = useTls;
+    options.tlsCaFile = tlsCa;
+    if (!useTls && host != "localhost" && host.rfind("127.", 0) != 0)
+        note("(chetavni: " + host + " se TLS ke bina connect ho rahe hain -- password aur data network par khule jayenge; --tls lagao)");
     try {
         return std::make_unique<Connection>(options);
     } catch (const ServerUnavailable&) {
-        if (explicitTarget) throw;
+        if (explicitTarget || tlsAsked) throw;
         note("(" + host + ":" + std::to_string(port) + " par server nahi mila -- LOCAL mode: seedha '" +
              absolute(args.dataDir) + "' khol rahe hain. Server ke liye: meradb start)");
         return openLocal(args);
@@ -565,6 +599,8 @@ int runGuiCommand(const CliArgs& args) {
     if (args.database) forwarded.insert(forwarded.end(), {"-d", *args.database});
     if (args.user) forwarded.insert(forwarded.end(), {"-U", *args.user});
     if (args.local) forwarded.push_back("--local");
+    if (args.tls) forwarded.push_back("--tls");
+    if (args.tlsCa) forwarded.insert(forwarded.end(), {"--tls-ca", *args.tlsCa});
     if (args.askPassword) sys::setEnv("MERADB_PASSWORD", sys::readHidden("Password: "));
 
     const fs::path logPath = fs::temp_directory_path(ec) / "meradb_gui.log";
@@ -597,6 +633,8 @@ ControlOptions controlOptions(const CliArgs& args) {
     options.password = args.password;
     options.verbose = args.verbose;
     options.force = args.force;
+    options.tlsCertFile = args.tlsCert;
+    options.tlsKeyFile = args.tlsKey;
     if (args.askPassword) options.password = sys::readHidden("Password: ");
     return options;
 }
@@ -636,6 +674,8 @@ int cliMain(std::vector<std::string> argv) {
             options.port = args.port.value_or(protocol::kDefaultPort);
             options.password = args.password.value_or("");
             options.verbose = args.verbose;
+            options.tlsCertFile = args.tlsCert;
+            options.tlsKeyFile = args.tlsKey;
             return serve(options);
         }
         if (args.command == "start") return serverStart(controlOptions(args));

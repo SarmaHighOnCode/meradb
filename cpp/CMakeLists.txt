@@ -54,6 +54,7 @@ if(MERADB_WORKBENCH)
   FetchContent_Declare(
     ftxui
     URL https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v5.0.0.tar.gz
+    URL_HASH SHA256=a2991cb222c944aee14397965d9f6b050245da849d8c5da7c72d112de2786b5b
     EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(ftxui)
@@ -80,12 +81,36 @@ endif()
 FetchContent_Declare(
   json
   URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
+  URL_HASH SHA256=0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
 )
 FetchContent_MakeAvailable(json)
+
+# Encrypted connections. Mbed TLS rather than Windows' SChannel: the same code on Windows, Linux and macOS, and it can
+# make and read PEM files without a certificate store. Off: `--tls*` options refuse to work, plain traffic is unchanged.
+option(MERADB_TLS "Build TLS support for the server and clients (fetches Mbed TLS)" ON)
+if(MERADB_TLS)
+  enable_language(C)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(GEN_FILES OFF CACHE BOOL "" FORCE)  # a release tarball has them, and making them needs Python packages
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+  # Every file that sees a Mbed TLS structure must agree on these, ours included.
+  add_compile_definitions(MBEDTLS_USER_CONFIG_FILE="meradb_mbedtls_config.h")
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_config)
+  FetchContent_Declare(
+    mbedtls
+    URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+    URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+  )
+  FetchContent_MakeAvailable(mbedtls)
+endif()
 
 FetchContent_Declare(
   catch2
   URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.4.tar.gz
+  URL_HASH SHA256=b7754b711242c167d8f60b890695347f90a1ebc95949a045385114165d606dbb
 )
 FetchContent_MakeAvailable(catch2)
 
@@ -144,6 +169,7 @@ add_library(meradb_core STATIC
   src/durability.cpp
   src/table.cpp
   src/planner.cpp
+  src/query_limits.cpp
   src/pyvalue.cpp
   src/evaluator.cpp
   src/aggregates.cpp
@@ -159,6 +185,7 @@ add_library(meradb_core STATIC
   src/protocol.cpp
   src/server.cpp
   src/client.cpp
+  src/tls.cpp
   src/server_control.cpp
   src/cli.cpp
   src/pytext.cpp
@@ -174,9 +201,18 @@ if(NOT MSVC)
 endif()
 target_include_directories(meradb_core PUBLIC include)
 target_link_libraries(meradb_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+if(MERADB_TLS)
+  target_compile_definitions(meradb_core PUBLIC MERADB_HAS_TLS)
+  target_link_libraries(meradb_core PUBLIC mbedtls mbedx509 mbedcrypto)
+  if(WIN32)
+    target_link_libraries(meradb_core PUBLIC crypt32)
+  endif()
+  add_executable(meradb_devcert src/devcert_main.cpp)
+  target_link_libraries(meradb_devcert PRIVATE meradb_core)
+endif()
 if(WIN32)
   # Winsock + the OS random generator; keep windows.h lean and min/max macros away.
-  target_link_libraries(meradb_core PUBLIC ws2_32 bcrypt shell32)
+  target_link_libraries(meradb_core PUBLIC ws2_32 bcrypt shell32 advapi32)
   target_compile_definitions(meradb_core PUBLIC _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 

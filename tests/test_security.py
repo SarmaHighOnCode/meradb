@@ -306,11 +306,13 @@ class PrivilegeTests(unittest.TestCase):
 
 
 class RestrictedRequestTests(ServerCase):
+    password = "adminpw"  # with users present, the superuser session needs the shared password
+
     def setUp(self):
         super().setUp()
         self.server.instance.users.create("ravi", "pw")
         self.admin = self.client()
-        self.assertTrue(self.admin.request(type="hello").get("ok"))
+        self.assertTrue(self.admin.request(type="hello", password="adminpw").get("ok"))
         self.ravi = self.client()
         self.assertTrue(self.ravi.request(type="hello", user="ravi", password="pw").get("ok"))
 

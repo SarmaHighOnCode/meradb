@@ -476,12 +476,12 @@ TEST_CASE("wbe2e the connect dialog against a real server and back to local mode
     rig.run("BANAO TABLE remote_t (a ANK);");
     CHECK(rig.treeRow("remote_t") > 0);
 
-    // Ctrl+O again: the Host field is active; five Tabs reach [ Local mode ].
+    // Ctrl+O again: the Host field is active; seven Tabs reach [ Local mode ].
     CHECK(rig.press(keys::ctrl('O')));
     lines = rig.screen();
     CHECK(has(lines, "127.0.0.1"));
     CHECK(has(lines, "[ Local mode ]"));
-    for (int i = 0; i < 5; ++i) rig.press(Event::Tab);
+    for (int i = 0; i < 7; ++i) rig.press(Event::Tab);
     CHECK(rig.press(Event::Return));
     rig.settle();
     lines = rig.screen();
@@ -597,7 +597,7 @@ TEST_CASE("wbe2e a local connect is refused while a transaction is open, and wor
     // Ctrl+O, Local mode: refused with a red line; nothing changes, the transaction stays open.
     auto chooseLocal = [&] {
         rig.press(keys::ctrl('O'));
-        for (int i = 0; i < 5; ++i) rig.press(Event::Tab);
+        for (int i = 0; i < 7; ++i) rig.press(Event::Tab);
         rig.press(Event::Return);
         rig.settle();
     };

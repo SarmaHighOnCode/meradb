@@ -154,7 +154,23 @@ void storeColumnSet(json& user, const char* field, const std::string& key, const
     entry[priv] = std::move(list);
 }
 
+// The same line endings Python's open(..., "w") writes.
+std::string withNativeLineEndings(const std::string& text) {
+#ifdef _WIN32
+    std::string native;
+    native.reserve(text.size() + text.size() / 16);
+    for (char c : text) {
+        if (c == '\n') native += '\r';
+        native += c;
+    }
+    return native;
+#else
+    return text;
+#endif
+}
+
 ExecutionError noSuchUser(const std::string& name) { return ExecutionError("User '" + name + "' exist nahi karta"); }
+
 
 }  // namespace
 
@@ -162,6 +178,7 @@ UserStore::UserStore(std::string dataDir) : path_((pathOf(dataDir) / kFileName).
 
 void UserStore::load() {
     if (!fs::exists(pathOf(path_))) return;
+    restrictToOwner(path_);
     std::ifstream in(pathOf(path_), std::ios::binary);
     if (!in) throw StorageError(path_ + " khul nahi paayi");
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -180,19 +197,17 @@ void UserStore::saveLocked() {
     } catch (const nlohmann::json::exception& e) {
         throw StorageError(std::string("users.json likh nahi paaye: ") + e.what());
     }
-    std::string tmp = path_ + ".tmp";
-    {
-        std::ofstream out(pathOf(tmp));  // text mode on purpose: same line endings Python's open(..., "w") writes
-        if (!out) throw StorageError(tmp + " likh nahi paaye");
-        out << text;
-        out.flush();
-        if (!out) throw StorageError(tmp + " likh nahi paaye");
-    }
-    if (!syncFile(tmp)) throw StorageError(tmp + " disk par pakki nahi hui");
+    // Password hashes: readable by the owner only from the first byte, under a name nobody can prepare a link for.
+    const std::string tmp = path_ + "." + crypto::toHex(sys::randomBytes(8)) + ".tmp";
     std::error_code ec;
-    // Password hashes: owner only on POSIX. (On Windows this does not change the ACL: the file inherits the data
-    // folder's, see docs/SERVER.md.)
-    fs::permissions(pathOf(tmp), fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
+    if (!writeNewPrivateFile(tmp, withNativeLineEndings(text))) {
+        fs::remove(pathOf(tmp), ec);
+        throw StorageError(tmp + " likh nahi paaye");
+    }
+    if (!syncFile(tmp)) {
+        fs::remove(pathOf(tmp), ec);
+        throw StorageError(tmp + " disk par pakki nahi hui");
+    }
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) {
         std::error_code ignored;

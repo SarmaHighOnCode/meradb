@@ -458,6 +458,21 @@ TEST_CASE("cli shell reports a connection failure before any banner", "[cli][she
     CHECK(capture.err().find("par MeraDB server nahi mila") != std::string::npos);
 }
 
+TEST_CASE("cli TLS options belong to the right commands", "[cli]") {
+    CliArgs client = parseCliArgs({"shell", "--tls", "--tls-ca", "a.crt"});
+    CHECK(client.error.empty());
+    CHECK(client.tls);
+    CHECK(client.tlsCa == std::optional<std::string>("a.crt"));
+    CliArgs server = parseCliArgs({"server", "--tls-cert", "a.crt", "--tls-key=a.key"});
+    CHECK(server.error.empty());
+    CHECK(server.tlsCert == "a.crt");
+    CHECK(server.tlsKey == "a.key");
+    CHECK_FALSE(parseCliArgs({"server", "--tls"}).error.empty());
+    CHECK_FALSE(parseCliArgs({"shell", "--tls-cert", "a.crt"}).error.empty());
+    CHECK_FALSE(parseCliArgs({"shell", "--tls=1"}).error.empty());
+    CHECK_FALSE(parseCliArgs({"shell", "--tls-ca"}).error.empty());
+}
+
 TEST_CASE("cli each subcommand's --help matches argparse's text", "[cli]") {
     // golden_help.h holds `python -m meradb COMMAND --help` at COLUMNS=80 (gen_help_golden.py); the
     // data folder's default comes from MERADB_DATA, a short one and a long one that wraps.

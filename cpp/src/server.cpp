@@ -5,6 +5,7 @@
 #include "meradb/datatypes.h"
 #include "meradb/errors.h"
 #include "meradb/pytext.h"
+#include "meradb/query_limits.h"
 #include "meradb/sys_compat.h"
 #include <algorithm>
 #include <cctype>
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <iostream>
 #include <system_error>
+#include <vector>
 
 namespace meradb {
 
@@ -117,6 +119,10 @@ bool mayHoldPassword(const std::string& text) {
     return sensitive();
 }
 
+std::string replyTooBig(std::size_t limit) {
+    return "[Execution Galti] Result bahut bada hai (limit " + std::to_string(limit / (1024 * 1024)) + " MB) -- JAHAN ya SIRF lagao";
+}
+
 Json failure(const std::string& message) {
     Json reply = Json::object();
     reply["ok"] = false;
@@ -140,6 +146,9 @@ Server::Server(ServerOptions options) : options_(std::move(options)) {
     if (!options_.log) options_.log = [](const std::string& line) { std::cout << line << std::endl; };
     instance_ = std::make_shared<Instance>(options_.dataDir, /*served=*/true);
     started_ = sys::localIsoSeconds();
+    if (options_.tlsCertFile.empty() != options_.tlsKeyFile.empty())
+        throw MeraDBError("Server start nahi hua: --tls-cert aur --tls-key dono chahiye");
+    if (!options_.tlsCertFile.empty()) tls_ = std::make_unique<tls::ServerConfig>(options_.tlsCertFile, options_.tlsKeyFile);
     listener_ = net::listenOn(options_.host, options_.port);
     port_ = listener_.localPort();
 }
@@ -149,9 +158,54 @@ Server::~Server() {
     reap(true);  // only non-empty if serveForever() was never allowed to finish
 }
 
+// Log text holds what clients sent (user names, table names in error messages). One event stays one line, so a client
+// cannot write a line that looks like the server's own, and no terminal escape reaches whoever reads the log.
+static std::string oneLogLine(const std::string& message) {
+    std::string out;
+    out.reserve(message.size());
+    for (char c : message) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if (byte < 0x20 || byte == 0x7f) {
+            static const char* const digits = "0123456789abcdef";
+            out += "\\x";
+            out += digits[byte >> 4];
+            out += digits[byte & 15];
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 void Server::log(const std::string& message) {
     std::lock_guard<std::mutex> guard(logMutex_);
-    options_.log(sys::localLogStamp() + "  " + message);
+    options_.log(sys::localLogStamp() + "  " + oneLogLine(message));
+}
+
+// Where the data lives is the business of whoever runs the server. The log keeps the full text.
+std::string Server::withoutPaths(std::string text) const {
+    std::vector<std::string> forms;
+    for (const std::string& dir : {instance_->dataDir(), options_.dataDir}) {
+        if (dir.size() < 2) continue;  // "." or "/": replacing that would wreck ordinary text
+        std::string slashes = dir;
+        std::replace(slashes.begin(), slashes.end(), '\\', '/');
+        std::string doubled;  // as repr() and JSON write it
+        for (char c : dir) {
+            doubled += c;
+            if (c == '\\') doubled += c;
+        }
+        forms.push_back(doubled);
+        forms.push_back(dir);
+        forms.push_back(slashes);
+    }
+    for (const std::string& form : forms)
+        for (std::size_t at = text.find(form); at != std::string::npos; at = text.find(form, at + 13))
+            text.replace(at, form.size(), "<data folder>");
+    return text;
 }
 
 bool Server::loginLocked(const std::string& ip) {
@@ -178,6 +232,29 @@ void Server::noteLogin(const std::string& ip, bool succeeded) {
     }
 }
 
+bool Server::beginHashing() {
+    std::unique_lock<std::mutex> guard(hashingMutex_);
+    if (options_.maxConcurrentLogins > 0) {
+        const auto giveUp = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                                    std::chrono::duration<double>(options_.loginHashWaitSeconds));
+        while (hashing_ >= options_.maxConcurrentLogins) {
+            if (stop_ || std::chrono::steady_clock::now() >= giveUp) return false;
+            hashingFree_.wait_for(guard, std::chrono::milliseconds(50));
+        }
+    }
+    ++hashing_;
+    if (hashing_ > peakHashing_) peakHashing_ = hashing_;
+    return true;
+}
+
+void Server::endHashing() {
+    {
+        std::lock_guard<std::mutex> guard(hashingMutex_);
+        --hashing_;
+    }
+    hashingFree_.notify_one();
+}
+
 void Server::reap(bool everything) {
     for (auto it = connections_.begin(); it != connections_.end();) {
         if (everything || (*it)->finished.load()) {
@@ -189,6 +266,34 @@ void Server::reap(bool everything) {
     }
 }
 
+// On a TLS server there is no handshake yet, and this thread must not wait for one: the client just sees the door close.
+void Server::refuseAtAccept(net::Socket& socket, const char* why) {
+    if (tls_) return;
+    try {
+        protocol::send(socket, failure(why), &stop_);
+    } catch (const net::NetError&) {
+    }
+}
+
+// False: this connection is over. A plain client gets told why in plain text, since it could not read anything else, and
+// nothing it sent is read: its first line is its password, and it has gone over the network already but goes no further.
+bool Server::startTls(net::Socket& socket, const std::string& peer) {
+    const int first = socket.peekByte(options_.handshakeTimeoutSeconds, &stop_);
+    if (first < 0) return false;
+    if (first == '{') {
+        log(peer + "  TLS ke bina aaya connection mana");
+        protocol::send(socket, failure("Is server par TLS zaroori hai -- client mein --tls lagao (apne certificate ke liye --tls-ca FILE)"), &stop_);
+        return false;
+    }
+    try {
+        tls_->accept(socket, options_.handshakeTimeoutSeconds, &stop_);
+    } catch (const tls::Error& e) {
+        if (!stop_) log(peer + "  TLS handshake fail: " + e.what());
+        return false;
+    }
+    return true;
+}
+
 void Server::serveForever() {
     // A persistent accept error (out of descriptors, ...) must not flood the log or spin: the same
     // message is logged at most every 10 s, and the pause between attempts grows from 50 ms to 1 s.
@@ -197,6 +302,7 @@ void Server::serveForever() {
     std::string lastFailure;
     clock::time_point lastLogged;
     bool atConnectionLimit = false;
+    clock::time_point lastAddressNote;
     while (!stop_) {
         net::Socket accepted;
         try {
@@ -220,16 +326,30 @@ void Server::serveForever() {
         if (options_.maxConnections > 0 && connections_.size() >= static_cast<std::size_t>(options_.maxConnections)) {
             if (!atConnectionLimit) log("connection limit (" + std::to_string(options_.maxConnections) + ") poori -- naye connection mana");
             atConnectionLimit = true;  // once per episode: a flood of refusals must not flood the log too
-            try {
-                protocol::send(accepted, failure("Server par bahut zyada connections hain -- thodi der baad try karo"), &stop_);
-            } catch (const net::NetError&) {
-            }
+            refuseAtAccept(accepted, "Server par bahut zyada connections hain -- thodi der baad try karo");
             continue;
         }
         atConnectionLimit = false;
+        const std::string peerIp = accepted.peerAddress();
+        if (options_.maxConnectionsPerAddress > 0) {
+            int fromThisAddress = 0;
+            for (const auto& open : connections_)
+                if (open->peerIp == peerIp) ++fromThisAddress;
+            if (fromThisAddress >= options_.maxConnectionsPerAddress) {
+                const auto now = clock::now();
+                if (now - lastAddressNote >= std::chrono::seconds(10)) {  // a flood of refusals must not flood the log too
+                    log(peerIp + "  is address ke connections ki limit (" + std::to_string(options_.maxConnectionsPerAddress) +
+                        ") poori -- naye connection mana");
+                    lastAddressNote = now;
+                }
+                refuseAtAccept(accepted, "Is address se bahut zyada connections hain -- thodi der baad try karo");
+                continue;
+            }
+        }
 
         auto connection = std::make_unique<Connection>();
         connection->socket = std::move(accepted);
+        connection->peerIp = peerIp;
         Connection* raw = connection.get();
         try {
             raw->thread = std::thread([this, raw] {
@@ -250,9 +370,14 @@ void Server::serveForever() {
 // Engine (and any transaction it opens) never changes threads.
 void Server::serveConnection(Connection& connection) {
     net::Socket& socket = connection.socket;
-    const std::string peerIp = socket.peerAddress();
+    const std::string& peerIp = connection.peerIp;
     const std::string peer = peerIp + ":" + std::to_string(socket.peerPort());
     try {
+        if (tls_) {
+            if (!startTls(socket, peer)) return;
+        } else if (!isLoopback(peerIp) || options_.testPeerIsRemote) {
+            log("WARNING: " + peer + "  TLS ke bina connected -- password aur data network par khule ja rahe hain (--tls-cert, --tls-key)");
+        }
         protocol::MessageReader reader(socket, options_.maxMessageBytes, &stop_);
 
         // ---- 1. handshake ----
@@ -276,6 +401,15 @@ void Server::serveConnection(Connection& connection) {
         const bool hasUser = pyTruthy(userField);
         const std::string user = hasUser ? pyStr(*userField) : "";
         const std::string password = pyTruthy(passwordField) ? pyStr(*passwordField) : "";
+        // No username = superuser. That is only fair while no account exists (the first connection makes the first
+        // user) or when the shared password was given. `--local` is the way back in, so nobody can be locked out.
+        if (!hasUser && options_.password.empty() && !instance_->users().names().empty()) {
+            protocol::send(socket, failure("Is server par users bane hue hain -- username ke saath login karo (-U naam -W). "
+                                           "Poora access: server par --password lagao, ya server band karke --local chalao"),
+                           &stop_);
+            log(peer + "  bina username login mana (users bane hue hain, shared password nahi)");
+            return;
+        }
         if (hasUser || !options_.password.empty()) {
             if (loginLocked(peerIp)) {  // the same answer as a wrong password: it tells a guesser nothing
                 protocol::send(socket, failure(hasUser ? "User ya password galat hai" : "Password galat hai"), &stop_);
@@ -285,7 +419,20 @@ void Server::serveConnection(Connection& connection) {
             if (hasUser) {
                 // A per-user login SUPERSEDES the shared server password entirely.
                 // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
-                if (!instance_->users().verify(user, password)) {
+                if (!beginHashing()) {
+                    protocol::send(socket, failure("Server abhi busy hai -- thodi der baad login karo"), &stop_);
+                    log(peer + "  login mana (bahut saare login ek saath)");
+                    return;
+                }
+                bool verified = false;
+                try {
+                    verified = instance_->users().verify(user, password);
+                } catch (...) {
+                    endHashing();
+                    throw;
+                }
+                endHashing();
+                if (!verified) {
                     noteLogin(peerIp, false);
                     protocol::send(socket, failure("User ya password galat hai"), &stop_);
                     log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
@@ -328,7 +475,8 @@ void Server::serveConnection(Connection& connection) {
                 session.executeStatement(use);
             } catch (const MeraDBError& e) {
                 // .message(), not what(): the client wraps this in ConnectionFailed (see above)
-                protocol::send(socket, failure(e.message()), &stop_);
+                log(peer + "  " + e.message());
+                protocol::send(socket, failure(withoutPaths(e.message())), &stop_);
                 return;
             }
         }
@@ -340,7 +488,14 @@ void Server::serveConnection(Connection& connection) {
         protocol::send(socket, ready, &stop_);
 
         // ---- 2. request loop ----
+        using clock = std::chrono::steady_clock;
+        auto lastWork = clock::now();
         for (;;) {
+            const double idleLimit = session.inTransaction() ? options_.idleTransactionTimeoutSeconds : options_.idleTimeoutSeconds;
+            if (idleLimit > 0)
+                reader.setDeadline(lastWork + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(idleLimit)));
+            else
+                reader.setDeadline(std::nullopt);
             std::optional<Json> request;
             try {
                 request = reader.receive();
@@ -348,16 +503,31 @@ void Server::serveConnection(Connection& connection) {
                 protocol::send(socket, failure(std::string("[Protocol Galti] ") + e.what()), &stop_);
                 continue;
             }
-            if (!request) break;  // client closed the connection (or the server is stopping)
+            if (!request) {  // client closed the connection (or the server is stopping, or the session sat idle)
+                if (!stop_ && reader.deadlinePassed()) {
+                    const bool inTransaction = session.inTransaction();
+                    log(peer + "  idle time poora -- session band" + (inTransaction ? ", transaction WAPAS" : ""));
+                    // Whatever the client asks next gets this as its answer, then the closed connection.
+                    protocol::send(socket,
+                                   failure(inTransaction ? "Session bahut der khali raha: transaction WAPAS kar diya aur connection band -- dobara connect karo"
+                                                         : "Session bahut der khali raha: connection band -- dobara connect karo"),
+                                   &stop_, options_.sendStallSeconds);
+                }
+                break;  // the Cleanup above rolls the transaction back, on this thread
+            }
+            const Json* requestType = field(*request, "type");
+            const bool isWork = requestType != nullptr && requestType->is_string() &&
+                                (requestType->get_ref<const std::string&>() == "query" || requestType->get_ref<const std::string&>() == "schema");
             bool stopConnection = false;
             Json reply;
             try {
                 reply = dispatch(session, *request, peerIp, peer, stopConnection);
             } catch (const std::exception& e) {  // a bug must not kill the whole server
                 log(peer + "  INTERNAL ERROR\n" + e.what());
-                reply = failure(std::string("[Internal Galti] ") + e.what());
+                reply = failure(withoutPaths(std::string("[Internal Galti] ") + e.what()));
             }
-            protocol::send(socket, reply, &stop_);
+            sendReply(socket, reply);
+            if (isWork) lastWork = clock::now();
             if (stopConnection) break;
         }
     } catch (const net::NetError&) {
@@ -365,6 +535,21 @@ void Server::serveConnection(Connection& connection) {
     } catch (const std::exception& e) {
         log(peer + "  INTERNAL ERROR\n" + e.what());
     }
+}
+
+// The one place a reply is turned into bytes: past the limit the client gets an error it can show, instead of a line
+// its reader refuses (it would call that a broken connection).
+void Server::sendReply(net::Socket& socket, Json& reply) {
+    std::string wire = pyjson::dump(reply) + "\n";
+    if (options_.maxReplyBytes > 0 && wire.size() > options_.maxReplyBytes && reply.contains("results")) {
+        Result refused;
+        refused.error = replyTooBig(options_.maxReplyBytes);
+        Json results = Json::array();
+        results.push_back(protocol::resultToJson(refused));
+        reply["results"] = std::move(results);
+        wire = pyjson::dump(reply) + "\n";
+    }
+    socket.sendAll(wire, &stop_, options_.sendStallSeconds);
 }
 
 Json Server::dispatch(Engine& session, const Json& request, const std::string& peerIp, const std::string& peer,
@@ -382,6 +567,13 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
                                                                        : collapseWhitespace(text, 200)));
         std::vector<Result> results;
         try {
+            limits::Limits queryLimits;
+            queryLimits.seconds = options_.maxQuerySeconds;
+            queryLimits.memoryBytes = options_.maxQueryMemoryBytes;
+            queryLimits.valueBytes = options_.maxValueBytes;
+            queryLimits.stop = &stop_;
+            std::optional<limits::Scope> scope;
+            if (queryLimits.seconds > 0 || queryLimits.memoryBytes > 0 || queryLimits.valueBytes > 0) scope.emplace(queryLimits);
             results = session.runScript(text);
         } catch (const std::exception& e) {
             log(peer + "  INTERNAL ERROR\n" + e.what());
@@ -389,9 +581,32 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
             failed.error = std::string("[Internal Galti] ") + e.what();
             results.push_back(std::move(failed));
         }
+        // Refused before encoding: the JSON tree of a huge result would cost several times the result itself.
+        std::size_t replyBytes = 0;
+        for (auto& r : results) {
+            if (options_.maxResultRows > 0 && r.rows.size() > options_.maxResultRows) {
+                r = Result();
+                r.error = "[Execution Galti] Result mein bahut zyada rows hain (limit " + std::to_string(options_.maxResultRows) +
+                          ") -- JAHAN ya SIRF lagao, ya server par MERADB_MAX_RESULT_ROWS badhao";
+                continue;
+            }
+            for (const auto& row : r.rows) {
+                for (const auto& value : row) {
+                    const auto* cell = std::get_if<std::string>(&value.data);
+                    replyBytes += cell != nullptr ? cell->size() + 3 : 2;
+                }
+            }
+            if (options_.maxReplyBytes > 0 && replyBytes > options_.maxReplyBytes) {
+                r = Result();
+                r.error = replyTooBig(options_.maxReplyBytes);
+            }
+        }
         Json encoded = Json::array();
-        for (const auto& r : results) {
-            if (!r.error.empty()) log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
+        for (auto& r : results) {
+            if (!r.error.empty()) {
+                log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
+                r.error = withoutPaths(r.error);
+            }
             encoded.push_back(protocol::resultToJson(r));
         }
         Json reply = success();
@@ -407,7 +622,8 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
             reply["tree"] = session.schemaTree();
             return reply;
         } catch (const MeraDBError& e) {
-            return failure(e.message());  // bare: the client wraps it in ConnectionFailed
+            log(peer + "  " + e.message());
+            return failure(withoutPaths(e.message()));  // bare: the client wraps it in ConnectionFailed
         }
     }
 
@@ -416,7 +632,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
         reply["server"] = protocol::kServerName;
         if (session.user) return reply;  // the folder, the pid and every database name are for a superuser
         reply["pid"] = static_cast<std::int64_t>(sys::processId());
-        reply["data_dir"] = instance_->dataDir();
+        if (isLoopback(peerIp) && !options_.testPeerIsRemote) reply["data_dir"] = instance_->dataDir();
         reply["started"] = started_;
         reply["sessions"] = sessions_.load();
         Json databases = Json::array();
@@ -458,8 +674,41 @@ std::string plainText(const Json& j) { return j.is_string() ? j.get<std::string>
 
 }  // namespace
 
+std::string applyLimitEnvironment(ServerOptions& options) {
+    std::string problem;
+    auto number = [&](const char* name, auto store) {
+        const std::optional<std::string> text = sys::getEnv(name);
+        if (!text || text->empty()) return;
+        std::size_t used = 0;
+        double value = -1;
+        try {
+            value = std::stod(*text, &used);
+        } catch (const std::exception&) {
+            used = 0;
+        }
+        if (used != text->size() || !(value >= 0) || value > 1e15) {
+            if (problem.empty()) problem = std::string(name) + " ek number (0 ya zyada) hona chahiye: '" + *text + "'";
+            return;
+        }
+        store(value);
+    };
+    number("MERADB_MAX_CONNECTIONS_PER_ADDRESS", [&](double v) { options.maxConnectionsPerAddress = static_cast<int>(std::min(v, 1e9)); });
+    number("MERADB_IDLE_TIMEOUT", [&](double v) { options.idleTimeoutSeconds = v; });
+    number("MERADB_IDLE_TRANSACTION_TIMEOUT", [&](double v) { options.idleTransactionTimeoutSeconds = v; });
+    number("MERADB_MAX_QUERY_SECONDS", [&](double v) { options.maxQuerySeconds = v; });
+    number("MERADB_MAX_QUERY_MEMORY_MB", [&](double v) { options.maxQueryMemoryBytes = static_cast<std::size_t>(v * 1024 * 1024); });
+    number("MERADB_MAX_RESULT_ROWS", [&](double v) { options.maxResultRows = static_cast<std::size_t>(v); });
+    number("MERADB_MAX_VALUE_MB", [&](double v) { options.maxValueBytes = static_cast<std::size_t>(v * 1024 * 1024); });
+    return problem;
+}
+
 int serve(ServerOptions options) {
     namespace fs = std::filesystem;
+    const std::string badSetting = applyLimitEnvironment(options);
+    if (!badSetting.empty()) {
+        std::cerr << "Server start nahi hua: " << badSetting << "\n";
+        return 1;
+    }
     options.dataDir = absolutePathOf(options.dataDir);
     std::error_code ec;
     if (fs::is_directory(pathOf(options.dataDir), ec)) {
@@ -501,6 +750,10 @@ int serve(ServerOptions options) {
     info["host"] = options.host;
     info["port"] = server->port();
     info["started"] = server->started();
+    if (!options.tlsCertFile.empty()) {  // so `meradb stop`, `status` and `shell` on this computer know how to reach it
+        info["tls"] = true;
+        info["tls_cert"] = absolutePathOf(options.tlsCertFile);
+    }
     try {
         protocol::writePidFile(options.dataDir, info);
     } catch (const MeraDBError& e) {
@@ -511,6 +764,11 @@ int serve(ServerOptions options) {
     server->log(std::string(protocol::kServerName) + " server chal raha hai  ->  " + options.host + ":" +
                 std::to_string(server->port()));
     server->log("data folder: " + options.dataDir);
+    if (!options.tlsCertFile.empty()) {
+        server->log("TLS: on (" + options.tlsCertFile + ")");
+    } else if (!isLoopback(options.host)) {
+        server->log("WARNING: network par TLS ke bina khula hai -- password aur data khule ja rahe hain (--tls-cert, --tls-key)");
+    }
     for (const auto& db : server->instance().recovered())
         server->log("RECOVERY: database '" + db + "' ka adhoora transaction WAPAS kiya (pichli baar crash hua tha)");
     if (options.password.empty()) {

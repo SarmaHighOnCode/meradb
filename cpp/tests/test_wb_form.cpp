@@ -70,10 +70,10 @@ TEST_CASE("wbform ConnectForm navigation and actions", "[wbform]") {
     CHECK(form.field(1).text() == "6372");
     CHECK(form.field(1).digitsOnly);
     CHECK(form.field(2).isPassword());
-    for (int i = 0; i < 7; ++i) form.next();
+    for (int i = 0; i < 9; ++i) form.next();
     CHECK(form.active() == 0);
     form.previous();
-    CHECK(form.active() == 6);
+    CHECK(form.active() == 8);
     form.setActive(2);
     CHECK(form.enter() == FormAction::Connect);   // any field submits
     form.setActive(3);
@@ -81,21 +81,38 @@ TEST_CASE("wbform ConnectForm navigation and actions", "[wbform]") {
     form.setActive(4);
     CHECK(form.enter() == FormAction::Connect);
     form.setActive(5);
-    CHECK(form.enter() == FormAction::Local);
+    CHECK(form.enter() == FormAction::Connect);
     form.setActive(6);
+    CHECK(form.enter() == FormAction::Connect);
+    form.setActive(7);
+    CHECK(form.enter() == FormAction::Local);
+    form.setActive(8);
     CHECK(form.enter() == FormAction::Cancel);
     CHECK(form.escape() == FormAction::Cancel);
     form.setActive(99);
-    CHECK(form.active() == 6);
+    CHECK(form.active() == 8);
     form.setActive(-4);
     CHECK(form.active() == 0);
+}
+
+TEST_CASE("wbform the TLS field: empty is plain, on is the computer's roots, else a certificate file", "[wbform]") {
+    ConnectForm form("127.0.0.1", "6372");
+    CHECK_FALSE(form.request(false).tls);
+    form.field(5).insert("on");
+    CHECK(form.request(false).tls);
+    CHECK(form.request(false).tlsCaFile.empty());
+    form.field(5).insert("x.crt");
+    CHECK(form.request(false).tls);
+    CHECK(form.request(false).tlsCaFile == "onx.crt");
 }
 
 TEST_CASE("wbform ConnectForm builds the request like tui.py _choice", "[wbform]") {
     ConnectForm form("127.0.0.1", "6372");
     form.field(2).insert("pw");
     form.field(3).insert(" db ");
+    form.field(4).insert(" ravi ");
     ConnectRequest r = form.request(false);
+    CHECK(r.user == "ravi");
     CHECK_FALSE(r.local);
     CHECK(r.host == "127.0.0.1");
     CHECK(r.port == "6372");

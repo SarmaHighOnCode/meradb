@@ -83,8 +83,8 @@ std::optional<Json> MessageReader::receive() {
     }
 }
 
-void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop) {
-    socket.sendAll(pyjson::dump(message) + "\n", stop);
+void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop, double stallSeconds) {
+    socket.sendAll(pyjson::dump(message) + "\n", stop, stallSeconds);
 }
 
 // ---------------------------------------------------------------------------

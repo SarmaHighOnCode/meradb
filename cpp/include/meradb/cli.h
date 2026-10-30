@@ -30,6 +30,10 @@ struct CliArgs {
     bool local = false;
     std::optional<std::string> database;
     std::optional<std::string> user;
+    bool tls = false;                     // client commands: --tls
+    std::optional<std::string> tlsCa;     // client commands: --tls-ca FILE
+    std::string tlsCert;                  // server / start: --tls-cert FILE
+    std::string tlsKey;                   // server / start: --tls-key FILE
     std::vector<std::string> files;
     bool showHelp = false;
     bool showVersion = false;

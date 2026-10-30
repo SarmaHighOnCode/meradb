@@ -71,10 +71,10 @@ def observe(app, logged):
 
 
 def observe_dialog(app):
-    """The connect dialog's four inputs: value, selection (start, end) and which widget has the focus."""
+    """The connect dialog's six inputs: value, selection (start, end) and which widget has the focus."""
     from textual.widgets import Input
 
-    inputs = [app.screen.query_one("#" + name, Input) for name in ("host", "port", "password", "database")]
+    inputs = [app.screen.query_one("#" + name, Input) for name in ("host", "port", "password", "database", "user", "tls")]
     return {
         "focus": app.focused.id if app.focused is not None else None,
         "fields": [{"text": i.value, "selection": [i.selection.start, i.selection.end]} for i in inputs],

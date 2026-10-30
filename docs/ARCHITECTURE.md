@@ -424,7 +424,7 @@ feature working at all:
     dict lookup, not a table scan, with no extra index-maintenance code required.
 14. **What's still missing vs. a real DB?** B-tree indexes, MVCC, a write-ahead log, a
     cost-based optimizer, pages and a buffer pool, schema-level roles and column-level
-    grants, TLS encryption, and `ON DELETE CASCADE` for foreign keys.
+    grants, and `ON DELETE CASCADE` for foreign keys.
 15. **Why is `users.json` server-wide instead of per-database, like `catalog.json`?** A
     MeraDB server (one `Instance`, one data directory) can serve several databases; a login
     is a property of the SERVER you connect to, not of any one database inside it -- the

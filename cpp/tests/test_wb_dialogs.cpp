@@ -184,7 +184,7 @@ TEST_CASE("wbui dialog Local mode button passes local", "[wbui]") {
     options.factory = probe.factory();
     UiRig rig(serverDefaults, options);
     rig.press(keys::ctrl('O'));
-    for (int i = 0; i < 5; ++i) rig.press(Event::Tab);   // Host, Port, Password, Database, [Connect], [Local mode]
+    for (int i = 0; i < 7; ++i) rig.press(Event::Tab);   // Host, Port, Password, Database, Username, TLS, [Connect], [Local mode]
     auto lines = rig.screen(120, 40);
     CHECK(screenHas(lines, "[ Local mode ]"));
     CHECK(rig.press(Event::Return));

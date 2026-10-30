@@ -106,8 +106,7 @@ TEST_CASE("hardening_server odd hello fields never crash the handshake", "[harde
         } catch (const net::NetError&) {
         }
     }
-    CHECK(serverStillWorks(s));
-    RawClient login(s.port());
+    RawClient login(s.port());  // with a user present no username is refused: this login is the proof the server still works
     CHECK(login.hello("pw", nullptr, 5)["ok"] == true);
 }
 
@@ -209,7 +208,8 @@ TEST_CASE("hardening_server one busy transaction does not stop the server from s
 }
 
 TEST_CASE("hardening_server a hundred idle connections stop promptly", "[hardening][server]") {
-    auto s = std::make_unique<RunningServer>();
+    // All from one address here, which the per-address limit would cut off at 64.
+    auto s = std::make_unique<RunningServer>("", false, protocol::kMaxMessageBytes, [](ServerOptions& o) { o.maxConnectionsPerAddress = 0; });
     std::vector<std::unique_ptr<RawClient>> clients;
     for (int i = 0; i < 100; ++i) {
         clients.push_back(std::make_unique<RawClient>(s->port()));

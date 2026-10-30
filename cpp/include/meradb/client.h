@@ -25,6 +25,8 @@ struct ConnectOptions {
     std::optional<std::string> password;  // the shared server password
     std::optional<std::string> database;  // start in this database
     std::optional<std::string> user;      // log in as this user (then `password` is THEIR password)
+    bool tls = false;                     // encrypted, and the server's certificate checked; never falls back to plain
+    std::string tlsCaFile;                // trust this certificate file (empty: the computer's trusted roots)
     double connectTimeoutSeconds = 5.0;
     // Queries may legitimately wait (up to ~10 s) for another client's transaction.
     double timeoutSeconds = 60.0;

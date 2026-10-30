@@ -56,6 +56,7 @@ public:
     // extend it; it needs `stop` (the polling loop is what notices it). Past it receive() acts as if the peer had closed.
     void setMaxBytes(std::size_t maxBytes) { maxBytes_ = maxBytes; }
     void setDeadline(std::optional<std::chrono::steady_clock::time_point> deadline) { deadline_ = deadline; }
+    bool deadlinePassed() const { return deadline_ && std::chrono::steady_clock::now() >= *deadline_; }
 
 private:
     enum class Fill { Data, Eof, Stopped };
@@ -73,8 +74,8 @@ private:
 };
 
 // One JSON object plus "\n". Throws net::NetError.
-// With `stop`, a stalled peer cannot block the caller past the stop flag (see Socket::sendAll).
-void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop = nullptr);
+// With `stop`, a stalled peer cannot block the caller past the stop flag or `stallSeconds` (see Socket::sendAll).
+void send(net::Socket& socket, const Json& message, const std::atomic<bool>* stop = nullptr, double stallSeconds = 0);
 
 // ---- cells and results (engine.py: Result.to_dict / from_dict) ----
 // null / bool / int / float / string as themselves; a DATE as {"$date": "YYYY-MM-DD"}.

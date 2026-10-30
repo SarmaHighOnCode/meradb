@@ -15,6 +15,8 @@ struct ControlOptions {
     int port = 6372;
     std::optional<std::string> password;  // shared password: given to a starting server, or used to reach a running one
     bool verbose = false;                 // start: log every query
+    std::string tlsCertFile;              // start
+    std::string tlsKeyFile;               // start
     bool force = false;                   // stop: kill the process if a polite shutdown fails
     std::string exePath;                  // start: the program to run as `<exe> server ...` (default: this program)
     double startTimeoutSeconds = 15.0;

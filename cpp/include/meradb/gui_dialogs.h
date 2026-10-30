@@ -25,9 +25,10 @@ public:
     std::string host() const { return host_; }
     std::string port() const { return port_; }
     std::string database() const { return database_; }
+    std::string user() const { return user_; }
     bool passwordEmpty() const { return password_[0] == '\0'; }
     // Where the widgets were drawn in the last frame (screen pixels, centre), for the tests.
-    enum Widget { kHost, kPort, kPassword, kDatabase, kCancel, kLocal, kConnect, kWidgetCount };
+    enum Widget { kHost, kPort, kUser, kPassword, kDatabase, kTls, kCancel, kLocal, kConnect, kWidgetCount };
     ImVec2 centre(Widget w) const { return centres_[w]; }
 
 private:
@@ -38,8 +39,10 @@ private:
     bool focusHost_ = false;
     char host_[256] = {0};
     char port_[8] = {0};
+    char user_[256] = {0};
     char password_[256] = {0};
     char database_[256] = {0};
+    char tls_[1024] = {0};
     ImVec2 centres_[kWidgetCount] = {};
 };
 

@@ -19,7 +19,7 @@ a **server** process owns the data files, and **clients** connect to it over TCP
 | Data folder | per-user folder (below) | `-D` / `MERADB_DATA` |
 | Password | none | `--password` on the server; `-W` / `MERADB_PASSWORD` on clients |
 | Server address for clients | `127.0.0.1` | `-H` / `MERADB_HOST` |
-| Username (per-user login) | none (superuser) | `-U` / `MERADB_USER` on clients |
+| Username (per-user login) | none | `-U` / `MERADB_USER` on clients; required once users exist, see below |
 
 ## Install once
 
@@ -95,6 +95,7 @@ All of `shell`, `workbench` and `run` accept:
 | `-U USERNAME` | Log in as this user (or set `MERADB_USER`) -- see "Users and privileges" below |
 | `--local` | Don't use a server: open the data folder directly (embedded, like SQLite) |
 | `-D FOLDER` | The data folder, for `--local` |
+| `--tls` / `--tls-ca FILE` | Encrypt, and check the server's certificate -- see "Encrypted connections" below |
 
 **Automatic fallback:** if you don't pass `-H`/`-p` and no server is running, the
 client prints a note and runs in **local mode** instead. So `meradb shell` always
@@ -122,7 +123,7 @@ meradb start --host 0.0.0.0 --password s3cret
 ```
 
 Opens the server to your LAN. A password is required for this: without one the server refuses
-to start, because a connection with no password is a superuser. (`MERADB_ALLOW_NO_PASSWORD=1`
+to start, because until the first user exists a connection with no password is a superuser. (`MERADB_ALLOW_NO_PASSWORD=1`
 overrides that if you really mean it.) Prefer `MERADB_PASSWORD` to `--password` on shared
 machines: command-line arguments are visible in the process list.
 
@@ -132,9 +133,9 @@ meradb shell -H 192.168.1.20 -W
 
 Connects from another machine on the network.
 
-Passwords, queries and results all travel as plain text (there is no encryption), so anyone
-who can watch the network can read them. Use it on your own machine or a LAN you trust; to
-cross anything else, put it inside an SSH tunnel or a VPN.
+Without TLS, passwords, queries and results all travel as plain text, so anyone who can watch
+the network can read them. To cross anything but your own machine, turn on TLS (see "Encrypted
+connections" below) or use an SSH tunnel or a VPN.
 
 Limits the server applies:
 
@@ -144,19 +145,109 @@ Limits the server applies:
 | Size of the hello | 64 KB |
 | Size of any later message | 64 MB |
 | Connections at once | 256; further ones are told so and closed |
+| Connections at once from one address | 64 (`MERADB_MAX_CONNECTIONS_PER_ADDRESS`) |
+| A session that does nothing | closed after 8 hours (`MERADB_IDLE_TIMEOUT`, in seconds) |
+| A session that does nothing inside a transaction | rolled back and closed after 5 minutes (`MERADB_IDLE_TRANSACTION_TIMEOUT`, in seconds) |
+| A client that does not read its reply | dropped after 2 minutes without progress |
+| Logins hashing a password at once | 4; the others wait up to 5 seconds, then hear the server is busy |
 | Wrong passwords in a row from one address | 10, then that address is refused for 30 seconds |
 
-The lockout is per address, so everyone behind one address shares it. A logged-in session has
-no idle limit, and there is no limit on what one query may use: a logged-in user can still make
-the server work hard.
+What one query request (one message, however many statements it holds) may use:
 
-Protect the data folder with ordinary file permissions. `users.json` holds password hashes:
-on Linux and macOS it is written owner-only, on Windows it inherits the folder's permissions.
+| Limit | Value |
+|---|---|
+| Time | 120 seconds (`MERADB_MAX_QUERY_SECONDS`) |
+| Rows held in memory, estimated | 2048 MB (`MERADB_MAX_QUERY_MEMORY_MB`) |
+| Rows in one result | 5,000,000 (`MERADB_MAX_RESULT_ROWS`) |
+| One text value (a `CONCAT` that keeps doubling) | 64 MB (`MERADB_MAX_VALUE_MB`); all of a session's `@variables` together four times that |
+| The reply | 64 MB, which is the most the clients can read |
+
+Past a limit the statement gets an ordinary error and the session carries on, with its transaction
+still open if it had one. The error says which limit it was. Every session counts here, the superuser
+too. `--local` and an embedded `Engine` have none of these limits: there the only one who suffers is
+the one who asked.
+
+The time limit is checked while expressions are evaluated and the memory figure is an estimate, so a
+query can run a little past them. Because one lock lets only one statement run at a time, one query's
+limit is close to the limit for the whole server; the replies waiting to be sent to slow clients come
+on top of that.
+
+The settings in brackets are read from the environment when the server starts; `0` turns a limit
+off. They apply to the C++ server (`meradb_cli`), not to the older Python one.
+
+The per-address limits count everyone behind one address together, which matters behind a proxy or
+an SSH tunnel: there, raise the connection limit or set it to `0`.
+
+Only a query or a schema request counts as doing something: a `ping` does not keep a session open.
+A session with an open transaction gets the short limit because it holds the one lock everyone else
+is waiting for. It is closed as well as rolled back, so that a client which thinks it is inside a
+transaction cannot carry on outside one without noticing. Whatever it sends next gets the reason as
+its answer, then the closed connection.
+
+## Encrypted connections (TLS)
+
+Without TLS, passwords and data cross the network as plain text. The server logs a `WARNING` for every
+such connection from another computer, and `meradb shell -H other-host` warns on stderr. Loopback
+(`127.0.0.1`, the default) needs no TLS.
+
+**Server:** give it a certificate and its key. Every connection must then be TLS; a plain client is
+told so and refused.
+
+    meradb start --host 0.0.0.0 --password ... --tls-cert server.crt --tls-key server.key
+
+**Clients:** `--tls` checks the server's certificate against this computer's trusted roots, and that it
+names the host you connect to. `--tls-ca FILE` trusts that certificate file instead (and turns TLS on),
+which is how you use a self-signed one. Environment: `MERADB_TLS=1`, `MERADB_TLS_CA=FILE`.
+
+    meradb shell -H db.example.com --tls -U ravi -W
+    meradb shell -H 192.168.1.5 --tls-ca server.crt -U ravi -W
+
+The workbench and the desktop window take the same flags, and their connect dialog has a TLS field:
+empty = plain, `on` = TLS with the computer's roots, anything else = the certificate file to trust.
+Python: `Connection(host, port, ..., tls=True, tls_ca="server.crt")`.
+
+Asking for TLS is never quietly undone: with a bad certificate, a plain server, or a build without TLS,
+the connection fails, the password has not been sent, and there is no fallback to local mode.
+`meradb stop`, `status` and `shell` on the server's own computer read the certificate from the pid
+file, so the certificate must name `127.0.0.1` for them to work.
+
+**A certificate for trying it out** (`meradb_devcert` is built next to `meradb_cli`; `--host` adds names
+or addresses to `localhost` and `127.0.0.1`):
+
+    meradb_devcert --out . --host 192.168.1.5
+
+or with OpenSSL (Git for Windows has it in `usr\bin`):
+
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 730 \
+      -subj "/CN=MeraDB dev" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:192.168.1.5" \
+      -keyout meradb-dev.key -out meradb-dev.crt
+
+Copy only the `.crt` to client computers. The `.key` stays on the server, readable by the server's user
+alone, and is never committed (`.gitignore` covers `*.key`). A self-signed certificate is its own
+trust anchor: whoever holds its key can pose as the server, so use a real one for anything that matters.
+
+TLS 1.2 and 1.3 only. The certificate is read when the server starts; restart to change it. Clients are
+not asked for a certificate, they log in with a password as before. Only the C++ server does TLS: the
+Python server refuses `--tls-cert`. To build without it: `cmake -DMERADB_TLS=OFF` (the options then
+refuse to work, and plain traffic is unchanged).
+
+## Files, errors and logs
+
+Protect the data folder with ordinary file permissions. `users.json` holds password hashes, so
+only the user who runs MeraDB can read it: mode `600` on Linux and macOS, and on Windows an access
+list with that one user and nothing inherited from the folder. A `users.json` from an older version
+gets the same rights the next time the C++ engine opens it. (So a server that runs as another Windows
+account than the one you use for `--local` needs that account's rights: an administrator can take
+ownership. The older Python engine does not set the Windows list, and a save by it puts the file back
+on the folder's rights until the C++ engine next opens it.)
+
+Errors sent to clients say `<data folder>` where the path would be, and only a client on the server's
+own computer gets the folder from `meradb status`; the server's log keeps the full text. One event
+is always one line in the log: a line break or control character a client sent shows as `\n` or `\x1b`.
 
 ## Users and privileges
 
-**This is a security-relevant behaviour: understand it before deploying MeraDB for
-real use.** There are two completely separate ways to authenticate:
+There are two completely separate ways to authenticate:
 
 1. **The single shared server password** (`--password` / `-W` above) -- anyone who knows
    it connects as an unrestricted **superuser**. This is what every example above uses.
@@ -169,18 +260,43 @@ real use.** There are two completely separate ways to authenticate:
 meradb shell -U ravi -W        # log in as ravi (asks for ravi's password)
 ```
 
-**The rule that matters: no username = superuser.** A session that connects WITHOUT
-`-U`/`MERADB_USER` at all -- which is every embedded/`--local` session, every existing
-script, and the default for `meradb shell`/`workbench`/`run` -- is **never** subject to
-privilege checks, even if `users.json` has users and grants in it. Privilege enforcement
-only ever switches on for a session that explicitly authenticated as a specific,
-non-superuser username. This keeps the feature 100% backward compatible: nothing about
-existing scripts, the REPL, or embedded use changes just because someone somewhere ran
-`BANAO USER`.
+**The rule that matters: a server connection without a username is a superuser only if
+nothing else protects the server.** What it gets depends on the server:
+
+| The server has | A connection without a username |
+|---|---|
+| no users, no shared password | superuser (this is how the first user gets made) |
+| a shared password (`--password`) | superuser, if it gives that password |
+| users, and no shared password | **refused**, with a message saying how to log in |
+
+So as soon as `BANAO USER` has run on a server without a shared password, everyone has to log in:
+
+```bash
+meradb shell -U ravi -W          # the shell: asks for ravi's password
+meradb run -U ravi -W script.mdb # a script
+meradb workbench -U ravi -W      # the terminal workbench
+meradb gui -U ravi -W            # the desktop window (its Connect dialog has a Username box too)
+```
+
+Set `MERADB_USER` and `MERADB_PASSWORD` instead of the options to save typing. A role never
+counts as a user here (a role cannot log in), and a session that was already open when the
+first user was made stays open.
+
+**Getting superuser back.** A user made with `BANAO USER` is restricted, so with users and no
+shared password nobody on the server is a superuser. There are two ways back, and neither can be
+locked out, because both need access to the computer and not to any account:
+
+```bash
+meradb stop --force              # `meradb stop` needs a superuser too, so it says the same
+meradb shell --local             # full access, straight to the data folder
+```
+
+or restart the server with `meradb start --password s3cret`, then `meradb shell -W`.
 
 A username is meaningless with `--local` (there's no server, so nothing to authenticate
 against) -- passing `-U` there is noted and ignored, not an error, since `--local` has
-always meant "trust the person running this process completely".
+always meant "trust the person running this process completely". The same holds for an
+embedded `Engine`.
 
 Once a session HAS authenticated as a specific user, it can only run `DIKHAO`/`DAALO`/
 `BADLO`/`MITAO` against tables/views it has been granted the matching privilege on via
