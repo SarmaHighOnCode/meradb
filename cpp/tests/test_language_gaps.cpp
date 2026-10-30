@@ -54,3 +54,18 @@ TEST_CASE("DATE_FORMAT knows the MySQL time specifiers", "[gaps][date]") {
             "09 13:02:09 01:02:09 PM 01 01 1 13 3 PM q");
     REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-03-05 00:30:00', '%h %l %p');") == "12 12 AM");
 }
+
+TEST_CASE("CAST and stored functions take decimal text only", "[gaps][cast]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('0x10' AS FLOAT);"), ContainsSubstring("cast"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('0x10' AS INT);"), ContainsSubstring("cast"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO CAST('inf' AS FLOAT);"), ContainsSubstring("cast"));
+    REQUIRE(q(e, "DIKHAO CAST('1e3' AS FLOAT), CAST('-2.5' AS FLOAT);") == "1000.0|-2.5");
+    run(e, "BANAO FUNCTION same(a INT) RETURNS INT SHURU RETURN a; KHATAM;");
+    run(e, "BANAO FUNCTION samef(a FLOAT) RETURNS FLOAT SHURU RETURN a; KHATAM;");
+    // strtoll used to clamp this to the largest INT
+    REQUIRE_THROWS(e.execute("DIKHAO same('99999999999999999999');"));
+    REQUIRE_THROWS(e.execute("DIKHAO samef('0x10');"));
+    REQUIRE(q(e, "DIKHAO same('12'), samef('1.5'), samef(2);") == "12|1.5|2.0");
+}

@@ -292,7 +292,8 @@ Value powerValue(const Value& a, const Value& b) {
 
 bool parseFullDouble(const std::string& text, double& out) {
     std::string t = pytext::strip(text);
-    if (t.empty()) return false;
+    // strtod also reads hexadecimal ('0x10') and 'inf' / 'nan'; none of those is a number in SQL text
+    if (t.empty() || t.find_first_of("xXnN") != std::string::npos) return false;
     char* end = nullptr;
     out = std::strtod(t.c_str(), &end);
     return end == t.c_str() + t.size() && std::isfinite(out);

@@ -9,6 +9,7 @@
 #include "meradb/engine.h"
 #include "meradb/errors.h"
 #include "meradb/parser.h"
+#include "meradb/pytext.h"
 #include "meradb/scalar_funcs.h"
 #include "meradb/stack_guard.h"
 #include <algorithm>
@@ -26,15 +27,12 @@ Value textValue(std::string s) { return Value(std::move(s)); }
 // for a TEXT. Anything that does not convert falls through to the strict column rules (and their error).
 Value looseCoerce(const Value& value, const std::string& typeName, const std::string& name) {
     if (auto* text = std::get_if<std::string>(&value.data)) {
-        if (typeName == "INT" || typeName == "FLOAT") {
-            const char* begin = text->c_str();
-            char* end = nullptr;
-            if (typeName == "INT") {
-                long long n = std::strtoll(begin, &end, 10);
-                if (end != begin && *end == '\0') return Value(static_cast<int64_t>(n));
-            } else {
-                double d = std::strtod(begin, &end);
-                if (end != begin && *end == '\0') return Value(d);
+        // CAST's own rules decide what counts as a number; a number too big for an INT is an error, never the largest INT
+        if (typeName == "INT" && pytext::parseIntExact(*text)) return castValue(value, "INT");
+        if (typeName == "FLOAT") {
+            try {
+                return castValue(value, "FLOAT");
+            } catch (const ExecutionError&) {
             }
         }
     } else if (typeName == "TEXT" && !value.isNull() && !std::holds_alternative<std::string>(value.data)) {
