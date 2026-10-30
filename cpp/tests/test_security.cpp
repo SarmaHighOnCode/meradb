@@ -9,6 +9,9 @@
 #include "test_util.h"
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <random>
+#include <vector>
 
 using namespace meradb;
 using namespace meradb_test;
@@ -414,6 +417,61 @@ TEST_CASE("security a server without a password will not open to the network", "
     options.port = 0;
     CHECK(serve(options) == 1);
     CHECK_FALSE(std::filesystem::exists(dir.path() / "meradb.pid"));
+}
+
+// ---- damaged files: a clean error or a partial answer, never a crash ----
+
+TEST_CASE("security damaged data files never crash the engine", "[security][corruption]") {
+    namespace fs = std::filesystem;
+    TempDir original;
+    {
+        Engine e(original.str());
+        runLast(e, "BANAO TABLE t (id INT MUKHYA KUNJI, name VARCHAR(40), score FLOAT);");
+        for (int i = 0; i < 40; ++i)
+            REQUIRE(runLast(e, "DAALO MEIN t MAAN (" + std::to_string(i) + ", 'naam " + std::to_string(i) + "', " + std::to_string(i) + ".5);").error.empty());
+        REQUIRE(runLast(e, "DIKHAO * SE t;").rows.size() == 40);
+        e.instance().users().create("ravi", "pw");
+    }
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::recursive_directory_iterator(original.path()))
+        if (entry.is_regular_file()) files.push_back(fs::relative(entry.path(), original.path()));
+    REQUIRE(files.size() >= 3);
+
+    auto readAll = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    std::mt19937 random(20261030);  // fixed: a failure must reproduce
+    int runs = 0;
+    for (const fs::path& file : files) {
+        const std::string bytes = readAll(original.path() / file);
+        for (int round = 0; round < 120 && !bytes.empty(); ++round) {
+            std::string damaged = bytes;
+            if (round % 4 == 3) {
+                damaged.resize(random() % damaged.size());
+            } else {
+                for (int flips = 1 + static_cast<int>(random() % 8); flips > 0; --flips)
+                    damaged[random() % damaged.size()] = static_cast<char>(round % 4 == 0 ? 0xFF : random());
+            }
+            TempDir copy;
+            fs::copy(original.path(), copy.path(), fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+            {
+                std::ofstream out(copy.path() / file, std::ios::binary | std::ios::trunc);
+                out << damaged;
+            }
+            CAPTURE(file.string(), round);
+            try {
+                Engine e(copy.str());
+                for (const char* sql : {"DIKHAO * SE t;", "DIKHAO name SE t JAHAN id = 7;", "DAALO MEIN t MAAN (100, 'x', 1.5);",
+                                        "BADLO t SET score = 2.5 JAHAN id = 3;", "MITAO SE t JAHAN id = 4;"})
+                    runLast(e, sql);
+                e.instance().users().verify("ravi", "pw");
+            } catch (const std::exception&) {  // refusing a damaged file is the right answer
+            }
+            ++runs;
+        }
+    }
+    CHECK(runs > 300);  // reaching this line is the test
 }
 
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
