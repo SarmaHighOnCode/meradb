@@ -70,7 +70,7 @@ from typing import Optional
 from . import aggregates
 from . import ast_nodes as ast
 from . import planner
-from .catalog import Catalog, Column, TableSchema
+from .catalog import Catalog, Column, TableSchema, is_safe_file_name
 from .datatypes import coerce, format_value
 from .errors import ExecutionError, MeraDBError
 from .evaluator import (
@@ -176,11 +176,13 @@ class Instance:
         os.makedirs(self.db_dir(DEFAULT_DATABASE), exist_ok=True)
 
     def db_dir(self, name: str) -> str:
+        if not is_safe_file_name(name):
+            raise ExecutionError(f"Database ka naam {name!r} sahi nahi hai")
         return os.path.join(self.data_dir, name)
 
     def databases(self) -> list[str]:
         return sorted(
-            d for d in os.listdir(self.data_dir) if not d.startswith(".") and os.path.isdir(self.db_dir(d))
+            d for d in os.listdir(self.data_dir) if is_safe_file_name(d) and os.path.isdir(self.db_dir(d))
         )
 
     def catalog(self, db: str) -> Catalog:
@@ -236,7 +238,7 @@ class Instance:
             path = os.path.join(root, name)
             if name.endswith((".tmp", ".done")):
                 shutil.rmtree(path, ignore_errors=True)
-            else:
+            elif is_safe_file_name(name):  # anything else was not put here by a transaction
                 self.restore_snapshot(name)
                 recovered.append(name)
         return recovered

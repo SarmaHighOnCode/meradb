@@ -2,7 +2,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include "golden_runner.h"
 #include "meradb/engine.h"
+#include "meradb/errors.h"
+#include "meradb/fs_util.h"
+#include "server_fixture.h"
 #include "test_util.h"
+#include <filesystem>
+#include <fstream>
 
 using namespace meradb;
 using namespace meradb_test;
@@ -88,4 +93,52 @@ TEST_CASE("security a column-limited DIKHAO cannot be widened through BADLO, MIT
     CHECK(f.nameOf(1) == "a!");
     CHECK(runLast(f.ravi, "DIKHAO id KAHO n SE pub KRAM n;").error.empty());
     CHECK(runLast(f.ravi, "MITAO SE pub JAHAN id = 3;").error.empty());
+}
+
+// ---- file access ----
+
+TEST_CASE("security a database name can never leave the data folder", "[security][paths]") {
+    TempDir outer;
+    const std::filesystem::path data = outer.path() / "data";
+    std::filesystem::create_directories(outer.path() / "outside");
+    std::filesystem::create_directories(data / ".wapas");
+    Engine e(data.string());
+    for (const char* name : {"../outside", "..\\outside", "..", ".", ".wapas", "main/../../outside", "main:stream", "main.", "main ",
+                             "a\nb", "C:\\Windows", "/etc"}) {
+        INFO(name);
+        ast::UseDatabase use;
+        use.name = name;
+        CHECK_THROWS_AS(e.executeStatement(use), ExecutionError);
+        CHECK(e.currentDb == DEFAULT_DATABASE);
+        CHECK_THROWS_AS(e.instance().dbDir(name), ExecutionError);
+    }
+    CHECK_FALSE(isSafeFileName(""));
+    CHECK(isSafeFileName("palantir_2"));
+    CHECK(isSafeFileName("my-db"));
+}
+
+TEST_CASE("security a table name in catalog.json can never leave the database folder", "[security][paths]") {
+    TempDir dir;
+    std::filesystem::create_directories(dir.path() / "main");
+    std::ofstream(dir.file("main/catalog.json")) << R"({"tables":{"../../evil":{"name":"../../evil","columns":[{"name":"a","type_name":"INT"}]}}})";
+    Engine e(dir.str());
+    CHECK_THROWS_AS(e.catalog().tablePath("../../evil"), StorageError);
+    CHECK_THROWS_AS(e.catalog().tablePath("t:stream"), StorageError);
+    CHECK_FALSE(runLast(e, "DIKHAO * SE t;").error.empty());
+    CHECK_FALSE(std::filesystem::exists(dir.path().parent_path() / "evil.tbl"));
+}
+
+TEST_CASE("security the hello message cannot choose a database outside the data folder", "[security][paths][server]") {
+    RunningServer server;
+    const auto outside = std::filesystem::path(server.dataDir()).parent_path() / ("outside_" + std::to_string(server.port()));
+    std::filesystem::create_directories(outside);
+    {
+        RawClient client(server.port());
+        auto reply = client.hello(nullptr, "../" + outside.filename().string());
+        CHECK_FALSE(reply.value("ok", true));
+        if (reply.value("ok", false)) client.query("BANAO TABLE planted (a INT);");
+    }
+    CHECK_FALSE(std::filesystem::exists(outside / "catalog.json"));
+    std::error_code ignored;
+    std::filesystem::remove_all(outside, ignored);
 }

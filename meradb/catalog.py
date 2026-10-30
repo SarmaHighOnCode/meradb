@@ -25,7 +25,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Optional
 
-from .errors import ExecutionError
+from .errors import ExecutionError, StorageError
+
+
+def is_safe_file_name(name: str) -> bool:
+    """A database or table name becomes one file or folder name inside the data folder. The tokenizer only produces
+    safe names, but a name can also come from the wire ("database" in hello) or a hand-edited catalog.json: no
+    separators or "..", no NTFS stream (":"), no hidden folder such as the snapshot folder, no trailing dot or space."""
+    if not name or name[0] == "." or name[-1] in ". ":
+        return False
+    return not any(ord(c) < 0x20 or ord(c) == 0x7F or c in '/\\:*?"<>|' for c in name)
 
 
 @dataclass
@@ -159,6 +168,8 @@ class Catalog:
         os.replace(tmp, self.path)
 
     def table_path(self, table: str) -> str:
+        if not is_safe_file_name(table):
+            raise StorageError(f"{self.path} corrupt hai: table ka naam {table!r} sahi nahi hai")
         return os.path.join(self.db_dir, f"{table}.tbl")
 
     def get(self, table: str) -> TableSchema:

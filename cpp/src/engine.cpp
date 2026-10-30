@@ -70,7 +70,10 @@ Instance::Instance(std::string dataDir, bool served)
     fs::create_directories(pathOf(dbDir(DEFAULT_DATABASE)));
 }
 
-std::string Instance::dbDir(const std::string& name) const { return (pathOf(dataDir_) / pathOf(name)).u8string(); }
+std::string Instance::dbDir(const std::string& name) const {
+    if (!isSafeFileName(name)) throw ExecutionError("Database ka naam " + pyRepr(name) + " sahi nahi hai");
+    return (pathOf(dataDir_) / pathOf(name)).u8string();
+}
 
 std::vector<std::string> Instance::databases() const {
     std::vector<std::string> names;
@@ -79,7 +82,7 @@ std::vector<std::string> Instance::databases() const {
     for (fs::directory_iterator it(pathOf(dataDir_), ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         std::string name = it->path().filename().u8string();
-        if (!name.empty() && name[0] != '.' && it->is_directory(entryEc) && !entryEc) names.push_back(name);
+        if (isSafeFileName(name) && it->is_directory(entryEc) && !entryEc) names.push_back(name);
     }
     std::sort(names.begin(), names.end());
     return names;
@@ -179,7 +182,7 @@ std::vector<std::string> Instance::recover() {
     for (const auto& name : names) {
         if (endsWith(name, ".tmp") || endsWith(name, ".done") || endsWith(name, ".sp")) {  // .sp = savepoint / statement copy
             removeTreeQuietly(root / pathOf(name));
-        } else {
+        } else if (isSafeFileName(name)) {  // anything else was not put here by a transaction
             restoreSnapshot(name);
             recovered.push_back(name);
         }
