@@ -154,6 +154,30 @@ void Server::log(const std::string& message) {
     options_.log(sys::localLogStamp() + "  " + message);
 }
 
+bool Server::loginLocked(const std::string& ip) {
+    if (options_.loginFailureLimit <= 0) return false;
+    std::lock_guard<std::mutex> guard(loginMutex_);
+    auto it = loginFailures_.find(ip);
+    return it != loginFailures_.end() && std::chrono::steady_clock::now() < it->second.lockedUntil;
+}
+
+void Server::noteLogin(const std::string& ip, bool succeeded) {
+    if (options_.loginFailureLimit <= 0) return;
+    std::lock_guard<std::mutex> guard(loginMutex_);
+    if (succeeded) {
+        loginFailures_.erase(ip);
+        return;
+    }
+    if (loginFailures_.size() >= 10000 && !loginFailures_.count(ip)) loginFailures_.clear();  // the table stays bounded
+    LoginFailures& failures = loginFailures_[ip];
+    if (++failures.count >= options_.loginFailureLimit) {
+        failures.count = options_.loginFailureLimit - 1;  // after the lock, one more wrong guess locks again
+        failures.lockedUntil = std::chrono::steady_clock::now() +
+                               std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                   std::chrono::duration<double>(options_.loginLockSeconds));
+    }
+}
+
 void Server::reap(bool everything) {
     for (auto it = connections_.begin(); it != connections_.end();) {
         if (everything || (*it)->finished.load()) {
@@ -252,18 +276,28 @@ void Server::serveConnection(Connection& connection) {
         const bool hasUser = pyTruthy(userField);
         const std::string user = hasUser ? pyStr(*userField) : "";
         const std::string password = pyTruthy(passwordField) ? pyStr(*passwordField) : "";
-        if (hasUser) {
-            // A per-user login SUPERSEDES the shared server password entirely.
-            // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
-            if (!instance_->users().verify(user, password)) {
-                protocol::send(socket, failure("User ya password galat hai"), &stop_);
-                log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
+        if (hasUser || !options_.password.empty()) {
+            if (loginLocked(peerIp)) {  // the same answer as a wrong password: it tells a guesser nothing
+                protocol::send(socket, failure(hasUser ? "User ya password galat hai" : "Password galat hai"), &stop_);
+                log(peer + "  login mana (is address se bahut galat koshishen)");
                 return;
             }
-        } else if (!options_.password.empty() && !constantTimeEquals(password, options_.password)) {
-            protocol::send(socket, failure("Password galat hai"), &stop_);
-            log(peer + "  login fail (galat password)");
-            return;
+            if (hasUser) {
+                // A per-user login SUPERSEDES the shared server password entirely.
+                // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
+                if (!instance_->users().verify(user, password)) {
+                    noteLogin(peerIp, false);
+                    protocol::send(socket, failure("User ya password galat hai"), &stop_);
+                    log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
+                    return;
+                }
+            } else if (!constantTimeEquals(password, options_.password)) {
+                noteLogin(peerIp, false);
+                protocol::send(socket, failure("Password galat hai"), &stop_);
+                log(peer + "  login fail (galat password)");
+                return;
+            }
+            noteLogin(peerIp, true);
         }
 
         Engine session(instance_);

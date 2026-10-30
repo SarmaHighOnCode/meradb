@@ -347,6 +347,38 @@ TEST_CASE("security connections beyond the limit are refused, and capacity comes
     }));
 }
 
+TEST_CASE("security password guessing from one address is locked out, then recovers", "[security][server][limits]") {
+    RunningServer server("", false, protocol::kMaxMessageBytes, [](ServerOptions& options) {
+        options.loginFailureLimit = 3;
+        options.loginLockSeconds = 1.5;
+    });
+    server.instance().users().create("ravi", "pw");
+    auto attempt = [&](const char* password) {
+        RawClient client(server.port());
+        return client.hello(password, nullptr, "ravi");
+    };
+    CHECK_FALSE(attempt("guess1").value("ok", true));
+    CHECK(attempt("pw").value("ok", false));  // a success clears the count
+    for (const char* guess : {"guess2", "guess3", "guess4"}) CHECK_FALSE(attempt(guess).value("ok", true));
+    auto locked = attempt("pw");  // the right password, during the lock
+    CHECK_FALSE(locked.value("ok", true));
+    CHECK(locked.value("error", std::string()) == "User ya password galat hai");
+    CHECK(server.logContains("login mana"));
+    sleepMs(1600);
+    CHECK(attempt("pw").value("ok", false));
+}
+
+TEST_CASE("security guessing the shared password is locked out too", "[security][server][limits]") {
+    RunningServer server("s3cret", false, protocol::kMaxMessageBytes, [](ServerOptions& options) { options.loginFailureLimit = 2; });
+    auto attempt = [&](const char* password) {
+        RawClient client(server.port());
+        return client.hello(password).value("ok", false);
+    };
+    CHECK_FALSE(attempt("a"));
+    CHECK_FALSE(attempt("b"));
+    CHECK_FALSE(attempt("s3cret"));
+}
+
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 TEST_CASE("security a restricted user cannot shut the server down", "[security][server]") {

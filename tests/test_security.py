@@ -198,6 +198,24 @@ class LimitTests(ServerCase):
         self.assertTrue(self.client().request(type="hello").get("ok"))
 
 
+class LoginLockTests(ServerCase):
+    def attempt(self, password: str) -> dict:
+        c = self.client()
+        return c.request(type="hello", user="ravi", password=password)
+
+    def test_guessing_from_one_address_is_locked_out_then_recovers(self):
+        self.server.instance.users.create("ravi", "pw")
+        self.server.login_failure_limit = 3
+        self.server.login_lock_seconds = 1.0
+        self.assertFalse(self.attempt("guess1").get("ok"))
+        self.assertTrue(self.attempt("pw").get("ok"))  # a success clears the count
+        for guess in ["guess2", "guess3", "guess4"]:
+            self.assertFalse(self.attempt(guess).get("ok"))
+        self.assertEqual(self.attempt("pw"), {"ok": False, "error": "User ya password galat hai"})
+        time.sleep(1.1)
+        self.assertTrue(self.attempt("pw").get("ok"))
+
+
 class PathTests(ServerCase):
     def test_database_name_cannot_leave_the_data_folder(self):
         os.makedirs(os.path.join(self.dir, "outside"))

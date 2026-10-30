@@ -27,6 +27,7 @@ import socket
 import socketserver
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 
@@ -60,9 +61,15 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
     # from using them all up. (A logged-in session has no idle limit: a workbench may legitimately sit open for hours.)
     handshake_timeout = 10.0
     max_connections = 256
+    # After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
+    # login_lock_seconds whatever it sends (and costs no hashing).
+    login_failure_limit = 10
+    login_lock_seconds = 30.0
 
     def __init__(self, data_dir: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  password: str | None = None, verbose: bool = False, log=None):
+        self._login_failures: dict[str, list] = {}  # address -> [count, locked_until]
+        self._login_lock = threading.Lock()
         self._connections = 0
         self._connections_lock = threading.Lock()
         self.instance = Instance(data_dir, served=True)
@@ -84,6 +91,24 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
     def track(self, delta: int) -> None:
         with self._sessions_lock:
             self.sessions += delta
+
+    def login_locked(self, ip: str) -> bool:
+        with self._login_lock:
+            entry = self._login_failures.get(ip)
+            return entry is not None and time.monotonic() < entry[1]
+
+    def note_login(self, ip: str, succeeded: bool) -> None:
+        with self._login_lock:
+            if succeeded:
+                self._login_failures.pop(ip, None)
+                return
+            if len(self._login_failures) >= 10000 and ip not in self._login_failures:
+                self._login_failures.clear()  # the table stays bounded
+            entry = self._login_failures.setdefault(ip, [0, 0.0])
+            entry[0] += 1
+            if entry[0] >= self.login_failure_limit:
+                entry[0] = self.login_failure_limit - 1  # after the lock, one more wrong guess locks again
+                entry[1] = time.monotonic() + self.login_lock_seconds
 
     def verify_request(self, request, client_address) -> bool:
         with self._connections_lock:
@@ -126,6 +151,12 @@ class ClientHandler(socketserver.StreamRequestHandler):
             return
 
         user = hello.get("user")
+        ip = self.client_address[0]
+        if (user or server.password) and server.login_locked(ip):
+            # the same answer as a wrong password: it tells a guesser nothing
+            send(self.wfile, {"ok": False, "error": "User ya password galat hai" if user else "Password galat hai"})
+            server.log(f"{peer}  login mana (is address se bahut galat koshishen)")
+            return
         if user:
             # A per-user login SUPERSEDES the single shared server password --
             # the whole-server password check below is skipped entirely for
@@ -134,15 +165,19 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 # bare message: the client wraps this in a ConnectionFailed exception,
                 # whose own __str__ already adds "[Connection Galti] " -- adding it here
                 # too would print it twice
+                server.note_login(ip, False)
                 send(self.wfile, {"ok": False, "error": "User ya password galat hai"})
                 server.log(f"{peer}  login fail (galat user/password: {user!r})")
                 return
         # bytes: compare_digest raises TypeError on a str with a non-ASCII character
         elif server.password and not hmac.compare_digest(str(hello.get("password") or "").encode("utf-8", "surrogatepass"),
                                                          server.password.encode("utf-8", "surrogatepass")):
+            server.note_login(ip, False)
             send(self.wfile, {"ok": False, "error": "Password galat hai"})  # bare: see note above
             server.log(f"{peer}  login fail (galat password)")
             return
+        if user or server.password:
+            server.note_login(ip, True)
 
         session = Engine(server.instance)
         if user:
