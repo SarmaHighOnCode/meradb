@@ -544,6 +544,14 @@ void Engine::close() {
 // users & privileges (server-wide -- see users.h)
 // ============================================================================
 
+// Every plain select under a set operation, however deep the chain is.
+static void forEachSide(const ast::SetOp& setOp, const std::function<void(const ast::Select&)>& visit) {
+    for (const ast::Statement* side : {setOp.left.get(), setOp.right.get()}) {
+        if (auto* inner = dynamic_cast<const ast::SetOp*>(side)) forEachSide(*inner, visit);
+        else visit(*static_cast<const ast::Select*>(side));
+    }
+}
+
 std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
     // The FROM table plus every MILAO'd table -- NOT tables read only through a
     // VIEW's own stored query (that runs via resolveSource, never through
@@ -551,6 +559,12 @@ std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
     // by its own name).
     // A derived table (subquery in FROM) contributes the tables ITS query reads.
     std::vector<std::string> tables;
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) {
+            for (auto& inner : tablesRead(side)) tables.push_back(std::move(inner));
+        });
+        return tables;
+    }
     auto add = [&](const std::string& name, const ast::Select* derived) {
         if (derived == nullptr) {
             if (!name.empty()) tables.push_back(name);  // DIKHAO 1 + 1 has no table at all
@@ -658,6 +672,10 @@ void Engine::denyColumn(const std::string& privilege, const std::string& table, 
 // column by column, the select list, JAHAN, SAMOOH, JINKA, KRAM and the MILAO conditions may name nothing else, and `*`
 // needs every column.
 void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) {
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { checkSelectAccess(side, outer); });
+        return;
+    }
     PrivScope scope;
     scope.outer = outer;
     auto addSource = [&](const std::string& table, const std::string& alias, const ast::Select* derived) {
@@ -3452,6 +3470,10 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
         return e ? correlateExpr(*e, subqueryScope, outerRow, outerKeys, fired) : nullptr;
     };
     auto out = std::make_unique<ast::Select>();
+    if (stmt.compound) {  // each side has tables, so names, of its own
+        out->compound = correlateSetOp(*stmt.compound, outerRow, outerKeys, fired);
+        return out;
+    }
     for (const auto& c : stmt.columns) out->columns.push_back(corr(c.get()));
     out->table = stmt.table;
     out->alias = stmt.alias;
@@ -3479,6 +3501,30 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
     out->offset = stmt.offset;
     out->distinct = stmt.distinct;
     out->aliases = stmt.aliases;
+    return out;
+}
+
+std::unique_ptr<ast::SetOp> Engine::correlateSetOp(const ast::SetOp& stmt, const Row& outerRow,
+                                                   const std::vector<std::string>& outerKeys, bool& fired) {
+    auto side = [&](const ast::Statement& s) -> std::unique_ptr<ast::Statement> {
+        if (auto* inner = dynamic_cast<const ast::SetOp*>(&s)) return correlateSetOp(*inner, outerRow, outerKeys, fired);
+        auto& select = static_cast<const ast::Select&>(s);
+        Scope scope = selectSourcesScope(select, nullptr);
+        return correlateSelect(select, scope, outerRow, outerKeys, fired);
+    };
+    auto out = std::make_unique<ast::SetOp>();
+    out->op = stmt.op;
+    out->all = stmt.all;
+    out->left = side(*stmt.left);
+    out->right = side(*stmt.right);
+    for (const auto& o : stmt.orderBy) {
+        ast::OrderItem item;
+        item.expr = cloneExpr(*o.expr);
+        item.descending = o.descending;
+        out->orderBy.push_back(std::move(item));
+    }
+    out->limit = stmt.limit;
+    out->offset = stmt.offset;
     return out;
 }
 
@@ -3545,6 +3591,7 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
 
 Result Engine::execSelect(const ast::Select& stmt) {
     requireStack();
+    if (stmt.compound) return execSetOp(*stmt.compound);
     auto planPtr = planSelect(stmt);
     SelectPlan& plan = *planPtr;
     const Scope& scope = *plan.scope;
@@ -3667,7 +3714,10 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
     using RowSet = std::unordered_set<std::vector<Value>, PyValuesHash, PyValuesEq>;
     std::vector<std::vector<Value>> out;
     RowSet seen;
-    if (stmt.op == "SANYUKT") {  // UNION: dedupe, preserving first-occurrence order
+    if (stmt.all) {  // UNION ALL: every row of both sides
+        out = std::move(left.rows);
+        out.insert(out.end(), right.rows.begin(), right.rows.end());
+    } else if (stmt.op == "SANYUKT") {  // UNION: dedupe, preserving first-occurrence order
         for (const auto* side : {&left.rows, &right.rows})
             for (const auto& row : *side)
                 if (seen.insert(row).second) out.push_back(row);
@@ -4000,7 +4050,7 @@ std::unique_ptr<Engine::ViewTarget> Engine::viewTargetOf(const std::string& name
     auto parsed = parseScript(queryText);
     auto* sel = parsed.empty() ? nullptr : dynamic_cast<ast::Select*>(parsed[0].get());
     if (sel == nullptr) { reason = "definition DIKHAO nahi hai"; return nullptr; }
-    if (sel->derived || !sel->joins.empty()) { reason = "isme JOIN ya derived table hai"; return nullptr; }
+    if (sel->compound || sel->derived || !sel->joins.empty()) { reason = "isme JOIN ya derived table hai"; return nullptr; }
     if (sel->table.empty()) { reason = "isme koi table nahi hai"; return nullptr; }
     if (sel->distinct || !sel->groupBy.empty() || sel->having || sel->limit.has_value() || sel->offset.has_value()) {
         reason = "isme ALAG / SAMOOH / JINKA / SIRF hai";
@@ -4187,7 +4237,7 @@ Result Engine::execExplain(const ast::Explain& stmt) {
         auto plan = planSelect(*sel);
         lines = explainSelect(*sel, *plan);
     } else if (auto* setOp = dynamic_cast<const ast::SetOp*>(&inner)) {
-        lines.push_back(setOp->op + " (" + setOpName(setOp->op) + ") of:");
+        lines.push_back(setOp->op + (setOp->all ? " ALL" : "") + " (" + setOpName(setOp->op) + ") of:");
         const std::pair<const ast::Statement*, const char*> sides[] = {{setOp->left.get(), "LEFT"},
                                                                        {setOp->right.get(), "RIGHT"}};
         for (const auto& [side, label] : sides) {
@@ -4227,13 +4277,14 @@ Result Engine::execExplain(const ast::Explain& stmt) {
 std::vector<std::string> Engine::explainOne(const ast::Statement& stmt) {
     requireStack();
     if (auto* setOp = dynamic_cast<const ast::SetOp*>(&stmt)) {
-        std::vector<std::string> lines{setOp->op + " (" + setOpName(setOp->op) + ") of:"};
+        std::vector<std::string> lines{setOp->op + (setOp->all ? " ALL" : "") + " (" + setOpName(setOp->op) + ") of:"};
         for (const ast::Statement* side : {setOp->left.get(), setOp->right.get()})
             for (const auto& line : explainOne(*side)) lines.push_back("  " + line);
         return lines;
     }
     auto* sel = dynamic_cast<const ast::Select*>(&stmt);
     if (sel == nullptr) throw ExecutionError("SAMJHAO sirf DIKHAO, BADLO aur MITAO ke saath chalta hai");
+    if (sel->compound) return explainOne(*sel->compound);
     auto plan = planSelect(*sel);
     return explainSelect(*sel, *plan);
 }
@@ -4311,8 +4362,7 @@ std::vector<std::string> Engine::explainSubqueries(const std::vector<const ast::
             Scope subqueryScope = selectSourcesScope(*sub->statement, nullptr);
             bool fired = false;
             auto substituted = correlateSelect(*sub->statement, subqueryScope, dummyOuter, keys, fired);
-            auto innerPlan = planSelect(*substituted);
-            std::string firstLine = explainSelect(*substituted, *innerPlan).at(0);
+            std::string firstLine = explainOne(*substituted).at(0);
             lines.push_back(std::string("SUBQUERY (") + (fired ? "correlated" : "uncorrelated") + "): " + firstLine);
         }
     }

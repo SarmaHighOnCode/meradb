@@ -378,6 +378,8 @@ private:
     std::unique_ptr<ast::Select> correlateSelect(const ast::Select& stmt, const Scope& subqueryScope,
                                                  const Row& outerRow, const std::vector<std::string>& outerKeys,
                                                  bool& fired);
+    std::unique_ptr<ast::SetOp> correlateSetOp(const ast::SetOp& stmt, const Row& outerRow,
+                                               const std::vector<std::string>& outerKeys, bool& fired);
     Result runSubquery(const ast::Subquery& sub, const Row& outerRow, const std::vector<std::string>& outerKeys,
                        bool& fired);
     RowSubqueries precomputeSubqueries(const std::vector<const ast::Expr*>& exprs, const std::vector<Row>& rows,

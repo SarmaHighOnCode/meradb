@@ -265,3 +265,48 @@ TEST_CASE("Tables can be listed with a comma", "[gaps][from]") {
     REQUIRE(q(e, "DIKHAO x, y SE a, (DIKHAO y SE b JAHAN y = 3) d;") == "1|3;2|3");
     REQUIRE(q(e, "DIKHAO a.x, b.y, c.x SE a, b MILAO a c PAR c.x = b.y JAHAN a.x = 1;") == "1|2|2");
 }
+
+TEST_CASE("SANYUKT ALL keeps the copies", "[gaps][setop]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT);");
+    run(e, "DAALO MEIN t MAAN (1), (1), (2);");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t;") == "1;1;2;1;1;2");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT DIKHAO a SE t;") == "1;2");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t KRAM 1 ULTA SIRF 3;") == "2;2;1");
+    REQUIRE(q(e, "DIKHAO a SE t SANYUKT ALL DIKHAO a SE t SANYUKT DIKHAO 3 KRAM a;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO 3 SANYUKT DIKHAO a SE t SANYUKT ALL DIKHAO a SE t KRAM 1 ULTA SIRF 2;") == "3;2");
+    REQUIRE_THROWS(e.execute("DIKHAO a SE t SAAJHA ALL DIKHAO a SE t;"));
+    REQUIRE_THAT(flat(run(e, "SAMJHAO DIKHAO a SE t SANYUKT ALL DIKHAO a SE t;")), ContainsSubstring("SANYUKT ALL"));
+}
+
+TEST_CASE("Set operations work inside subqueries and derived tables", "[gaps][setop][subquery]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE a (x INT);");
+    run(e, "BANAO TABLE b (y INT);");
+    run(e, "BANAO TABLE n (id INT);");
+    run(e, "DAALO MEIN a MAAN (1), (2);");
+    run(e, "DAALO MEIN b MAAN (2), (3);");
+    run(e, "DAALO MEIN n MAAN (1), (2), (3), (4);");
+    REQUIRE(q(e, "DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT DIKHAO y SE b) d KRAM z;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT ALL DIKHAO y SE b KRAM 1 ULTA SIRF 2) d;") == "3;2");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b) KRAM id;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id NAHI MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b);") == "4");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SAAJHA DIKHAO y SE b);") == "2");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a CHHODKAR DIKHAO y SE b);") == "1");
+    REQUIRE(q(e, "DIKHAO (DIKHAO x SE a JAHAN x = 1 SANYUKT DIKHAO y SE b JAHAN y = 1);") == "1");
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN id > ALL (DIKHAO x SE a SANYUKT DIKHAO y SE b);") == "4");
+    // correlated: each side sees the outer row
+    REQUIRE(q(e, "DIKHAO id SE n JAHAN EXISTS (DIKHAO x SE a JAHAN x = id SANYUKT DIKHAO y SE b JAHAN y = id) KRAM id;") == "1;2;3");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO x SE a JAHAN x = n.id SANYUKT DIKHAO 0 JAHAN n.id > 2 KRAM 1 SIRF 1) SE n KRAM id;") == "1|1;2|2;3|0;4|0");
+    // the plan shows it, in a view it works, and it still cannot be the whole of a view
+    REQUIRE_THAT(flat(run(e, "SAMJHAO DIKHAO id SE n JAHAN id MEIN (DIKHAO x SE a SANYUKT DIKHAO y SE b);")), ContainsSubstring("SANYUKT"));
+    run(e, "BANAO VIEW v KAHO DIKHAO z SE (DIKHAO x KAHO z SE a SANYUKT DIKHAO y SE b) d;");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE v;") == "3");
+    REQUIRE_THROWS_WITH(e.execute("BANAO VIEW w KAHO DIKHAO x SE a SANYUKT DIKHAO y SE b;"), ContainsSubstring("sirf ek DIKHAO"));
+    // a procedure parameter reaches into the sides
+    run(e, "BANAO PROCEDURE p(k INT) SHURU SET @found = (DIKHAO x SE a JAHAN x = k SANYUKT DIKHAO y SE b JAHAN y = k); KHATAM;");
+    run(e, "CHALAO p(3);");
+    REQUIRE(q(e, "DIKHAO @found;") == "3");
+}

@@ -221,7 +221,7 @@ std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& lef
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
-            sub->statement = parseSelectBody();
+            sub->statement = parseSubqueryBody();
             expectSymbol(")");
             auto inSub = std::make_unique<InSubquery>();
             inSub->left = std::move(left);
@@ -347,7 +347,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             if (upper == "EXISTS" && checkKeyword("DIKHAO")) {
                 advance();
                 auto sub = std::make_unique<Subquery>();
-                sub->statement = parseSelectBody();
+                sub->statement = parseSubqueryBody();
                 expectSymbol(")");
                 auto exists = std::make_unique<InSubquery>();
                 exists->subquery = std::move(sub);
@@ -430,7 +430,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         if (checkKeyword("DIKHAO")) {
             auto sub = std::make_unique<Subquery>();
             expectKeyword("DIKHAO");
-            sub->statement = parseSelectBody();
+            sub->statement = parseSubqueryBody();
             expectSymbol(")");
             return sub;
         }
@@ -1593,6 +1593,20 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
         if (isSoftWord(0, "databases") && atEndOfStatement(1)) { advance(); return std::make_unique<ShowDatabases>(); }
     }
 
+    return parseSetChain();
+}
+
+std::unique_ptr<Select> Parser::parseSubqueryBody() {
+    auto chain = parseSetChain();
+    if (dynamic_cast<SetOp*>(chain.get())) {
+        auto wrapper = std::make_unique<Select>();
+        wrapper->compound.reset(static_cast<SetOp*>(chain.release()));
+        return wrapper;
+    }
+    return std::unique_ptr<Select>(static_cast<Select*>(chain.release()));
+}
+
+std::unique_ptr<Statement> Parser::parseSetChain() {
     std::unique_ptr<Statement> result = parseSelectBody();
     // `DIKHAO a KRAM x SIRF 2 SANYUKT DIKHAO b` sorts and cuts that side by itself. When no side but the last has such
     // clauses they are written after the whole query and apply to its whole result, as in SQL.
@@ -1602,6 +1616,10 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
         auto op = std::make_unique<SetOp>();
         op->op = advance().textValue;
         spend();
+        if (op->op == "SANYUKT" && isSoftWord(0, "all")) {  // SANYUKT ALL keeps the copies
+            advance();
+            op->all = true;
+        }
         expectKeyword("DIKHAO");
         op->left = std::move(result);
         auto right = parseSelectBody();
@@ -1645,7 +1663,7 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
             guardStack();
             spend();
             expectKeyword("DIKHAO");
-            derived = parseSelectBody();
+            derived = parseSubqueryBody();
             expectSymbol(")");
             if (!matchKeyword("KAHO") && peek().type == TokenType::Ident && peek().textValue == "as") advance();
             alias = parseAliasOpt();

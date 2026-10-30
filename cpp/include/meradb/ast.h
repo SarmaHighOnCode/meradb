@@ -244,10 +244,14 @@ struct Select : Statement {
     bool distinct = false;
     std::string lockMode;  // FOR UPDATE / FOR SHARE / LOCK IN SHARE MODE: accepted, a transaction already locks the database
     std::vector<std::optional<std::string>> aliases;  // parallel to `columns`
+    // A subquery or derived table that is a set operation: (DIKHAO a SE x SANYUKT DIKHAO b SE y). When set, it is the
+    // whole query and every field above is empty.
+    std::unique_ptr<struct SetOp> compound;
 };
 
 struct SetOp : Statement {
     std::string op;  // SANYUKT | SAAJHA | CHHODKAR
+    bool all = false;  // SANYUKT ALL: keeps the copies
     std::unique_ptr<Statement> left;
     std::unique_ptr<Statement> right;
     // KRAM / SIRF written after the last side, when no earlier side has clauses of its own: they apply to the whole result

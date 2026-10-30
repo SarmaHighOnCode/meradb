@@ -82,6 +82,11 @@ void substituteStatementInPlace(Statement& stmt, const RefReplacer& replace, boo
         return;
     }
     if (auto* sel = dynamic_cast<Select*>(&stmt)) {
+        if (sel->compound) {
+            substituteStatementInPlace(*sel->compound->left, replace, intoSubqueries);
+            substituteStatementInPlace(*sel->compound->right, replace, intoSubqueries);
+            return;
+        }
         for (auto& c : sel->columns) substituteInPlace(c, replace, intoSubqueries);
         if (sel->derived) substituteStatementInPlace(*sel->derived, replace, intoSubqueries);
         for (auto& j : sel->joins) {

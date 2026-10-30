@@ -74,6 +74,8 @@ private:
     std::unique_ptr<ast::Statement> parseStatement();      // guarded: see spend() / the Scope in parser.cpp
     std::unique_ptr<ast::Statement> parseStatementBody();  // the real statement dispatcher
     std::unique_ptr<ast::Select> parseSelectBody();
+    std::unique_ptr<ast::Statement> parseSetChain();   // a select, chained with SANYUKT / SAAJHA / CHHODKAR
+    std::unique_ptr<ast::Select> parseSubqueryBody();  // the same as one Select: subqueries and derived tables
     std::unique_ptr<ast::Statement> parseBanao();
     std::unique_ptr<ast::Statement> parseHatao();
     // Phase 2: users / privileges / procedure calls
