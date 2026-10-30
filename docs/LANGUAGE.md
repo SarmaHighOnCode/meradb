@@ -266,6 +266,26 @@ new definition gives its own `SANDARBH` / `SHART`. Composite `ANOKHA (...)` / `M
 column that a `SHART` mentions (like `COLUMN ... NAYA_NAAM`), and changing the type of a column another
 table's `SANDARBH` points at. `JODO` carries the table's composite `ANOKHA` / `MUKHYA KUNJI` groups along.
 
+### Indexes
+
+```sql
+BANAO INDEX ix_dept PAR employees (dept_id);              -- CREATE INDEX
+BANAO INDEX ix_dt PAR employees (dept_id, job_title);     -- composite
+BANAO ANOKHA INDEX ux PAR assignments (emp_id, project_id, role);   -- CREATE UNIQUE INDEX: also enforces uniqueness
+SHOW INDEX FROM employees;      -- (also SHOW INDEXES / SHOW KEYS) Table, Non_unique, Key_name, Seq_in_index, Column_name
+HATAO INDEX ix_dept PAR employees;                        -- DROP INDEX ... ON
+```
+
+`BANAO [ANOKHA] INDEX IF NOT EXISTS` and `HATAO INDEX IF EXISTS` do nothing when the answer is "already so". A unique index
+checks the rows already in the table, and `HATAO INDEX` lifts the uniqueness again. A plain index is a catalogue entry:
+`SHOW INDEX` lists it and it follows a column rename, but a lookup on it still scans the table (only `MUKHYA KUNJI` / `ANOKHA`
+columns have the hash index that `SAMJHAO` reports). Index statements are superuser-only.
+
+### IF [NOT] EXISTS
+
+`BANAO DATABASE | TABLE | USER | ROLE IF NOT EXISTS name` and `HATAO DATABASE | TABLE | VIEW | USER | ROLE IF EXISTS name`
+leave things alone instead of failing. (`BANAO TRIGGER/PROCEDURE/FUNCTION IF NOT EXISTS` and the matching `HATAO ... IF EXISTS` already existed.)
+
 ## VIEWs
 
 A view is a **named, saved `DIKHAO` query** -- it has no storage of its own. Every time
@@ -430,6 +450,9 @@ ADHIKAR DO DIKHAO (naam, cgpa), BADLO (cgpa) PAR students KO ravi;   -- column-l
 - There is no password rotation/expiry and no account lockout -- this is a teaching-project
   user store, not a production one.
 
+`SET DEFAULT ROLE ALL | NONE | r [, r] TO user` chooses the roles a session of that user starts with (kept in `users.json`;
+the default is every granted role). The session can still change them with `SET ROLE`.
+
 ## Triggers
 
 ```sql
@@ -575,7 +598,7 @@ HATAO FUNCTION bonus;           -- HATAO FUNCTION IF EXISTS bonus also works
 
 `SET @x = expr, @y = expr;` stores a value for the connection. `DIKHAO @x;` reads it
 (`KHALI` if never set) -- no `SE` needed. Variables are per connection and are not saved.
-`SHOW VARIABLES [LIKE 'pattern']` shows the server settings (currently `autocommit`); read a `@variable` with `DIKHAO @x`.
+`SHOW VARIABLES [LIKE 'pattern']` shows the server settings (`autocommit`, `transaction_isolation`); read a `@variable` with `DIKHAO @x`.
 
 ### Prepared statements
 
@@ -621,6 +644,18 @@ PAKKA;                                     -- COMMIT: keep both changes
 - While your transaction is open, other clients wait. They never see half-finished work.
 - If the connection drops or the program crashes before `PAKKA`, everything is rolled back.
 - The shell prompt shows `*` during a transaction: `meradb:main*>`.
+
+### Isolation level and locking
+
+```sql
+SET [SESSION | GLOBAL] TRANSACTION ISOLATION LEVEL READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE;
+DIKHAO * SE t JAHAN id = 1 FOR UPDATE;        -- also FOR SHARE, LOCK IN SHARE MODE, NOWAIT, SKIP LOCKED
+SHOW VARIABLES LIKE 'transaction_isolation';
+```
+
+The level is remembered and shown, but MeraDB keeps the whole database locked while a transaction is open, so every
+transaction really behaves as `SERIALIZABLE`. `FOR UPDATE` / `FOR SHARE` are accepted and read normally for the same
+reason: there are no row locks to take, the transaction already holds the lot.
 
 ## Query plans: SAMJHAO
 

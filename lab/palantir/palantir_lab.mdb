@@ -944,9 +944,9 @@ HATAO VIEW paying_clients_v;
 -- ============================================================================
 
 -- MySQL: CREATE UNIQUE INDEX idx_email ON employees (email);
---   (MeraDB: email is already ANOKHA, so it already HAS this index.)
+--   (MeraDB: email is already ANOKHA, so it already HAS this index. Plain indexes: see PART 3.)
 -- MySQL: CREATE INDEX idx_dept ON employees (dept_id);
---   (No CREATE INDEX command in MeraDB: non-unique columns are scanned.)
+--   (BANAO INDEX idx_dept PAR employees (dept_id) -- see PART 3.)
 
 -- Uses the primary-key hash index.
 -- MySQL: EXPLAIN SELECT * FROM employees WHERE emp_id = 107;
@@ -1608,6 +1608,141 @@ HATAO TRIGGER z_clamp;
 HATAO TRIGGER z_neg;
 HATAO TABLE z_log;
 HATAO TABLE z_acct;
+
+-- ============================================================================
+-- PART 3 : indexes, IF [NOT] EXISTS, transactions (isolation, locking), procedure control flow, default roles
+-- ============================================================================
+
+-- ---- Indexes ----
+-- MySQL: CREATE INDEX idx_dept ON employees (dept_id);
+BANAO INDEX idx_dept PAR employees (dept_id);
+
+-- MySQL: CREATE INDEX idx_dept_title ON employees (dept_id, job_title);     -- composite index
+BANAO INDEX idx_dept_title PAR employees (dept_id, job_title);
+
+-- MySQL: CREATE UNIQUE INDEX uq_assign ON assignments (emp_id, project_id, role);     -- also enforces uniqueness
+BANAO ANOKHA INDEX uq_assign PAR assignments (emp_id, project_id, role);
+
+-- MySQL: SHOW INDEX FROM employees;
+SHOW INDEX FROM employees;
+
+-- MySQL: SHOW INDEX FROM assignments;
+SHOW INDEX FROM assignments;
+
+-- MySQL: INSERT INTO assignments VALUES (107, 401, 'Lead', 99);     -- ERROR 1062 (the unique index)
+DAALO MEIN assignments MAAN (107, 401, 'Lead', 99);
+
+-- MySQL: DROP INDEX idx_dept_title ON employees;
+HATAO INDEX idx_dept_title PAR employees;
+
+-- MySQL: DROP INDEX uq_assign ON assignments;
+HATAO INDEX uq_assign PAR assignments;
+
+-- MySQL: DROP INDEX idx_dept ON employees;
+HATAO INDEX idx_dept PAR employees;
+
+-- ---- IF [NOT] EXISTS ----
+-- MySQL: CREATE TABLE IF NOT EXISTS departments (dept_id INT);     -- left alone, no error
+BANAO TABLE IF NOT EXISTS departments (dept_id INT);
+
+-- MySQL: DROP TABLE IF EXISTS no_such_table;
+HATAO TABLE IF EXISTS no_such_table;
+
+-- MySQL: DROP VIEW IF EXISTS no_such_view;
+HATAO VIEW IF EXISTS no_such_view;
+
+-- MySQL: CREATE DATABASE IF NOT EXISTS palantir;
+BANAO DATABASE IF NOT EXISTS palantir;
+
+-- MySQL: DROP DATABASE IF EXISTS scratch_db;     (DROP DATABASE works on any other database: HATAO DATABASE name;)
+BANAO DATABASE scratch_db;
+HATAO DATABASE IF EXISTS scratch_db;
+ISTEMAL palantir;
+
+-- ---- Transactions: isolation level and locking ----
+-- MySQL: SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+--   (MeraDB keeps the whole database locked during a transaction, so every transaction behaves as SERIALIZABLE.)
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- MySQL: SHOW VARIABLES LIKE 'transaction_isolation';
+SHOW VARIABLES LIKE 'transaction_isolation';
+
+-- MySQL: START TRANSACTION;
+--        SELECT * FROM departments WHERE dept_id = 60 FOR UPDATE;       -- lock the row before changing it
+--        UPDATE departments SET budget_k = budget_k + 10 WHERE dept_id = 60;
+--        COMMIT;
+SHURU;
+DIKHAO * SE departments JAHAN dept_id = 60 FOR UPDATE;
+BADLO departments RAKHO budget_k = budget_k + 10 JAHAN dept_id = 60;
+PAKKA;
+
+-- MySQL: SELECT * FROM departments WHERE dept_id = 60 LOCK IN SHARE MODE;     (same as FOR SHARE)
+DIKHAO * SE departments JAHAN dept_id = 60 FOR SHARE;
+
+-- MySQL: SET autocommit = 0;     ... changes stay open until COMMIT / ROLLBACK ...     SET autocommit = 1;
+SET autocommit = 0;
+BADLO departments RAKHO budget_k = budget_k - 10 JAHAN dept_id = 60;
+WAPAS;
+SET autocommit = 1;
+DIKHAO dept_id, budget_k SE departments JAHAN dept_id = 60;
+
+-- ---- Procedure control flow: INOUT, WHILE, REPEAT, ELSEIF, SELECT ... INTO ----
+-- MySQL: DELIMITER //
+--        CREATE PROCEDURE w_demo (IN p_step INT, INOUT p_total INT)
+--        BEGIN
+--          DECLARE i INT DEFAULT 0;
+--          DECLARE v_staff INT;
+--          WHILE i < 3 DO SET i = i + 1; SET p_total = p_total + p_step; END WHILE;
+--          REPEAT SET i = i - 1; UNTIL i <= 0 END REPEAT;
+--          SELECT COUNT(*) INTO v_staff FROM employees;
+--          IF p_total > 100 THEN SET p_total = 100;
+--          ELSEIF p_total > 20 THEN SET p_total = p_total + v_staff;
+--          ELSE SET p_total = 0; END IF;
+--        END //
+--        DELIMITER ;
+BANAO PROCEDURE w_demo (p_step INT, INOUT p_total INT) SHURU
+    DECLARE i INT DEFAULT 0;
+    DECLARE v_staff INT;
+    WHILE i < 3 DO
+        RAKHO i = i + 1;
+        RAKHO p_total = p_total + p_step;
+    KHATAM WHILE;
+    REPEAT
+        RAKHO i = i - 1;
+    UNTIL i <= 0 KHATAM REPEAT;
+    DIKHAO GINO(*) INTO v_staff SE employees;
+    AGAR p_total > 100 TAB
+        RAKHO p_total = 100;
+    WARNA AGAR p_total > 20 TAB
+        RAKHO p_total = p_total + v_staff;
+    WARNA
+        RAKHO p_total = 0;
+    KHATAM AGAR;
+KHATAM;
+
+-- MySQL: SET @t = 10;   CALL w_demo(5, @t);   SELECT @t;      -- 10 + 3*5 = 25, then 25 + 12 employees = 37
+SET @t = 10;
+CHALAO w_demo(5, @t);
+DIKHAO @t;
+
+HATAO PROCEDURE w_demo;
+
+-- ---- Default roles ----
+-- MySQL: CREATE USER 'reviewer'@'localhost' IDENTIFIED BY 'Review@123';   CREATE ROLE w_reader;
+BANAO USER IF NOT EXISTS reviewer GUPT 'Review@123';
+BANAO ROLE IF NOT EXISTS w_reader;
+ADHIKAR DO SELECT PAR departments KO w_reader;
+ADHIKAR DO ROLE w_reader KO reviewer;
+
+-- MySQL: SET DEFAULT ROLE w_reader TO 'reviewer'@'localhost';     (the role is on from the first statement of a session)
+SET DEFAULT ROLE w_reader TO reviewer;
+
+-- MySQL: SET DEFAULT ROLE ALL TO 'reviewer'@'localhost';          (back to the usual: every granted role)
+SET DEFAULT ROLE ALL TO reviewer;
+
+ADHIKAR WAPAS ROLE w_reader SE reviewer;
+HATAO ROLE w_reader;
+HATAO USER reviewer;
 
 -- ============================================================================
 -- FINAL CHECK : what is saved in the palantir database

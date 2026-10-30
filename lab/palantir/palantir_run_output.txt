@@ -1265,7 +1265,7 @@ Procedure 'set_office' chal gaya (1 statement(s)): 2 row(s) badal di
 +---------------------+------------+
 | NOW()               | CURDATE()  |
 +---------------------+------------+
-| 2026-10-30 03:43:30 | 2026-10-30 |
+| 2026-10-30 10:32:15 | 2026-10-30 |
 +---------------------+------------+
 1 row(s)
 
@@ -1367,7 +1367,7 @@ Table 'x_tickets' ban gaya (4 columns)
 +-----------+-----------------+----------+---------------------+
 | ticket_id | title           | severity | opened_at           |
 +-----------+-----------------+----------+---------------------+
-| 1         | Login page down | high     | 2026-10-30 03:43:30 |
+| 1         | Login page down | high     | 2026-10-30 10:32:15 |
 | 2         | Typo in report  | low      | 2026-10-30 09:15:00 |
 +-----------+-----------------+----------+---------------------+
 2 row(s)
@@ -1543,9 +1543,9 @@ Table 'x_tickets'
 +---------------+----------+---------------------+
 | name          | database | created             |
 +---------------+----------+---------------------+
-| give_raise    | palantir | 2026-10-30 03:43:30 |
-| staff_project | palantir | 2026-10-30 03:43:30 |
-| set_office    | palantir | 2026-10-30 03:43:30 |
+| give_raise    | palantir | 2026-10-30 10:32:15 |
+| staff_project | palantir | 2026-10-30 10:32:15 |
+| set_office    | palantir | 2026-10-30 10:32:15 |
 +---------------+----------+---------------------+
 3 procedure(s)
 
@@ -1645,10 +1645,10 @@ Procedure 'y_rename_team' chal gaya (1 statement(s)): 1 row(s) badal di
 +---------------+----------+---------------------+
 | name          | database | created             |
 +---------------+----------+---------------------+
-| give_raise    | palantir | 2026-10-30 03:43:30 |
-| staff_project | palantir | 2026-10-30 03:43:30 |
-| set_office    | palantir | 2026-10-30 03:43:30 |
-| y_rename_team | palantir | 2026-10-30 03:43:30 |
+| give_raise    | palantir | 2026-10-30 10:32:15 |
+| staff_project | palantir | 2026-10-30 10:32:15 |
+| set_office    | palantir | 2026-10-30 10:32:15 |
+| y_rename_team | palantir | 2026-10-30 10:32:15 |
 +---------------+----------+---------------------+
 4 procedure(s)
 
@@ -1827,7 +1827,7 @@ Function 'z_bonus' ban gaya (2 parameter(s), RETURNS INT)
 +---------+----------+---------+---------------------+
 | name    | database | returns | created             |
 +---------+----------+---------+---------------------+
-| z_bonus | palantir | INT     | 2026-10-30 03:43:30 |
+| z_bonus | palantir | INT     | 2026-10-30 10:32:15 |
 +---------+----------+---------+---------------------+
 1 function(s)
 
@@ -1857,6 +1857,138 @@ Trigger 'z_neg' hata diya
 Table 'z_log' hata diya
 
 Table 'z_acct' hata diya
+
+Index 'idx_dept' table 'employees' par (dept_id) ke liye ban gaya
+
+Index 'idx_dept_title' table 'employees' par (dept_id, job_title) ke liye ban gaya
+
+ANOKHA index 'uq_assign' table 'assignments' par (emp_id, project_id, role) ke liye ban gaya
+
++-----------+------------+----------------+--------------+-------------+
+| Table     | Non_unique | Key_name       | Seq_in_index | Column_name |
++-----------+------------+----------------+--------------+-------------+
+| employees | 0          | PRIMARY        | 1            | emp_id      |
+| employees | 0          | email          | 1            | email       |
+| employees | 1          | idx_dept       | 1            | dept_id     |
+| employees | 1          | idx_dept_title | 1            | dept_id     |
+| employees | 1          | idx_dept_title | 2            | job_title   |
++-----------+------------+----------------+--------------+-------------+
+5 index entry(ies) on 'employees'
+
++-------------+------------+-----------+--------------+-------------+
+| Table       | Non_unique | Key_name  | Seq_in_index | Column_name |
++-------------+------------+-----------+--------------+-------------+
+| assignments | 0          | PRIMARY   | 1            | emp_id      |
+| assignments | 0          | PRIMARY   | 2            | project_id  |
+| assignments | 0          | uq_assign | 1            | emp_id      |
+| assignments | 0          | uq_assign | 2            | project_id  |
+| assignments | 0          | uq_assign | 3            | role        |
++-------------+------------+-----------+--------------+-------------+
+5 index entry(ies) on 'assignments'
+
+[Execution Galti] Duplicate value (107, 401, 'Lead') columns ['emp_id', 'project_id', 'role'] mein -- ye combination alag hona chahiye
+
+Index 'idx_dept_title' hata diya
+
+Index 'uq_assign' hata diya
+
+Index 'idx_dept' hata diya
+
+Table 'departments' pehle se hai -- kuch nahi badla
+
+Table 'no_such_table' nahi hai -- kuch nahi badla
+
+View 'no_such_view' nahi hai -- kuch nahi badla
+
+Database 'palantir' pehle se hai -- kuch nahi badla
+
+Database 'scratch_db' ban gaya
+
+Database 'scratch_db' hata diya
+
+Ab database 'palantir' istemal ho raha hai
+
+isolation level READ COMMITTED likh liya. Dhyan do: MeraDB transaction ke dauraan poora database lock rakhta hai, isliye asal mein har transaction SERIALIZABLE chalta hai
+
++-----------------------+----------------+
+| variable_name         | value          |
++-----------------------+----------------+
+| transaction_isolation | READ COMMITTED |
++-----------------------+----------------+
+1 variable(s)
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
++---------+-----------+----------+----------+
+| dept_id | dept_name | location | budget_k |
++---------+-----------+----------+----------+
+| 60      | Research  | Denver   | 250.0    |
++---------+-----------+----------+----------+
+1 row(s)
+
+1 row(s) badal di
+
+Transaction PAKKA -- saare changes save ho gaye
+
++---------+-----------+----------+----------+
+| dept_id | dept_name | location | budget_k |
++---------+-----------+----------+----------+
+| 60      | Research  | Denver   | 260.0    |
++---------+-----------+----------+----------+
+1 row(s)
+
+autocommit = 0 (ab har badlav transaction mein; PAKKA se save, WAPAS se undo)
+
+1 row(s) badal di
+
+Transaction WAPAS -- saare changes undo ho gaye
+
+autocommit = 1 (har statement turant save; khula transaction PAKKA ho gaya)
+
++---------+----------+
+| dept_id | budget_k |
++---------+----------+
+| 60      | 260.0    |
++---------+----------+
+1 row(s)
+
+Procedure 'w_demo' ban gaya (2 parameter(s))
+
+@t = 10
+
++---------+
+| p_total |
++---------+
+| 37      |
++---------+
+Procedure 'w_demo' chal gaya (1 statement(s)): 
+
++----+
+| @t |
++----+
+| 37 |
++----+
+1 row(s)
+
+Procedure 'w_demo' hata diya
+
+User 'reviewer' ban gaya
+
+Role 'w_reader' ban gaya
+
+'w_reader' ko 'palantir.departments' par DIKHAO ka adhikar mil gaya
+
+Role w_reader ab 'reviewer' ko mil gaya
+
+'reviewer' ka default role ab w_reader hai
+
+'reviewer' ke saare granted roles ab shuru se active honge
+
+Role w_reader 'reviewer' se wapas le liya
+
+Role 'w_reader' hata diya
+
+User 'reviewer' hata diya
 
 +-------------------+
 | table             |
