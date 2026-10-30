@@ -1405,6 +1405,119 @@ HATAO TABLE x_parent;
 HATAO ROLE x_reader;
 
 -- ============================================================================
+-- EXTENDED SQL, PART 2 : foreign keys added/dropped later, grant options,
+-- column grants, SET ROLE, BEFORE UPDATE / BEFORE DELETE triggers, DROP
+-- TRIGGER / PROCEDURE and more SHOW commands
+-- ============================================================================
+
+-- ---- ADD FOREIGN KEY / DROP FOREIGN KEY ----
+-- MySQL: CREATE TABLE y_team (team_id INT PRIMARY KEY, team_name VARCHAR(30));
+BANAO TABLE y_team (team_id INT MUKHYA KUNJI, team_name VARCHAR(30));
+-- MySQL: CREATE TABLE y_member (member_id INT PRIMARY KEY, team_id INT);
+BANAO TABLE y_member (member_id INT MUKHYA KUNJI, team_id INT);
+DAALO MEIN y_team MAAN (1, 'Gotham'), (2, 'Foundry');
+DAALO MEIN y_member MAAN (1, 1), (2, 2);
+
+-- MySQL: ALTER TABLE y_member ADD CONSTRAINT fk_member_team FOREIGN KEY (team_id) REFERENCES y_team(team_id) ON DELETE CASCADE;
+SUDHARO TABLE y_member JODO CONSTRAINT fk_member_team FOREIGN KEY (team_id) SANDARBH y_team(team_id) ON DELETE CASCADE;
+BATAO y_member;
+
+-- EXPECTED ERROR (the new foreign key is enforced: team 9 does not exist)
+-- MySQL: INSERT INTO y_member VALUES (3, 9);   -- ERROR 1452
+DAALO MEIN y_member MAAN (3, 9);
+
+-- MySQL: ALTER TABLE y_member DROP FOREIGN KEY fk_member_team;
+SUDHARO TABLE y_member HATAO FOREIGN KEY fk_member_team;
+-- With the key gone, the same insert is accepted.
+DAALO MEIN y_member MAAN (3, 9);
+DIKHAO * SE y_member KRAM member_id;
+
+-- ---- BEFORE UPDATE and BEFORE DELETE triggers, DROP TRIGGER ----
+-- MySQL: CREATE TABLE y_log (log_id INT PRIMARY KEY AUTO_INCREMENT, note VARCHAR(60));
+BANAO TABLE y_log (log_id INT MUKHYA KUNJI AUTO_INCREMENT, note VARCHAR(60));
+
+-- MySQL: DELIMITER //
+--        CREATE TRIGGER y_before_update BEFORE UPDATE ON y_team FOR EACH ROW
+--        BEGIN INSERT INTO y_log (note) VALUES (CONCAT('update: ', OLD.team_name, ' -> ', NEW.team_name)); END //
+--        DELIMITER ;
+BANAO TRIGGER y_before_update PEHLE BADLO PAR y_team SHURU
+    DAALO MEIN y_log (note) MAAN (CONCAT('update: ', PURANA.team_name, ' -> ', NAYA.team_name));
+KHATAM;
+
+-- MySQL: DELIMITER //
+--        CREATE TRIGGER y_before_delete BEFORE DELETE ON y_team FOR EACH ROW
+--        BEGIN INSERT INTO y_log (note) VALUES (CONCAT('delete: ', OLD.team_name)); END //
+--        DELIMITER ;
+BANAO TRIGGER y_before_delete PEHLE MITAO PAR y_team SHURU
+    DAALO MEIN y_log (note) MAAN (CONCAT('delete: ', PURANA.team_name));
+KHATAM;
+
+-- MySQL: UPDATE y_team SET team_name = 'Gotham HQ' WHERE team_id = 1;   DELETE FROM y_team WHERE team_id = 2;
+BADLO y_team RAKHO team_name = 'Gotham HQ' JAHAN team_id = 1;
+MITAO SE y_team JAHAN team_id = 2;
+DIKHAO * SE y_log KRAM log_id;
+
+-- MySQL: SHOW TRIGGERS;   DROP TRIGGER y_before_update;   DROP TRIGGER y_before_delete;
+SHOW TRIGGERS;
+HATAO TRIGGER y_before_update;
+HATAO TRIGGER y_before_delete;
+
+-- ---- DROP PROCEDURE ----
+-- MySQL: DELIMITER //
+--        CREATE PROCEDURE y_rename_team (IN p_id INT, IN p_name VARCHAR(30))
+--        BEGIN UPDATE y_team SET team_name = p_name WHERE team_id = p_id; END //
+--        DELIMITER ;
+BANAO PROCEDURE y_rename_team (p_id INT, p_name VARCHAR(30)) SHURU
+    BADLO y_team RAKHO team_name = p_name JAHAN team_id = p_id;
+KHATAM;
+-- MySQL: CALL y_rename_team(1, 'Gotham North');
+CHALAO y_rename_team(1, 'Gotham North');
+DIKHAO * SE y_team;
+-- MySQL: SHOW PROCEDURE STATUS;   DROP PROCEDURE y_rename_team;
+SHOW PROCEDURE STATUS;
+HATAO PROCEDURE y_rename_team;
+
+-- ---- Grants: WITH GRANT OPTION, column-level grants, SET ROLE ----
+-- MySQL: GRANT SELECT ON palantir.y_team TO analyst WITH GRANT OPTION;
+ADHIKAR DO SELECT PAR y_team KO analyst WITH GRANT OPTION;
+
+-- MySQL: GRANT SELECT (emp_name, email) ON palantir.employees TO intern;     -- column-level grant
+ADHIKAR DO SELECT (emp_name, email) PAR employees KO intern;
+
+-- MySQL: CREATE ROLE y_auditor;   GRANT SELECT ON palantir.salary_audit TO y_auditor;   GRANT y_auditor TO intern;
+BANAO ROLE y_auditor;
+ADHIKAR DO SELECT PAR salary_audit KO y_auditor;
+ADHIKAR DO ROLE y_auditor KO intern;
+
+-- MySQL: SHOW GRANTS FOR analyst;   SHOW GRANTS FOR intern;
+SHOW GRANTS FOR analyst;
+SHOW GRANTS FOR intern;
+
+-- MySQL: SET ROLE y_auditor;   SET ROLE ALL;   SET ROLE NONE;     (the roles in force for this session)
+SET ROLE y_auditor;
+SET ROLE SAB;
+SET ROLE NONE;
+
+-- MySQL: REVOKE y_auditor FROM intern;   REVOKE SELECT ON palantir.y_team FROM analyst;
+ADHIKAR WAPAS ROLE y_auditor SE intern;
+ADHIKAR WAPAS SELECT PAR y_team SE analyst;
+ADHIKAR WAPAS SELECT PAR employees SE intern;
+
+-- ---- More SHOW commands ----
+-- MySQL: SHOW DATABASES;
+SHOW DATABASES;
+-- MySQL: SHOW FULL TABLES WHERE Table_type = 'VIEW';     (MeraDB: SHOW VIEWS)
+SHOW VIEWS;
+-- MySQL: SHOW CREATE VIEW dept_summary_v;
+SHOW CREATE VIEW dept_summary_v;
+
+-- ---- Clean up the scratch objects of this section ----
+HATAO TABLE y_member;
+HATAO TABLE y_team;
+HATAO TABLE y_log;
+HATAO ROLE y_auditor;
+
+-- ============================================================================
 -- FINAL CHECK : what is saved in the palantir database
 -- ============================================================================
 

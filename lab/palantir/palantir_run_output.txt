@@ -1265,7 +1265,7 @@ Procedure 'set_office' chal gaya (1 statement(s)): 2 row(s) badal di
 +---------------------+------------+
 | NOW()               | CURDATE()  |
 +---------------------+------------+
-| 2026-10-30 08:46:30 | 2026-10-30 |
+| 2026-10-30 08:58:49 | 2026-10-30 |
 +---------------------+------------+
 1 row(s)
 
@@ -1367,7 +1367,7 @@ Table 'x_tickets' ban gaya (4 columns)
 +-----------+-----------------+----------+---------------------+
 | ticket_id | title           | severity | opened_at           |
 +-----------+-----------------+----------+---------------------+
-| 1         | Login page down | high     | 2026-10-30 08:46:30 |
+| 1         | Login page down | high     | 2026-10-30 08:58:49 |
 | 2         | Typo in report  | low      | 2026-10-30 09:15:00 |
 +-----------+-----------------+----------+---------------------+
 2 row(s)
@@ -1543,9 +1543,9 @@ Table 'x_tickets'
 +---------------+----------+---------------------+
 | name          | database | created             |
 +---------------+----------+---------------------+
-| give_raise    | palantir | 2026-10-30 08:46:30 |
-| staff_project | palantir | 2026-10-30 08:46:30 |
-| set_office    | palantir | 2026-10-30 08:46:30 |
+| give_raise    | palantir | 2026-10-30 08:58:49 |
+| staff_project | palantir | 2026-10-30 08:58:49 |
+| set_office    | palantir | 2026-10-30 08:58:49 |
 +---------------+----------+---------------------+
 3 procedure(s)
 
@@ -1564,6 +1564,173 @@ Table 'x_child_null' hata diya
 Table 'x_parent' hata diya
 
 Role 'x_reader' hata diya
+
+Table 'y_team' ban gaya (2 columns)
+
+Table 'y_member' ban gaya (2 columns)
+
+2 row(s) daal di
+
+2 row(s) daal di
+
+Table 'y_member' mein FOREIGN KEY 'fk_member_team' (team_id -> y_team.team_id) jod di
+
++-----------+------+-------------------------------------------------------------+
+| column    | type | constraints                                                 |
++-----------+------+-------------------------------------------------------------+
+| member_id | INT  | MUKHYA KUNJI                                                |
+| team_id   | INT  | SANDARBH y_team(team_id) [fk_member_team] ON DELETE CASCADE |
++-----------+------+-------------------------------------------------------------+
+Table 'y_member'
+
+[Execution Galti] Column 'team_id': value 9 table 'y_team' ke column 'team_id' mein nahi mila (SANDARBH)
+
+Table 'y_member' ka FOREIGN KEY 'fk_member_team' hata diya
+
+1 row(s) daal di
+
++-----------+---------+
+| member_id | team_id |
++-----------+---------+
+| 1         | 1       |
+| 2         | 2       |
+| 3         | 9       |
++-----------+---------+
+3 row(s)
+
+Table 'y_log' ban gaya (2 columns)
+
+Trigger 'y_before_update' ban gaya (PEHLE BADLO PAR y_team)
+
+Trigger 'y_before_delete' ban gaya (PEHLE MITAO PAR y_team)
+
+1 row(s) badal di
+
+1 row(s) mita di
+
++--------+-----------------------------+
+| log_id | note                        |
++--------+-----------------------------+
+| 1      | update: Gotham -> Gotham HQ |
+| 2      | delete: Foundry             |
++--------+-----------------------------+
+2 row(s)
+
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+| trigger              | timing | event | table       | body                                                                                                                           |
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+| trg_salary_audit     | BAAD   | BADLO | employees   | DAALO MEIN salary_audit MAAN (NAYA.emp_id, PURANA.salary_k, NAYA.salary_k);                                                    |
+| trg_hours_limit      | PEHLE  | DAALO | assignments | DAALO MEIN hours_check MAAN (NAYA.emp_id, NAYA.project_id, NAYA.hours);                                                        |
+| trg_contract_archive | BAAD   | MITAO | contracts   | DAALO MEIN contracts_archive MAAN (PURANA.contract_id, PURANA.client_id, PURANA.product_id, PURANA.value_musd, PURANA.status); |
+| y_before_update      | PEHLE  | BADLO | y_team      | DAALO MEIN y_log (note) MAAN (CONCAT('update: ', PURANA.team_name, ' -> ', NAYA.team_name));                                   |
+| y_before_delete      | PEHLE  | MITAO | y_team      | DAALO MEIN y_log (note) MAAN (CONCAT('delete: ', PURANA.team_name));                                                           |
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+5 trigger(s) in 'palantir'
+
+Trigger 'y_before_update' hata diya
+
+Trigger 'y_before_delete' hata diya
+
+Procedure 'y_rename_team' ban gaya (2 parameter(s))
+
+Procedure 'y_rename_team' chal gaya (1 statement(s)): 1 row(s) badal di
+
++---------+--------------+
+| team_id | team_name    |
++---------+--------------+
+| 1       | Gotham North |
++---------+--------------+
+1 row(s)
+
++---------------+----------+---------------------+
+| name          | database | created             |
++---------------+----------+---------------------+
+| give_raise    | palantir | 2026-10-30 08:58:49 |
+| staff_project | palantir | 2026-10-30 08:58:49 |
+| set_office    | palantir | 2026-10-30 08:58:49 |
+| y_rename_team | palantir | 2026-10-30 08:58:50 |
++---------------+----------+---------------------+
+4 procedure(s)
+
+Procedure 'y_rename_team' hata diya
+
+'analyst' ko 'palantir.y_team' par DIKHAO ka adhikar mil gaya (WITH GRANT OPTION)
+
+'intern' ko 'palantir.employees' par DIKHAO (emp_name, email) ka adhikar mil gaya
+
+Role 'y_auditor' ban gaya
+
+'y_auditor' ko 'palantir.salary_audit' par DIKHAO ka adhikar mil gaya
+
+Role y_auditor ab 'intern' ko mil gaya
+
++--------------------------------------------------------------+
+| Grants for analyst                                           |
++--------------------------------------------------------------+
+| GRANT SELECT ON palantir.employees TO analyst                |
+| GRANT SELECT ON palantir.contracts TO analyst                |
+| GRANT SELECT, INSERT ON palantir.projects TO analyst         |
+| GRANT SELECT ON palantir.y_team TO analyst WITH GRANT OPTION |
++--------------------------------------------------------------+
+4 grant(s)
+
++----------------------------------------------------------------+
+| Grants for intern                                              |
++----------------------------------------------------------------+
+| GRANT SELECT ON palantir.staff_directory_v TO intern           |
+| GRANT SELECT ON palantir.active_contracts_v TO intern          |
+| GRANT SELECT (email, emp_name) ON palantir.employees TO intern |
+| GRANT y_auditor TO intern                                      |
++----------------------------------------------------------------+
+4 grant(s)
+
+SET ROLE ka koi asar nahi -- bina username ka session superuser hai, sab adhikar pehle se hain
+
+SET ROLE ka koi asar nahi -- bina username ka session superuser hai, sab adhikar pehle se hain
+
+SET ROLE ka koi asar nahi -- bina username ka session superuser hai, sab adhikar pehle se hain
+
+Role y_auditor 'intern' se wapas le liya
+
+'analyst' se 'palantir.y_team' par DIKHAO ka adhikar wapas le liya
+
+'intern' se 'palantir.employees' par DIKHAO ka adhikar wapas le liya
+
++-------------+
+| database    |
++-------------+
+| college     |
+| college_lab |
+| main        |
+| palantir    |
++-------------+
+4 database(s)
+
++--------------------+
+| view               |
++--------------------+
+| active_contracts_v |
+| dept_summary_v     |
+| staff_directory_v  |
++--------------------+
+3 view(s) in 'palantir'
+
++----------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| view           | create_view                                                                                                                                                                                                                 |
++----------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| dept_summary_v | BANAO VIEW dept_summary_v KAHO DIKHAO d.dept_name KAHO dept_name, GINO(e.emp_id) KAHO staff, KUL(e.salary_k) KAHO payroll_k
+    SE departments d BAAYAN MILAO employees e PAR d.dept_id = e.dept_id
+    SAMOOH d.dept_name; |
++----------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+VIEW 'dept_summary_v'
+
+Table 'y_member' hata diya
+
+Table 'y_team' hata diya
+
+Table 'y_log' hata diya
+
+Role 'y_auditor' hata diya
 
 +-------------------+
 | table             |
