@@ -3639,24 +3639,40 @@ Result Engine::execSelect(const ast::Select& stmt) {
         }
     }
 
-    // 5. SORT (KRAM). The sort is *stable*, so sorting by the LAST key first
-    //    and the FIRST key last gives a correct multi-column sort.
-    for (auto it = plan.orderBy.rbegin(); it != plan.orderBy.rend(); ++it) {
-        const ast::Expr& expr = *it->first;
-        bool descending = it->second;
-        auto subq = precomputeSubqueries({&expr}, rows, keys);
-        std::vector<Value> sortKeys;
-        for (size_t i = 0; i < rows.size(); ++i) sortKeys.push_back(evaluate(expr, rows[i], subq.at(i)));
+    // Without ALAG, SIRF n OFFSET m needs only the first n + m rows of the sorted order: they are all that gets sorted
+    // fully and projected. ALAG drops rows only after projecting, so it needs every one.
+    size_t rowsNeeded = rows.size();
+    if (stmt.limit.has_value() && *stmt.limit >= 0 && !stmt.distinct) {
+        const size_t needed = static_cast<size_t>(*stmt.limit) + static_cast<size_t>(std::max(0, stmt.offset.value_or(0)));
+        rowsNeeded = std::min(rowsNeeded, needed);
+    }
+
+    // 5. SORT (KRAM). Equal rows keep the order they came in (the index breaks every tie).
+    if (!plan.orderBy.empty()) {
+        std::vector<std::vector<Value>> sortKeys(plan.orderBy.size());
+        for (size_t k = plan.orderBy.size(); k-- > 0;) {  // last key first: its errors come first, as they always did
+            const ast::Expr& expr = *plan.orderBy[k].first;
+            auto subq = precomputeSubqueries({&expr}, rows, keys);
+            sortKeys[k].reserve(rows.size());
+            for (size_t i = 0; i < rows.size(); ++i) sortKeys[k].push_back(evaluate(expr, rows[i], subq.at(i)));
+        }
         std::vector<size_t> order(rows.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-        if (descending)
-            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[b], sortKeys[a]); });
-        else
-            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sortLess(sortKeys[a], sortKeys[b]); });
+        auto before = [&](size_t a, size_t b) {
+            for (size_t k = 0; k < sortKeys.size(); ++k) {
+                if (sortLess(sortKeys[k][a], sortKeys[k][b])) return !plan.orderBy[k].second;
+                if (sortLess(sortKeys[k][b], sortKeys[k][a])) return plan.orderBy[k].second;
+            }
+            return a < b;
+        };
+        std::partial_sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(rowsNeeded), order.end(), before);
+        order.resize(rowsNeeded);
         std::vector<Row> sorted;
-        sorted.reserve(rows.size());
+        sorted.reserve(rowsNeeded);
         for (size_t idx : order) sorted.push_back(std::move(rows[idx]));
         rows = std::move(sorted);
+    } else if (rowsNeeded < rows.size()) {
+        rows.resize(rowsNeeded);
     }
 
     // 6. PROJECT (pick / compute the output columns)

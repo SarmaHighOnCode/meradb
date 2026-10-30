@@ -310,3 +310,30 @@ TEST_CASE("Set operations work inside subqueries and derived tables", "[gaps][se
     run(e, "CHALAO p(3);");
     REQUIRE(q(e, "DIKHAO @found;") == "3");
 }
+
+TEST_CASE("KRAM with SIRF gives what a full sort would", "[gaps][perf]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (id INT, a INT, b TEXT);");
+    run(e, "DAALO MEIN t MAAN (1, 2, 'x'), (2, 1, 'y'), (3, 2, 'w'), (4, KHALI, 'z'), (5, 1, 'x'), (6, 2, 'x');");
+    const char* tails[] = {"KRAM a", "KRAM a ULTA", "KRAM a, b", "KRAM a ULTA, b ULTA", "KRAM b, a ULTA"};
+    for (const char* tail : tails) {
+        const Result all = run(e, std::string("DIKHAO id SE t ") + tail + ";");
+        for (int offset : {0, 1, 4, 6, 9})
+            for (int limit : {0, 1, 2, 3, 6, 100}) {
+                std::string want;
+                for (size_t i = static_cast<size_t>(offset); i < all.rows.size() && i < static_cast<size_t>(offset + limit); ++i)
+                    want += (want.empty() ? "" : ";") + formatValue(all.rows[i][0]);
+                INFO(tail << " " << limit << " " << offset);
+                REQUIRE(q(e, "DIKHAO id SE t " + std::string(tail) + " SIRF " + std::to_string(limit) + " OFFSET " + std::to_string(offset) + ";") == want);
+            }
+    }
+    // ties keep the order the rows came in
+    REQUIRE(q(e, "DIKHAO id SE t KRAM a SIRF 2;") == "4;2");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM a SIRF 3;") == "4;2;5");
+    // ALAG works on the whole result
+    REQUIRE(q(e, "DIKHAO ALAG a SE t KRAM a ULTA SIRF 2;") == "2;1");
+    // the largest SIRF cannot wrap around
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 9999999999 OFFSET 9999999999;") == "");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 2147483647 OFFSET 5;") == "6");
+}
