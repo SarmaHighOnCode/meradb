@@ -124,7 +124,7 @@ class Shell:
     def do(self, sql, needle):
         try:
             self.send(sql)
-        except OSError:  # the pipe closed: the process is gone
+        except (OSError, ValueError):  # the pipe closed: the process is gone
             return False
         return self.ack(needle)
 
@@ -199,8 +199,7 @@ def timed_statement(name, template_sql, statement, verify, rounds=None, ack="row
             shell.do("ISTEMAL main;", "istemal")  # up and running: the kill clock starts now
             delay = whole * (i + RNG.random()) / total
             timer = kill_after(shell, delay)
-            shell.send(statement)
-            finished = shell.ack(ack)
+            finished = shell.do(statement, ack)  # a kill can land while the statement is still being sent
             timer.join()
             hits += 0 if finished else 1
             try:
@@ -347,7 +346,149 @@ def scenario_commits():
             folder.close()
 
 
+# ---- each step of the protocol, exactly. (name, setup, statement, what must hold afterwards)
+BASE = "BANAO TABLE t (id INT, v INT);\nBANAO TABLE u (id INT);\n" + rows_sql(50)
+
+
+def rows_are(data, n, moved=None):
+    if count(data, "t") != n:
+        return f"t has {count(data, 't')} rows, wanted {n}"
+    if moved is not None and count(data, "t", "v = 1") != moved:
+        return f"{count(data, 't', 'v = 1')} rows moved, wanted {moved}"
+    return None
+
+
+def tables(data):
+    code, out = run_sql(data, "DIKHAO TABLES;")
+    return out
+
+
+def is_gone(table):
+    return lambda data: None if f"| {table} " not in tables(data) and f"│ {table} " not in tables(data) else f"{table} still there"
+
+
+def undone(data):
+    return rows_are(data, 50, 0)
+
+
+INSERT = rows_sql(20, v=1, start=100)
+TXN = "SHURU;\n" + rows_sql(20, v=1, start=100) + "BADLO t RAKHO v = 1;\nPAKKA;\n"
+EXACT = [
+    # one statement outside a transaction: undone, up to and including the last step before its commit point
+    ("append: journal written, nothing else", "stmt-after-log", INSERT, undone),
+    ("append: just before the write", "stmt-before-write", INSERT, undone),
+    ("append: half a record written", "stmt-torn-write", INSERT, undone),
+    ("append: written, not synced", "stmt-after-write", INSERT, undone),
+    ("append: synced, commit point not reached", "stmt-after-sync", INSERT, undone),
+    ("append: after the commit point", "stmt-after-commit", INSERT, lambda d: rows_are(d, 70, 20)),
+    ("update: half the tombstones", "stmt-mid-tombstones", "BADLO t RAKHO v = 1;", undone),
+    ("update: tombstones done, rows not added", "stmt-after-write", "BADLO t RAKHO v = 1;", undone),
+    ("update: journal's second record", "stmt-after-log:2", "BADLO t RAKHO v = 1;", undone),
+    ("update: after the commit point", "stmt-after-commit", "BADLO t RAKHO v = 1;", lambda d: rows_are(d, 50, 50)),
+    ("delete: half the tombstones", "stmt-mid-tombstones", "MITAO SE t;", undone),
+    # schema changes
+    ("create table: catalog not swapped", "catalog-before-rename", "BANAO TABLE naya (x INT);", is_gone("naya")),
+    ("create table: not committed", "stmt-after-sync", "BANAO TABLE naya (x INT);", is_gone("naya")),
+    ("drop table: not committed", "stmt-after-sync", "HATAO TABLE t;", undone),
+    ("truncate: not committed", "stmt-after-sync", "SAAF TABLE t;", undone),
+    ("compact: not committed", "stmt-after-sync", "SIKODO TABLE t;", undone),
+    ("add column: not committed", "stmt-after-sync", "SUDHARO TABLE t JODO naya INT WARNA 7;", undone),
+    ("rename table: not committed", "stmt-after-sync", "SUDHARO TABLE t NAYA_NAAM t2;", undone),
+    ("rename table: after the commit point", "stmt-after-commit", "SUDHARO TABLE u NAYA_NAAM u2;",
+     lambda d: None if "u2" in tables(d) else "u2 missing"),
+    # transactions
+    ("SHURU: copy done, not named", "snapshot-before-rename", TXN, undone),
+    ("SHURU: named", "snapshot-after-rename", TXN, undone),
+    ("PAKKA: data synced, marker not moved", "commit-before-marker", TXN, undone),
+    ("PAKKA: marker moved", "commit-after-marker", TXN, lambda d: rows_are(d, 70, 70)),
+    ("WAPAS: live folder deleted", "rollback-after-remove", "SHURU;\n" + INSERT + "WAPAS;\n", undone),
+    ("savepoint rollback: between the two renames", "restore-copy-between-renames",
+     "SHURU;\nSAVEPOINT a;\n" + INSERT + "ROLLBACK TO a;\nPAKKA;\n", undone),
+    # a statement before these must not be disturbed, and its longer journal must not be read as this one's
+    ("after an update whose journal was longer", "stmt-after-log:3", "BADLO t RAKHO v = 1;\nDAALO MEIN t MAAN (100, 1);\n",
+     lambda d: rows_are(d, 50, 50)),
+    ("second statement of two", "stmt-after-log:2", INSERT + rows_sql(5, v=1, start=200), lambda d: rows_are(d, 70, 20)),
+]
+
+
+def scenario_exact_points():
+    folder = Folder()
+    try:
+        template = folder.template(BASE)
+        for name, point, statement, verify in EXACT:
+            data = folder.fresh(template)
+            code, out = run_sql(data, statement, {"MERADB_TEST_CRASH_POINT": point})
+            check(f"exact '{name}': the crash point was reached", code == 77, f"exit {code}\n{out}")
+            try:
+                problem = verify(data)
+                check(f"exact '{name}'", problem is None, problem)
+                after_kill_still_works(f"exact '{name}'", data)
+            except RuntimeError as e:
+                check(f"exact '{name}': folder loads", False, e)
+    finally:
+        folder.close()
+
+
+def scenario_trigger_exact():
+    """Crash inside a trigger-firing statement, on the second row's trigger: the rows and the trigger's writes go."""
+    folder = Folder()
+    try:
+        setup = (BASE + "BANAO TABLE audit (id INT);\n"
+                 "BANAO TRIGGER tr BAAD BADLO PAR t SHURU DAALO MEIN audit MAAN (NAYA.id); KHATAM;\n")
+        template = folder.template(setup)
+        for n in (1, 2, 3, 10):
+            data = folder.fresh(template)
+            code, out = run_sql(data, "BADLO t RAKHO v = 1;", {"MERADB_TEST_CRASH_POINT": f"stmt-after-write:{n}"})
+            check(f"trigger exact {n}: the crash point was reached", code == 77, out)
+            check(f"trigger exact {n}: all undone", (count(data, "t", "v = 1"), count(data, "audit")) == (0, 0),
+                  (count(data, "t", "v = 1"), count(data, "audit")))
+            check(f"trigger exact {n}: no row lost", count(data, "t") == 50)
+            after_kill_still_works(f"trigger exact {n}", data)
+    finally:
+        folder.close()
+
+
+def scenario_crash_during_recovery():
+    """Recovery itself is killed after each of its steps; the next start finishes the job."""
+    folder = Folder()
+    try:
+        template = folder.template(BASE)
+        cases = [("update", "BADLO t RAKHO v = 1;"), ("drop", "HATAO TABLE t;"), ("add column", "SUDHARO TABLE t JODO naya INT WARNA 7;")]
+        for name, sql in cases:
+            for step in (1, 2):
+                data = folder.fresh(template)
+                code, out = run_sql(data, sql, {"MERADB_TEST_CRASH_POINT": "stmt-after-sync"})
+                check(f"recovery {name}/{step}: first crash", code == 77, out)
+                code, out = run_sql(data, "DIKHAO TABLES;", {"MERADB_TEST_CRASH_POINT": f"recovery-after-undo:{step}"})
+                # (a statement with fewer steps than this finishes recovery instead of crashing: both are fine)
+                if step == 1:
+                    check(f"recovery {name}: the crash point was reached", code == 77, out)
+                check(f"recovery {name}/{step}: state after the second start", undone(data) is None, undone(data))
+                after_kill_still_works(f"recovery {name}/{step}", data)
+    finally:
+        folder.close()
+
+
+def scenario_relaxed():
+    """MERADB_SYNC=relaxed gives up the power cut, not the kill."""
+    folder = Folder()
+    try:
+        template = folder.template(BASE)
+        for name, point, statement, verify in EXACT[:8] + EXACT[19:22]:
+            data = folder.fresh(template)
+            code, out = run_sql(data, statement, {"MERADB_TEST_CRASH_POINT": point, "MERADB_SYNC": "relaxed"})
+            check(f"relaxed '{name}': the crash point was reached", code == 77, out)
+            problem = verify(data)
+            check(f"relaxed '{name}'", problem is None, problem)
+    finally:
+        folder.close()
+
+
 SCENARIOS = {
+    "exact": scenario_exact_points,
+    "trigger_exact": scenario_trigger_exact,
+    "during_recovery": scenario_crash_during_recovery,
+    "relaxed": scenario_relaxed,
     "autocommit": scenario_autocommit_inserts,
     "multi_row": scenario_multi_row_insert,
     "big_update": scenario_big_update,

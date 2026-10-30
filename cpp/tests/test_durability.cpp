@@ -164,6 +164,50 @@ TEST_CASE("A heap file used without any statement syncs every write itself", "[d
     CHECK(SyncLog::countEnding("/x.tbl") == 2);
 }
 
+TEST_CASE("The undo journal is written before the data, wiped after the sync, and gone after a clean close", "[durability]") {
+    TempDir dir("meradb_durable_");
+    const fs::path log = dir.path() / ".wapas" / "journal.tmp" / "log";
+    {
+        Engine e(dir.str());
+        e.execute("BANAO TABLE t (id INT); DAALO MEIN t MAAN (1);");
+        REQUIRE(fs::exists(log));
+        std::ifstream in(log, std::ios::binary);
+        char header[8] = {};
+        in.read(header, sizeof header);
+        CHECK(std::string(header, sizeof header) == std::string(8, '\0'));  // nothing in flight between statements
+    }
+    CHECK_FALSE(fs::exists(log.parent_path()));
+}
+
+TEST_CASE("An unreadable or wiped journal undoes nothing", "[durability]") {
+    TempDir dir("meradb_durable_");
+    { Engine e(dir.str()); e.execute("BANAO TABLE t (id INT); DAALO MEIN t MAAN (1);"); }
+    const fs::path folder = dir.path() / ".wapas" / "journal.tmp";
+    for (const std::string& junk : {std::string("garbage that is no journal at all"), std::string("MDBUNDO1"),
+                                    std::string("MDBUNDO1") + std::string(8, 'x') + std::string(40, 'y'), std::string()}) {
+        fs::create_directories(folder);
+        { std::ofstream out(folder / "log", std::ios::binary); out << junk; }
+        Instance inst(dir.str());
+        CHECK(inst.recovered().empty());
+        CHECK_FALSE(fs::exists(folder));
+    }
+    Engine e(dir.str());
+    CHECK(formatValue(e.execute("DIKHAO GINO(*) SE t;")[0].rows[0][0]) == "1");
+}
+
+TEST_CASE("A statement that fails is synced like one that works: its partial writes are what the files now hold", "[durability]") {
+    TempDir dir("meradb_durable_");
+    Engine e(dir.str());
+    e.execute("BANAO TABLE t (id INT MUKHYA KUNJI);");
+    e.execute("DAALO MEIN t MAAN (1);");
+    SyncLog log;
+    CHECK_THROWS(e.execute("DAALO MEIN t MAAN (1);"));
+    log.clear();
+    e.execute("DAALO MEIN t MAAN (2);");  // and the next statement starts clean
+    CHECK(SyncLog::countEnding("/main/t.tbl") == 1);
+    CHECK(formatValue(e.execute("DIKHAO GINO(*) SE t;")[0].rows[0][0]) == "2");
+}
+
 TEST_CASE("HATAO DATABASE leaves no half database behind and TRUNCATE goes through a swapped file", "[durability]") {
     TempDir dir("meradb_durable_");
     Engine e(dir.str());

@@ -376,6 +376,8 @@ void Catalog::save() {
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
     durable::syncBeforeRename(tmp);
+    durable::beforeReplace(path_);
+    crashPoint("catalog-before-rename");
     std::error_code ec;
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " save nahi hua: " + ec.message());
@@ -525,6 +527,7 @@ void Catalog::saveProcedureMeta() const {
     for (const auto& [name, when] : procedureCreated_)
         if (procedures.contains(name)) mj[name] = when;
     if (mj.empty()) {
+        durable::beforeReplace(textOf(file));
         fs::remove(file, ec);
         durable::renamed(textOf(file));
         return;
@@ -536,6 +539,7 @@ void Catalog::saveProcedureMeta() const {
         if (!out) return;
         out << mj.dump(2) << "\n";
     }
+    durable::beforeReplace(target);
     fs::rename(pathOf(tmp), file, ec);
     if (!ec) durable::renamed(target);
 }

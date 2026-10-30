@@ -145,6 +145,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME cli_unicode
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_unicode.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(cli_unicode PROPERTIES TIMEOUT 240)
+  # Kills real processes at varied moments and at each step of the write protocol. No test can cut the power: see the script.
+  add_test(NAME crash_kill
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/crash_kill.py $<TARGET_FILE:meradb_cli>)
+  set_tests_properties(crash_kill PROPERTIES TIMEOUT 300)
   add_test(NAME shell_lower_diff
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_lower_diff.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(shell_lower_diff PROPERTIES TIMEOUT 300)

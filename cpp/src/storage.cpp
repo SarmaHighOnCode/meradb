@@ -174,9 +174,11 @@ HeapFile::HeapFile(std::string path) : path_(std::move(path)) {}
 void HeapFile::create() { rewrite({}); }  // a whole new file, swapped in: TRUNCATE must not destroy the old rows in place
 
 void HeapFile::destroy() {
+    durable::beforeReplace(path_);
     std::error_code ec;
     fs::remove(pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " hata nahi paaye: " + ec.message());
+    durable::renamed(path_);
 }
 
 void HeapFile::truncate() { create(); }
@@ -196,8 +198,15 @@ std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>
         offsets.push_back(offset + static_cast<int64_t>(buffer.size()));
         appendRecord(buffer, payload);
     }
+    durable::beforeAppend(path_);
+    crashPoint("stmt-before-write");
     std::ofstream out(pathOf(path_), std::ios::binary | std::ios::app);
     if (!out) throw StorageError(path_ + " khul nahi paayi");
+    if (crashPointArmed("stmt-torn-write")) {  // half a record at the end of the file, as a crash in the write would leave
+        out.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(buffer.size() / 2 + 1));
+        out.flush();
+        crashPoint("stmt-torn-write");
+    }
     writeBytes(out, buffer);
     out.flush();
     if (!out) throw StorageError(path_ + " mein likh nahi paaye");
@@ -210,12 +219,17 @@ std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>
 void HeapFile::deleteOne(int64_t offset) { deleteMany({offset}); }
 
 void HeapFile::deleteMany(const std::vector<int64_t>& offsets) {
+    durable::beforeTombstones(path_, offsets);
     std::fstream f(pathOf(path_), std::ios::binary | std::ios::in | std::ios::out);
     if (!f) throw StorageError(path_ + " khul nahi paayi");
     const char tombstone = static_cast<char>(kStatusDeleted);
     for (auto offset : offsets) {
         f.seekp(offset, std::ios::beg);
         f.write(&tombstone, 1);  // one byte, in place
+        if (crashPointArmed("stmt-mid-tombstones")) {
+            f.flush();
+            crashPoint("stmt-mid-tombstones");
+        }
     }
     f.flush();
     if (!f) throw StorageError(path_ + " mein likh nahi paaye");
@@ -287,6 +301,7 @@ void HeapFile::rewrite(const std::vector<std::vector<uint8_t>>& payloads) {
         if (!out) throw StorageError(tmp + " mein likh nahi paaye");
     }
     durable::syncBeforeRename(tmp);
+    durable::beforeReplace(path_);
     std::error_code ec;
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " rewrite nahi hua: " + ec.message());

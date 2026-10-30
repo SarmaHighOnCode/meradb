@@ -210,10 +210,79 @@ At startup, `Instance._recover()` looks in `.wapas/`:
 - `<db>` still there → the process died **before** `PAKKA`, so roll back (restore it).
 - `<db>.tmp` → `SHURU` never finished, so delete it.
 - `<db>.done` → `PAKKA` already happened, so delete it.
+- `journal.tmp` (C++) → undo the statement it describes, then delete it (see Durability below).
 
-That gives **atomicity** (all or nothing) and **durability** (committed = on disk).
-It costs one full copy of the database per transaction, which is fine for a small
-database. Real systems write a *write-ahead log* (WAL) of changes instead.
+That gives **atomicity** (all or nothing). It costs one full copy of the database per
+transaction, which is fine for a small database. Real systems write a *write-ahead log*
+(WAL) of changes instead.
+
+### Durability (the C++ engine)
+
+A write that the operating system has accepted survives a killed process, but not a
+power cut: it may still be in a cache. So the C++ engine forces writes to the disk
+(`syncFile`: `FlushFileBuffers` / `fsync`) in a fixed order, and only says "done" after.
+Which order is in `cpp/include/meradb/durability.h`.
+
+| Step | On the disk, in this order |
+|------|----------------------------|
+| statement outside a transaction | 1. undo record in `.wapas/journal.tmp/log` 2. the change to the live file 3. sync the live files 4. wipe the journal's header and sync it (**the statement's commit point**) 5. acknowledge |
+| `SHURU` | copy to `.wapas/<db>.tmp`, sync every file of the copy, rename to `.wapas/<db>`, sync `.wapas` |
+| statements inside a transaction | changes to the live files, no sync: the snapshot protects the old state |
+| `PAKKA` | sync every file the transaction changed, rename the snapshot to `.done` (**the commit point**), sync `.wapas`, acknowledge, delete `.done` |
+
+The **undo journal** closes a gap the snapshots leave: a statement outside a transaction
+has no snapshot, so a crash half-way through a big `BADLO` (tombstones written, new rows
+not yet) used to lose rows. Now the journal holds, before each change, what is needed to
+take it back: a file's old size before an append, the offsets before tombstones, a hard
+link to the old file before a swap, the two names before a table rename. At startup
+`recover()` undoes newest-first whatever a statement left unfinished, and every undo step
+gives the same result if repeated, so a crash during recovery is fine too. A procedure's
+`CALL` is one statement here: a crash undoes all of it, up to its last `PAKKA`.
+
+**What is promised, when the disk honours a flush:**
+
+- Acknowledged statement or `PAKKA`: there after a kill or a power cut.
+- Not acknowledged: all there or all gone, never half. (A crash between the commit point
+  and the acknowledgement leaves it there, unacknowledged; any database can do that.)
+- Uncommitted transaction: gone, including after a crash during `WAPAS` or `ROLLBACK TO`.
+
+**What is not:**
+
+- A real power cut has **not been tested**: only a person pulling the plug can. Tests kill
+  real processes at each step of the protocol (`cpp/tests/crash_kill.py`) and check the
+  order of the syncs (`cpp/tests/test_durability.cpp`). A killed process loses nothing the
+  operating system already has, so those tests prove the order, not the hardware.
+- A drive that acknowledges a flush it has not done (some consumer SSDs, some USB
+  enclosures, some virtual disks) defeats all of this, as it defeats every database.
+- A folder that cannot be synced (FAT, some network shares) is passed over silently: the
+  rename stands, but may be lost in a power cut.
+- A statement that **fails** half-way keeps what it wrote, as it always has (one with
+  triggers is undone from its copy); the journal is for crashes, not for errors.
+- `users.json` and `procedures.meta.json` are not part of a statement's undo. `users.json`
+  is swapped atomically and synced by itself. A `CALL` that creates a user and then
+  crashes keeps the user.
+- The Python engine has none of this. It ignores a C++ journal left by a crash (it just
+  deletes `.wapas/*.tmp`), so a folder that crashed under C++ should be reopened by C++ first.
+
+**Cost**, measured with real CLI runs on one busy machine whose disk takes about 0.35 ms per
+flush (so expect several times this on a slower disk; ranges are repeated runs):
+
+| | before | now | `MERADB_SYNC=relaxed` |
+|---|--------|-----|-----------------------|
+| 10 000 autocommit inserts (from 2000) | 0.7-0.8 s | 13.3 s (1.3 ms each: three flushes) | 1.3-1.9 s |
+| 1000 inserts in one transaction | 54-74 ms | 78-84 ms | 73-88 ms |
+| empty `SHURU` + `PAKKA`, 1 table | 1.2-2.2 ms | 3-3.7 ms | 1.4-5.5 ms |
+| `SHURU`, 2 writes, `PAKKA`, 21 tables | 8-9 ms | 13-14 ms | not measured reliably |
+
+A batch belongs in a transaction: the 1000 inserts above cost 78 ms, not 1.3 s.
+
+**`MERADB_SYNC=relaxed`** (environment variable; the default is full durability) forces
+nothing to the disk. The journal and the snapshots still run, so a killed process recovers
+exactly as above. A power cut can lose acknowledged work and can leave a file that does not
+load. Use it for data you can rebuild, such as a bulk load you can run again.
+
+The on-disk format of tables and catalogs did not change. Old data folders open as they
+are, and the journal folder is removed on a clean close.
 
 ## Concurrency: many clients, one lock
 

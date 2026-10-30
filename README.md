@@ -455,6 +455,7 @@ falling back to local mode.
 | `MERADB_PORT` | Default port, for server and clients |
 | `MERADB_PASSWORD` | Password, so you don't need `-W` |
 | `MERADB_USER` | Username, so you don't need `-U` |
+| `MERADB_SYNC` | `relaxed` trades power-cut safety for speed (C++ engine; default is full durability, see `docs/ARCHITECTURE.md`) |
 
 ---
 

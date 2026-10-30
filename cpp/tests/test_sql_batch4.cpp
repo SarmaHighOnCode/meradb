@@ -69,8 +69,7 @@ size_t entriesIn(const std::string& dir) {
     if (!fs::is_directory(fs::u8path(dir))) return 0;
     size_t n = 0;
     for (const auto& entry : fs::directory_iterator(fs::u8path(dir))) {
-        (void)entry;
-        ++n;
+        if (entry.path().filename() != "journal.tmp") ++n;  // the undo journal stays while the Instance lives: it is no copy
     }
     return n;
 }
