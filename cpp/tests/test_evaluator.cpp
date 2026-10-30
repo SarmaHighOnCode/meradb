@@ -366,12 +366,12 @@ TEST_CASE("evaluate looks subquery results up by node identity", "[evaluator]") 
     REQUIRE(dynamic_cast<const ast::Subquery*>(subs[1]) != nullptr);
 
     SubqueryResults results;
-    results[subs[0]].values = {Value(), Value(1.0), Value(int64_t{5})};  // 1 == 1.0, KHALI ignored
+    results[subs[0]].values = {Value(), Value(1.0), Value(int64_t{5})};  // 1 == 1.0; the KHALI makes a non-match unknown
     results[subs[1]].scalar = Value(int64_t{18});
     Row row = {{"s.id", Value(int64_t{1})}, {"s.umar", Value(int64_t{20})}};
     REQUIRE(B(evaluate(*expr, row, &results)));
     row["s.id"] = Value(int64_t{2});
-    REQUIRE_FALSE(B(evaluate(*expr, row, &results)));
+    REQUIRE(evaluate(*expr, row, &results).isNull());  // 2 MEIN (KHALI, 1.0, 5) -> KHALI, and KHALI AUR SACH -> KHALI
     row["s.id"] = Value();
     REQUIRE(evaluate(*expr, row, &results).isNull());  // KHALI MEIN (...) -> KHALI, and KHALI AUR SACH -> KHALI
     // missing result is an internal error

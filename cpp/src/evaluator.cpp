@@ -489,15 +489,22 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         if (in->kind == "EXISTS") return result->scalar;  // the engine stored SACH/JHOOTH
         Value left = evaluate(*in->left, row, subqueries);
         if (left.isNull()) {
-            // KHALI op ANY/ALL (nothing) still has a definite answer; every other case is unknown
+            // KHALI op ANY/ALL (nothing) and KHALI MEIN (nothing) still have a definite answer; every other case is unknown
             if ((in->kind == "ANY" || in->kind == "ALL") && result->values.empty()) return Value(in->kind == "ALL");
+            if (in->kind == "IN" && result->values.empty()) return Value(in->negated);
             return Value();
         }
         if (in->kind == "ANY" || in->kind == "ALL") return quantified(*in, left, result->values);
-        bool isMember = false;
-        for (const auto& v : result->values)
-            if (!v.isNull() && pyEquals(left, v)) { isMember = true; break; }
-        return Value(in->negated ? !isMember : isMember);
+        // x MEIN (a, b, KHALI): SACH on a match, otherwise KHALI when the list held a KHALI (x might be that unknown value),
+        // otherwise JHOOTH. NAHI MEIN is exactly its negation, so x NAHI MEIN (.., KHALI) is never SACH.
+        bool isMember = false, sawNull = false;
+        for (const auto& v : result->values) {
+            if (v.isNull()) sawNull = true;
+            else if (pyEquals(left, v)) { isMember = true; break; }
+        }
+        if (isMember) return Value(!in->negated);
+        if (sawNull) return Value();
+        return Value(in->negated);
     }
 
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
