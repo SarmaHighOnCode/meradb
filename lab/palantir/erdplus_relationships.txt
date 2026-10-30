@@ -1,0 +1,18 @@
+Relationships to draw by hand in ERDPlus (the free trial editor has no Relationship tool).
+Format: parent  (cardinality)  child   -- foreign key
+
+departments   1 : N  employees     employees.dept_id    -> departments.dept_id   (a department has many employees; an employee may have none)
+employees     1 : N  employees     employees.manager_id -> employees.emp_id      (recursive: a manager manages many)
+clients       1 : N  contracts     contracts.client_id  -> clients.client_id     (mandatory on the contract)
+products      1 : N  contracts     contracts.product_id -> products.product_id   (mandatory on the contract)
+contracts     1 : N  projects      projects.contract_id -> contracts.contract_id (optional: project 406 has none)
+employees     1 : N  projects      projects.lead_emp    -> employees.emp_id      (optional)
+employees     M : N  projects      through assignments (emp_id, project_id), attributes role, hours
+
+Other facts the diagram does not show
+- UNIQUE (client_id, product_id) on contracts
+- UNIQUE: dept_name, email, product_name, client_name
+- CHECK: salary_k > 0, budget_k > 0, value_musd > 0, hours >= 0, launch_year BETWEEN 2003 AND 2030,
+  end_date >= start_date, clearance IN ('NONE','SECRET','TOP SECRET'), status IN ('Active','Completed','Cancelled')
+- salary_grades has no foreign key: employees join it by salary range (salary_k BETWEEN min_k AND max_k)
+- Views: active_contracts_v, dept_summary_v, staff_directory_v

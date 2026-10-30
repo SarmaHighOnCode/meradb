@@ -1,0 +1,83 @@
+// Palantir lab ERD. Paste into https://dbdiagram.io (Go to App, then paste, or Import, then DBML).
+
+Table departments {
+  dept_id int [pk]
+  dept_name varchar(40) [not null, unique]
+  location varchar(30) [default: 'Denver']
+  budget_k decimal(10,2)
+}
+
+Table employees {
+  emp_id int [pk]
+  emp_name varchar(40) [not null]
+  email varchar(60) [unique]
+  job_title varchar(40)
+  dept_id int
+  manager_id int
+  salary_k decimal(8,2)
+  hire_date date
+  clearance varchar(10) [default: 'NONE']
+  office varchar(20) [default: 'Denver']
+}
+
+Table products {
+  product_id int [pk]
+  product_name varchar(30) [not null, unique]
+  launch_year int
+  category varchar(30)
+}
+
+Table clients {
+  client_id int [pk]
+  client_name varchar(40) [not null, unique]
+  sector varchar(30)
+  country varchar(30)
+}
+
+Table contracts {
+  contract_id int [pk]
+  client_id int [not null]
+  product_id int [not null]
+  start_date date [not null]
+  end_date date
+  value_musd decimal(8,2)
+  status varchar(12) [default: 'Active']
+
+  indexes {
+    (client_id, product_id) [unique]
+  }
+}
+
+Table projects {
+  project_id int [pk]
+  project_name varchar(40) [not null]
+  contract_id int
+  lead_emp int
+  budget_k decimal(10,2)
+}
+
+Table assignments {
+  emp_id int
+  project_id int
+  role varchar(30)
+  hours int
+
+  indexes {
+    (emp_id, project_id) [pk]
+  }
+}
+
+Table salary_grades {
+  grade char(2) [pk]
+  min_k int
+  max_k int
+}
+
+Ref: employees.dept_id > departments.dept_id
+Ref: employees.manager_id > employees.emp_id
+Ref: contracts.client_id > clients.client_id
+Ref: contracts.product_id > products.product_id
+Ref: projects.contract_id > contracts.contract_id
+Ref: projects.lead_emp > employees.emp_id
+Ref: assignments.emp_id > employees.emp_id
+Ref: assignments.project_id > projects.project_id
