@@ -75,6 +75,47 @@ class PathTests(ServerCase):
                 catalog.table_path(name)
 
 
+class PrivilegeTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.admin = Engine(self.dir)
+        self.ravi = Engine(self.admin.instance)
+        self.ravi.user = "ravi"
+        self.admin.execute("BANAO USER ravi GUPT 'pw';"
+                           "BANAO TABLE pub (id INT MUKHYA KUNJI, name TEXT);"
+                           "BANAO TABLE hidden (id INT);"
+                           "DAALO MEIN pub MAAN (1, 'a');"
+                           "DAALO MEIN hidden MAAN (1);")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def denied(self, text: str):
+        with self.assertRaises(ExecutionError):
+            self.ravi.execute(text)
+
+    def name_of_row_one(self):
+        return self.admin.execute("DIKHAO name SE pub JAHAN id = 1;")[0].rows[0][0]
+
+    def test_sub_selects_need_dikhao_wherever_they_are_written(self):
+        self.admin.execute("ADHIKAR DO SAB PAR pub KO ravi;")
+        self.denied("DIKHAO id SE pub JAHAN id MEIN (DIKHAO id SE hidden);")
+        self.denied("DIKHAO (DIKHAO id SE hidden) SE pub;")
+        self.denied("BADLO pub RAKHO name = 'x' JAHAN id MEIN (DIKHAO id SE hidden);")
+        self.denied("MITAO SE pub JAHAN id MEIN (DIKHAO id SE hidden);")
+        self.assertEqual(self.name_of_row_one(), "a")
+        self.ravi.execute("DIKHAO id SE pub JAHAN id MEIN (DIKHAO id SE pub);")
+
+    def test_upsert_needs_badlo(self):
+        self.admin.execute("ADHIKAR DO DAALO PAR pub KO ravi;")
+        self.denied("DAALO MEIN pub MAAN (1, 'x') TAKRAAV PAR BADLO name = 'hacked';")
+        self.assertEqual(self.name_of_row_one(), "a")
+        self.ravi.execute("DAALO MEIN pub MAAN (2, 'new');")
+
+    def test_explain_of_a_set_operation_needs_dikhao(self):
+        self.denied("SAMJHAO DIKHAO id SE hidden SANYUKT DIKHAO id SE hidden;")
+
+
 class RestrictedRequestTests(ServerCase):
     def setUp(self):
         super().setUp()

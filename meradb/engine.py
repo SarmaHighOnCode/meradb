@@ -329,25 +329,31 @@ class Engine:
         if self.user is None:
             return
         if isinstance(stmt, ast.Explain):
-            self._check_privileges(stmt.statement)
+            # a plan never runs the query, so nothing re-checks the sides of a set operation later
+            self._check_explained(stmt.statement)
             return
         if isinstance(stmt, ast.SetOp):
             return  # _exec_SetOp re-enters execute_statement for each side, which re-checks it
         if isinstance(stmt, ast.Select):
-            for table in self._tables_read(stmt):
-                self._require_privilege("DIKHAO", table)
+            self._check_select(stmt)
             return
         if isinstance(stmt, ast.Insert):
             self._require_privilege("DAALO", stmt.table)
             if stmt.select is not None:
-                for table in self._tables_read(stmt.select):
-                    self._require_privilege("DIKHAO", table)
+                self._check_select(stmt.select)
+            for row in stmt.rows or []:
+                self._check_subqueries(row)
+            if stmt.on_conflict_update is not None:  # TAKRAAV PAR BADLO changes an existing row: that is a BADLO
+                self._require_privilege("BADLO", stmt.table)
+                self._check_subqueries([e for _, e in stmt.on_conflict_update])
             return
         if isinstance(stmt, ast.Update):
             self._require_privilege("BADLO", stmt.table)
+            self._check_subqueries([e for _, e in stmt.assignments] + [stmt.where])
             return
         if isinstance(stmt, ast.Delete):
             self._require_privilege("MITAO", stmt.table)
+            self._check_subqueries([stmt.where])
             return
         # Everything else: DDL (BANAO/HATAO/SUDHARO/SAAF/SIKODO TABLE, VIEW,
         # TRIGGER, PROCEDURE), user/grant management (BANAO/HATAO USER,
@@ -356,6 +362,26 @@ class Engine:
             f"'{self.user}' superuser nahi hai -- '{type(stmt).__name__}' jaisa DDL/admin command "
             f"sirf superuser (bina username connect kiya session) chala sakta hai"
         )
+
+    def _check_explained(self, stmt: ast.Statement) -> None:
+        if isinstance(stmt, ast.SetOp):
+            self._check_explained(stmt.left)
+            self._check_explained(stmt.right)
+        else:
+            self._check_privileges(stmt)
+
+    def _check_select(self, stmt: ast.Select) -> None:
+        """DIKHAO on every table the query reads: FROM, MILAO and any sub-select, wherever it is written."""
+        for table in self._tables_read(stmt):
+            self._require_privilege("DIKHAO", table)
+        self._check_subqueries([*stmt.columns, stmt.where, *stmt.group_by, stmt.having,
+                                *(item.expr for item in stmt.order_by), *(join.on for join in stmt.joins)])
+
+    def _check_subqueries(self, exprs: list) -> None:
+        for expr in exprs:
+            for node in find_subqueries(expr):
+                subquery = node.subquery if isinstance(node, ast.InSubquery) else node
+                self._check_select(subquery.statement)
 
     @staticmethod
     def _tables_read(stmt: ast.Select) -> list[str]:
