@@ -84,10 +84,11 @@ void ConnectDialog::load(const wb::ConnectDefaults& defaults) {
     user_[0] = '\0';
     password_[0] = '\0';
     database_[0] = '\0';
+    tls_[0] = '\0';
 }
 
 void ConnectDialog::submit(wb::Session& session, bool local) {
-    session.connect(wb::makeConnectRequest(local, host_, port_, password_, database_, user_));
+    session.connect(wb::makeConnectRequest(local, host_, port_, password_, database_, user_, tls_));
     password_[0] = '\0';   // do not keep it around
 }
 
@@ -163,6 +164,11 @@ void ConnectDialog::draw(wb::Session& session, const Theme& th, const FontSet& f
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputText("##database", database_, sizeof database_, fieldFlags)) connect = true;
     remember(kDatabase);
+
+    label("TLS: 'on' ya certificate file (khali = TLS nahi)");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("##tls", tls_, sizeof tls_, fieldFlags)) connect = true;
+    remember(kTls);
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f * scale));
     const float buttonH = 32.0f * scale;

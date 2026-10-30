@@ -85,6 +85,28 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# Encrypted connections. Mbed TLS rather than Windows' SChannel: the same code on Windows, Linux and macOS, and it can
+# make and read PEM files without a certificate store. Off: `--tls*` options refuse to work, plain traffic is unchanged.
+option(MERADB_TLS "Build TLS support for the server and clients (fetches Mbed TLS)" ON)
+if(MERADB_TLS)
+  enable_language(C)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(GEN_FILES OFF CACHE BOOL "" FORCE)  # a release tarball has them, and making them needs Python packages
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+  # Every file that sees a Mbed TLS structure must agree on these, ours included.
+  add_compile_definitions(MBEDTLS_USER_CONFIG_FILE="meradb_mbedtls_config.h")
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/mbedtls_config)
+  FetchContent_Declare(
+    mbedtls
+    URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+    URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+  )
+  FetchContent_MakeAvailable(mbedtls)
+endif()
+
 FetchContent_Declare(
   catch2
   URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.4.tar.gz
@@ -162,6 +184,7 @@ add_library(meradb_core STATIC
   src/protocol.cpp
   src/server.cpp
   src/client.cpp
+  src/tls.cpp
   src/server_control.cpp
   src/cli.cpp
   src/pytext.cpp
@@ -177,6 +200,15 @@ if(NOT MSVC)
 endif()
 target_include_directories(meradb_core PUBLIC include)
 target_link_libraries(meradb_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+if(MERADB_TLS)
+  target_compile_definitions(meradb_core PUBLIC MERADB_HAS_TLS)
+  target_link_libraries(meradb_core PUBLIC mbedtls mbedx509 mbedcrypto)
+  if(WIN32)
+    target_link_libraries(meradb_core PUBLIC crypt32)
+  endif()
+  add_executable(meradb_devcert src/devcert_main.cpp)
+  target_link_libraries(meradb_devcert PRIVATE meradb_core)
+endif()
 if(WIN32)
   # Winsock + the OS random generator; keep windows.h lean and min/max macros away.
   target_link_libraries(meradb_core PUBLIC ws2_32 bcrypt shell32 advapi32)

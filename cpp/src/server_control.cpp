@@ -52,6 +52,15 @@ ConnectOptions connectOptionsFor(const ControlOptions& options, const std::strin
     return connect;
 }
 
+// The pid file says when this folder's server wants TLS, and which certificate to trust.
+void useTlsOf(const Json& info, ConnectOptions& connect) {
+    auto tls = info.find("tls");
+    if (tls == info.end() || !tls->is_boolean() || !tls->get<bool>()) return;
+    connect.tls = true;
+    auto cert = info.find("tls_cert");
+    if (cert != info.end() && cert->is_string()) connect.tlsCaFile = cert->get<std::string>();
+}
+
 double seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -80,6 +89,8 @@ int serverStart(const ControlOptions& options) {
     std::vector<std::string> args = {"server", "--data", data, "--host", options.host, "--port",
                                      std::to_string(options.port)};
     if (options.verbose) args.push_back("--verbose");
+    if (!options.tlsCertFile.empty()) args.insert(args.end(), {"--tls-cert", absolutePath(options.tlsCertFile)});
+    if (!options.tlsKeyFile.empty()) args.insert(args.end(), {"--tls-key", absolutePath(options.tlsKeyFile)});
     // The password travels in the environment so it does not show in the process list.
     const bool hasPassword = options.password && !options.password->empty();
     std::optional<std::string> savedPassword = sys::getEnv("MERADB_PASSWORD");
@@ -142,7 +153,9 @@ int serverStop(const ControlOptions& options) {
                                  ? info->at("pid").get<std::int64_t>()
                                  : static_cast<std::int64_t>(0);
     try {
-        Connection connection(connectOptionsFor(options, host, port));
+        ConnectOptions connect = connectOptionsFor(options, host, port);
+        useTlsOf(*info, connect);
+        Connection connection(connect);
         connection.shutdown();
     } catch (const MeraDBError& e) {
         if (!options.force) {
@@ -186,7 +199,9 @@ int serverStatus(const ControlOptions& options) {
     std::cout << "  data:      " << data << "\n";
     std::cout << "  started:   " << info->value("started", std::string("?")) << "\n";
     try {
-        Connection connection(connectOptionsFor(options, connectHost, port));
+        ConnectOptions connect = connectOptionsFor(options, connectHost, port);
+        useTlsOf(*info, connect);
+        Connection connection(connect);
         Json status = connection.status();
         std::cout << "  version:   " << status.value("server", std::string("None")) << "\n";
         std::cout << "  sessions:  " << status["sessions"].dump() << " connected\n";

@@ -152,7 +152,7 @@ FormAction ConnectForm::enter() const {
 }
 
 ConnectRequest ConnectForm::request(bool local) const {
-    return makeConnectRequest(local, fields_[0].text(), fields_[1].text(), fields_[2].text(), fields_[3].text(), fields_[4].text());
+    return makeConnectRequest(local, fields_[0].text(), fields_[1].text(), fields_[2].text(), fields_[3].text(), fields_[4].text(), fields_[5].text());
 }
 
 }  // namespace meradb::wb

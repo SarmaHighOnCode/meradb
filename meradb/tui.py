@@ -172,6 +172,8 @@ class ConnectScreen(ModalScreen[Optional[dict]]):
             yield Input(id="database")
             yield Label("Username (agar server par users hain)")
             yield Input(id="user")
+            yield Label("TLS: 'on' ya certificate file (khali = TLS nahi)")
+            yield Input(id="tls")
             with Horizontal(id="connect-buttons"):
                 yield Button("Connect", variant="primary", id="server")
                 yield Button("Local mode", id="local")
@@ -183,7 +185,7 @@ class ConnectScreen(ModalScreen[Optional[dict]]):
 
         return {"mode": mode, "host": value("host") or DEFAULT_HOST, "port": value("port") or str(DEFAULT_PORT),
                 "password": value("password") or None, "database": value("database") or None,
-                "user": value("user") or None}
+                "user": value("user") or None, "tls": value("tls") or None}
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None if event.button.id == "cancel" else self._choice(event.button.id))
@@ -403,8 +405,9 @@ class MeraDBApp(App):
             if choice["mode"] == "local":
                 new_backend = Engine(self.data_dir)
             else:
+                tls = choice.get("tls")
                 new_backend = Connection(choice["host"], int(choice["port"]), choice["password"], choice["database"],
-                                         user=choice.get("user"))
+                                         user=choice.get("user"), tls=bool(tls), tls_ca=None if tls in (None, "on") else tls)
         except (MeraDBError, ValueError) as e:
             self.log_line(Text(f"Connect nahi hua: {e}", style="bold red"))
             return

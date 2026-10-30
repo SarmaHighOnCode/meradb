@@ -76,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--password", default=os.environ.get("MERADB_PASSWORD"),
                        help="clients ko ye password dena hoga (ya MERADB_PASSWORD)")
         p.add_argument("-v", "--verbose", action="store_true", help="har query log karo")
+        p.add_argument("--tls-cert", help="TLS certificate file (--tls-key ke saath); phir har connection TLS hoga")
+        p.add_argument("--tls-key", help="TLS private key file (--tls-cert ke saath)")
 
     def client_args(p):
         data_arg(p)
@@ -87,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="is USERNAME se login karo (ya MERADB_USER) -- privileges ke saath, "
                             "server-wide password ki jagah")
         p.add_argument("--local", action="store_true", help="server ke bina, seedha data folder kholo")
+        p.add_argument("--tls", action="store_true", help="TLS se connect karo aur certificate check karo (ya MERADB_TLS=1)")
+        p.add_argument("--tls-ca", help="is certificate file par bharosa karo (ya MERADB_TLS_CA); --tls apne aap lag jata hai")
 
     p = sub.add_parser("server", help="server isi terminal mein chalao (Ctrl+C se band)")
     server_args(p)
@@ -160,6 +164,11 @@ def open_backend(args, password: str | None = None):
             note(f"(--local mode mein -U/--user '{args.user}' ka koi matlab nahi -- ignore kiya, superuser ki tarah chal raha hai)")
         return open_local(args)
 
+    # Asking for TLS is an explicit choice too: no fallback to anything without it, local mode included.
+    tls_ca = args.tls_ca or os.environ.get("MERADB_TLS_CA") or None
+    tls_asked = bool(args.tls or tls_ca or os.environ.get("MERADB_TLS") in ("1", "on", "true"))
+    use_tls = tls_asked
+
     # Flags are an explicit choice (no fallback to local mode if that server is down);
     # MERADB_HOST / MERADB_PORT only change the defaults.
     explicit = args.host is not None or args.port is not None
@@ -170,10 +179,14 @@ def open_backend(args, password: str | None = None):
     if port is None:  # a server started on another port for this data folder? use that
         info = read_pid_file(os.path.abspath(args.data))
         port = int(info["port"]) if info and "port" in info else DEFAULT_PORT
+        if info and info.get("tls") and not tls_asked:  # this folder's server on this computer: its pid file says how
+            use_tls, tls_ca = True, info.get("tls_cert")
+    if not use_tls and host != "localhost" and not host.startswith("127."):
+        note(f"(chetavni: {host} se TLS ke bina connect ho rahe hain -- password aur data network par khule jayenge; --tls lagao)")
     try:
-        return Connection(host, port, password, args.database, user=getattr(args, "user", None))
+        return Connection(host, port, password, args.database, user=getattr(args, "user", None), tls=use_tls, tls_ca=tls_ca)
     except ServerUnavailable:
-        if explicit:
+        if explicit or tls_asked:
             raise
         note(f"({host}:{port} par server nahi mila -- LOCAL mode: seedha '{os.path.abspath(args.data)}' khol rahe hain. "
              f"Server ke liye: meradb start)")
@@ -233,13 +246,25 @@ def cmd_workbench(args) -> int:
 # ============================================================================
 
 
+def refuse_tls_server(args) -> bool:
+    # Never a server that was asked for TLS and quietly runs without it.
+    if args.tls_cert or args.tls_key:
+        note("Server start nahi hua: Python server TLS nahi karta -- --tls-cert ke liye C++ server (meradb_cli) chalao")
+        return True
+    return False
+
+
 def cmd_server(args) -> int:
     from .server import serve
 
+    if refuse_tls_server(args):
+        return 1
     return serve(args.data, args.host, args.port, args.password, args.verbose)
 
 
 def cmd_start(args) -> int:
+    if refuse_tls_server(args):
+        return 1
     data = os.path.abspath(args.data)
     os.makedirs(data, exist_ok=True)
     info = running_server(data)
@@ -310,7 +335,7 @@ def cmd_stop(args) -> int:
         host = DEFAULT_HOST
     port, pid = int(info["port"]), info.get("pid")
     try:
-        with Connection(host, port, get_password(args)) as conn:
+        with Connection(host, port, get_password(args), tls=bool(info.get("tls")), tls_ca=info.get("tls_cert")) as conn:
             conn.shutdown()
     except MeraDBError as e:
         if not args.force:
@@ -352,7 +377,8 @@ def cmd_status(args) -> int:
     print(f"  data:      {data}")
     print(f"  started:   {info.get('started', '?')}")
     try:
-        with Connection(connect_host, int(info["port"]), get_password(args)) as conn:
+        with Connection(connect_host, int(info["port"]), get_password(args),
+                        tls=bool(info.get("tls")), tls_ca=info.get("tls_cert")) as conn:
             status = conn.status()
         print(f"  version:   {status.get('server')}")
         print(f"  sessions:  {status.get('sessions')} connected")

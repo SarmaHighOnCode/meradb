@@ -146,6 +146,9 @@ Server::Server(ServerOptions options) : options_(std::move(options)) {
     if (!options_.log) options_.log = [](const std::string& line) { std::cout << line << std::endl; };
     instance_ = std::make_shared<Instance>(options_.dataDir, /*served=*/true);
     started_ = sys::localIsoSeconds();
+    if (options_.tlsCertFile.empty() != options_.tlsKeyFile.empty())
+        throw MeraDBError("Server start nahi hua: --tls-cert aur --tls-key dono chahiye");
+    if (!options_.tlsCertFile.empty()) tls_ = std::make_unique<tls::ServerConfig>(options_.tlsCertFile, options_.tlsKeyFile);
     listener_ = net::listenOn(options_.host, options_.port);
     port_ = listener_.localPort();
 }
@@ -263,6 +266,34 @@ void Server::reap(bool everything) {
     }
 }
 
+// On a TLS server there is no handshake yet, and this thread must not wait for one: the client just sees the door close.
+void Server::refuseAtAccept(net::Socket& socket, const char* why) {
+    if (tls_) return;
+    try {
+        protocol::send(socket, failure(why), &stop_);
+    } catch (const net::NetError&) {
+    }
+}
+
+// False: this connection is over. A plain client gets told why in plain text, since it could not read anything else, and
+// nothing it sent is read: its first line is its password, and it has gone over the network already but goes no further.
+bool Server::startTls(net::Socket& socket, const std::string& peer) {
+    const int first = socket.peekByte(options_.handshakeTimeoutSeconds, &stop_);
+    if (first < 0) return false;
+    if (first == '{') {
+        log(peer + "  TLS ke bina aaya connection mana");
+        protocol::send(socket, failure("Is server par TLS zaroori hai -- client mein --tls lagao (apne certificate ke liye --tls-ca FILE)"), &stop_);
+        return false;
+    }
+    try {
+        tls_->accept(socket, options_.handshakeTimeoutSeconds, &stop_);
+    } catch (const tls::Error& e) {
+        if (!stop_) log(peer + "  TLS handshake fail: " + e.what());
+        return false;
+    }
+    return true;
+}
+
 void Server::serveForever() {
     // A persistent accept error (out of descriptors, ...) must not flood the log or spin: the same
     // message is logged at most every 10 s, and the pause between attempts grows from 50 ms to 1 s.
@@ -295,10 +326,7 @@ void Server::serveForever() {
         if (options_.maxConnections > 0 && connections_.size() >= static_cast<std::size_t>(options_.maxConnections)) {
             if (!atConnectionLimit) log("connection limit (" + std::to_string(options_.maxConnections) + ") poori -- naye connection mana");
             atConnectionLimit = true;  // once per episode: a flood of refusals must not flood the log too
-            try {
-                protocol::send(accepted, failure("Server par bahut zyada connections hain -- thodi der baad try karo"), &stop_);
-            } catch (const net::NetError&) {
-            }
+            refuseAtAccept(accepted, "Server par bahut zyada connections hain -- thodi der baad try karo");
             continue;
         }
         atConnectionLimit = false;
@@ -314,10 +342,7 @@ void Server::serveForever() {
                         ") poori -- naye connection mana");
                     lastAddressNote = now;
                 }
-                try {
-                    protocol::send(accepted, failure("Is address se bahut zyada connections hain -- thodi der baad try karo"), &stop_);
-                } catch (const net::NetError&) {
-                }
+                refuseAtAccept(accepted, "Is address se bahut zyada connections hain -- thodi der baad try karo");
                 continue;
             }
         }
@@ -348,6 +373,11 @@ void Server::serveConnection(Connection& connection) {
     const std::string& peerIp = connection.peerIp;
     const std::string peer = peerIp + ":" + std::to_string(socket.peerPort());
     try {
+        if (tls_) {
+            if (!startTls(socket, peer)) return;
+        } else if (!isLoopback(peerIp) || options_.testPeerIsRemote) {
+            log("WARNING: " + peer + "  TLS ke bina connected -- password aur data network par khule ja rahe hain (--tls-cert, --tls-key)");
+        }
         protocol::MessageReader reader(socket, options_.maxMessageBytes, &stop_);
 
         // ---- 1. handshake ----
@@ -720,6 +750,10 @@ int serve(ServerOptions options) {
     info["host"] = options.host;
     info["port"] = server->port();
     info["started"] = server->started();
+    if (!options.tlsCertFile.empty()) {  // so `meradb stop`, `status` and `shell` on this computer know how to reach it
+        info["tls"] = true;
+        info["tls_cert"] = absolutePathOf(options.tlsCertFile);
+    }
     try {
         protocol::writePidFile(options.dataDir, info);
     } catch (const MeraDBError& e) {
@@ -730,6 +764,11 @@ int serve(ServerOptions options) {
     server->log(std::string(protocol::kServerName) + " server chal raha hai  ->  " + options.host + ":" +
                 std::to_string(server->port()));
     server->log("data folder: " + options.dataDir);
+    if (!options.tlsCertFile.empty()) {
+        server->log("TLS: on (" + options.tlsCertFile + ")");
+    } else if (!isLoopback(options.host)) {
+        server->log("WARNING: network par TLS ke bina khula hai -- password aur data khule ja rahe hain (--tls-cert, --tls-key)");
+    }
     for (const auto& db : server->instance().recovered())
         server->log("RECOVERY: database '" + db + "' ka adhoora transaction WAPAS kiya (pichli baar crash hua tha)");
     if (options.password.empty()) {

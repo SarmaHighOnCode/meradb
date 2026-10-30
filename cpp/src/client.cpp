@@ -1,6 +1,7 @@
 // cpp/src/client.cpp
 #include "meradb/client.h"
 #include "meradb/errors.h"
+#include "meradb/tls.h"
 
 namespace meradb {
 
@@ -27,6 +28,15 @@ Connection::Connection(const ConnectOptions& options) : options_(options) {
     } catch (const net::NetError& e) {
         throw ServerUnavailable(options.host + ":" + std::to_string(options.port) + " par MeraDB server nahi mila (" +
                                 e.what() + ")");
+    }
+    if (options.tls) {
+        // Before a single byte of the login. A failure here is never ServerUnavailable: that one may fall back.
+        try {
+            tls::connect(socket_, options.host, options.tlsCaFile, options.connectTimeoutSeconds);
+        } catch (const tls::Error& e) {
+            close();
+            throw ConnectionFailed(options.host + ":" + std::to_string(options.port) + " se TLS connection nahi bana: " + e.what());
+        }
     }
     socket_.setReceiveTimeout(options.timeoutSeconds);
     reader_ = std::make_unique<protocol::MessageReader>(socket_);

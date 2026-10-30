@@ -46,6 +46,12 @@ inline bool isReservedDeviceName(const std::string& name) {
 // Force a written file to the disk, so a rename right after cannot, after a power cut, leave an empty or half-written
 // file in place of the old one. False if it could not be done.
 bool syncFile(const std::string& utf8);
+
+// Rights for a file holding a secret: its owner and nobody else. A new file has them from the first moment, under a name
+// that must not exist yet (a link planted there is not written through); false if it could not be made and written.
+// restrictToOwner is for a file that already exists, best effort.
+bool writeNewPrivateFile(const std::string& utf8, const std::string& bytes);
+void restrictToOwner(const std::string& utf8);
 // Force a rename inside this folder to the disk (POSIX; NTFS journals the rename itself, so it does nothing on Windows).
 void syncFolderOf(const std::string& utf8);
 

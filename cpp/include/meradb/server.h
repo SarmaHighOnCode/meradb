@@ -18,6 +18,7 @@
 #include "meradb/engine.h"
 #include "meradb/net_compat.h"
 #include "meradb/protocol.h"
+#include "meradb/tls.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -67,6 +68,8 @@ struct ServerOptions {
     std::size_t maxValueBytes = protocol::kMaxMessageBytes;
     std::size_t maxResultRows = 5000000;
     std::size_t maxReplyBytes = protocol::kMaxMessageBytes;
+    std::string tlsCertFile;  // both set: every connection must be TLS
+    std::string tlsKeyFile;
     bool testPeerIsRemote = false;  // tests only bind to 127.0.0.1: treat their peers as coming from elsewhere
     // After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
     // loginLockSeconds whatever it sends (and costs no hashing). 0 = no limit.
@@ -114,6 +117,9 @@ private:
     bool beginHashing();  // false: the server stayed too busy for too long
     void endHashing();
     std::string withoutPaths(std::string text) const;
+    bool startTls(net::Socket& socket, const std::string& peer);
+    void refuseAtAccept(net::Socket& socket, const char* why);
+    std::unique_ptr<tls::ServerConfig> tls_;
     void sendReply(net::Socket& socket, protocol::Json& reply);
 
     struct LoginFailures {

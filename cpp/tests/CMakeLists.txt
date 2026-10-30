@@ -57,6 +57,7 @@ add_executable(meradb_tests
   test_security.cpp
   test_query_semantics.cpp
   test_server_limits.cpp
+  test_tls.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
@@ -148,6 +149,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME shell_lower_diff
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/shell_lower_diff.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(shell_lower_diff PROPERTIES TIMEOUT 300)
+  if(MERADB_TLS)
+    add_test(NAME tls_check
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tls_check.py --cli $<TARGET_FILE:meradb_cli> --devcert $<TARGET_FILE:meradb_devcert>)
+    set_tests_properties(tls_check PROPERTIES TIMEOUT 300)
+  endif()
   add_test(NAME cli_args_diff
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_args_diff.py $<TARGET_FILE:meradb_cli>)
   set_tests_properties(cli_args_diff PROPERTIES TIMEOUT 300)

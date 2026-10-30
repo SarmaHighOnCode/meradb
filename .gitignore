@@ -12,3 +12,7 @@ cpp/build/
 # Local working notes and tool folders (never committed)
 .superpowers/
 .claude/
+
+# TLS certificates made for trying things out; a private key is never committed
+*.key
+meradb-dev.crt

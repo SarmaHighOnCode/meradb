@@ -9,18 +9,6 @@
 #include <fstream>
 #include <iterator>
 #include <set>
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <aclapi.h>
-#include <sddl.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#include <cerrno>
-#endif
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -166,89 +154,23 @@ void storeColumnSet(json& user, const char* field, const std::string& key, const
     entry[priv] = std::move(list);
 }
 
-ExecutionError noSuchUser(const std::string& name) { return ExecutionError("User '" + name + "' exist nahi karta"); }
-
+// The same line endings Python's open(..., "w") writes.
+std::string withNativeLineEndings(const std::string& text) {
 #ifdef _WIN32
-// A security descriptor that lets in the current user and nobody else, and takes nothing from the folder.
-// Null when Windows will not say who the current user is; the file then gets the folder's rights.
-class OwnerOnly {
-public:
-    OwnerOnly() {
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
-        char buffer[256];
-        DWORD size = sizeof buffer;
-        const BOOL got = GetTokenInformation(token, TokenUser, buffer, size, &size);
-        CloseHandle(token);
-        LPWSTR sid = nullptr;
-        if (!got || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer)->User.Sid, &sid)) return;
-        const std::wstring sddl = L"D:P(A;;FA;;;" + std::wstring(sid) + L")";
-        LocalFree(sid);
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor_, nullptr)) descriptor_ = nullptr;
-    }
-    ~OwnerOnly() {
-        if (descriptor_ != nullptr) LocalFree(descriptor_);
-    }
-    OwnerOnly(const OwnerOnly&) = delete;
-    OwnerOnly& operator=(const OwnerOnly&) = delete;
-    PSECURITY_DESCRIPTOR get() const { return descriptor_; }
-
-private:
-    PSECURITY_DESCRIPTOR descriptor_ = nullptr;
-};
-
-// A file from before this rule (or written by the Python engine, which inherits the folder's rights). Best effort: on
-// a file system without rights, or a file this user may not change, it stays as it is.
-void restrictToOwner(const std::string& path) {
-    OwnerOnly owner;
-    if (owner.get() == nullptr) return;
-    BOOL present = FALSE, defaulted = FALSE;
-    PACL dacl = nullptr;
-    if (!GetSecurityDescriptorDacl(owner.get(), &present, &dacl, &defaulted) || !present) return;
-    std::wstring wide = pathOf(path).wstring();
-    SetNamedSecurityInfoW(wide.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr);
-}
-
-// Creates a file that must not exist yet, readable by its owner only from the first moment, and writes `text` into it.
-bool writeNewPrivateFile(const std::string& path, const std::string& text) {
-    OwnerOnly owner;
-    SECURITY_ATTRIBUTES attributes{};
-    attributes.nLength = sizeof attributes;
-    attributes.lpSecurityDescriptor = owner.get();
-    HANDLE file = CreateFileW(pathOf(path).c_str(), GENERIC_WRITE, 0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    std::string native;  // the same line endings Python's open(..., "w") writes
+    std::string native;
     native.reserve(text.size() + text.size() / 16);
     for (char c : text) {
         if (c == '\n') native += '\r';
         native += c;
     }
-    DWORD written = 0;
-    const BOOL ok = WriteFile(file, native.data(), static_cast<DWORD>(native.size()), &written, nullptr);
-    CloseHandle(file);
-    return ok && written == native.size();
-}
+    return native;
 #else
-void restrictToOwner(const std::string& path) {
-    std::error_code ignored;
-    fs::permissions(pathOf(path), fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ignored);
+    return text;
+#endif
 }
 
-// O_EXCL | O_NOFOLLOW: a link planted at this name is never written through.
-bool writeNewPrivateFile(const std::string& path, const std::string& text) {
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) return false;
-    std::size_t done = 0;
-    while (done < text.size()) {
-        const ssize_t n = ::write(fd, text.data() + done, text.size() - done);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
-        done += static_cast<std::size_t>(n);
-    }
-    ::close(fd);
-    return done == text.size();
-}
-#endif
+ExecutionError noSuchUser(const std::string& name) { return ExecutionError("User '" + name + "' exist nahi karta"); }
+
 
 }  // namespace
 
@@ -278,7 +200,7 @@ void UserStore::saveLocked() {
     // Password hashes: readable by the owner only from the first byte, under a name nobody can prepare a link for.
     const std::string tmp = path_ + "." + crypto::toHex(sys::randomBytes(8)) + ".tmp";
     std::error_code ec;
-    if (!writeNewPrivateFile(tmp, text)) {
+    if (!writeNewPrivateFile(tmp, withNativeLineEndings(text))) {
         fs::remove(pathOf(tmp), ec);
         throw StorageError(tmp + " likh nahi paaye");
     }

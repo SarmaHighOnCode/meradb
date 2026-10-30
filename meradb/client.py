@@ -13,6 +13,7 @@ workbench can use either one without knowing which it is.
 """
 
 import socket
+import ssl
 
 from .engine import Result
 from .errors import ConnectionFailed, MeraDBError, ServerUnavailable
@@ -21,12 +22,22 @@ from .protocol import DEFAULT_HOST, DEFAULT_PORT, PROTOCOL_VERSION, ProtocolErro
 
 class Connection:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, password: str | None = None,
-                 database: str | None = None, timeout: float = 60.0, user: str | None = None):
+                 database: str | None = None, timeout: float = 60.0, user: str | None = None,
+                 tls: bool = False, tls_ca: str | None = None):
         self.host, self.port = host, port
         try:
             self._sock = socket.create_connection((host, port), timeout=5)
         except OSError as e:
             raise ServerUnavailable(f"{host}:{port} par MeraDB server nahi mila ({e.strerror or e})") from e
+        if tls or tls_ca:
+            # Before a single byte of the login. A failure here is never ServerUnavailable: that one may fall back.
+            try:
+                context = ssl.create_default_context(cafile=tls_ca or None)  # verifies the chain and the host name
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+                self._sock = context.wrap_socket(self._sock, server_hostname=host)
+            except (OSError, ValueError) as e:  # ssl.SSLError is an OSError
+                self._sock.close()
+                raise ConnectionFailed(f"{host}:{port} se TLS connection nahi bana: {e}") from e
         # queries may legitimately wait (up to ~10 s) for another client's transaction
         self._sock.settimeout(timeout)
         self._rfile = self._sock.makefile("rb")

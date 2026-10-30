@@ -769,7 +769,7 @@ MeraDB is a learning-scale database:
 - Privileges are per `(database, table)` only -- no schema-level roles, no column-level
   grants, no `WITH GRANT OPTION`.
 - Security is one optional server-wide password, or per-user hashed-password logins with
-  privileges -- either way, no TLS encryption.
+  privileges; traffic is plain unless the server is given a TLS certificate (`docs/SERVER.md`).
 - It is comfortable up to around 100,000 rows per table.
 
 ---

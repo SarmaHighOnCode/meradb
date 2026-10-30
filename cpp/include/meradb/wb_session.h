@@ -45,10 +45,12 @@ struct ConnectRequest {
     std::optional<std::string> password;
     std::optional<std::string> database;
     std::optional<std::string> user;      // log in as this user (then `password` is THEIR password)
+    bool tls = false;
+    std::string tlsCaFile;                // with tls: trust this certificate (empty: the computer's trusted roots)
 };
 ConnectRequest makeConnectRequest(bool local, const std::string& host, const std::string& port,
                                   const std::string& password, const std::string& database,
-                                  const std::string& user = "");
+                                  const std::string& user = "", const std::string& tls = "");
 
 // What the dialog starts with: the current server's host and port from Backend::description() ("host:port"); for
 // "local (...)" or anything that does not parse: 127.0.0.1 and 6372 (Python: getattr(backend, "host", DEFAULT_HOST)).

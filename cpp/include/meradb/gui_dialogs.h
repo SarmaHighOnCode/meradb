@@ -28,7 +28,7 @@ public:
     std::string user() const { return user_; }
     bool passwordEmpty() const { return password_[0] == '\0'; }
     // Where the widgets were drawn in the last frame (screen pixels, centre), for the tests.
-    enum Widget { kHost, kPort, kUser, kPassword, kDatabase, kCancel, kLocal, kConnect, kWidgetCount };
+    enum Widget { kHost, kPort, kUser, kPassword, kDatabase, kTls, kCancel, kLocal, kConnect, kWidgetCount };
     ImVec2 centre(Widget w) const { return centres_[w]; }
 
 private:
@@ -42,6 +42,7 @@ private:
     char user_[256] = {0};
     char password_[256] = {0};
     char database_[256] = {0};
+    char tls_[1024] = {0};
     ImVec2 centres_[kWidgetCount] = {};
 };
 

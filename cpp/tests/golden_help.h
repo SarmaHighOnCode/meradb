@@ -13,7 +13,8 @@ struct Case {
 inline const Case* cases(int& count) {
     static const Case all[] = {
         {"server", "/srv/mdb", R"HELP(usage: meradb server [-h] [-D DATA] [--host HOST] [--port PORT]
-                     [--password PASSWORD] [-v]
+                     [--password PASSWORD] [-v] [--tls-cert TLS_CERT]
+                     [--tls-key TLS_KEY]
 
 options:
   -h, --help            show this help message and exit
@@ -23,9 +24,13 @@ options:
   --port PORT           TCP port (default 6372, ya MERADB_PORT)
   --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)
   -v, --verbose         har query log karo
+  --tls-cert TLS_CERT   TLS certificate file (--tls-key ke saath); phir har
+                        connection TLS hoga
+  --tls-key TLS_KEY     TLS private key file (--tls-cert ke saath)
 )HELP"},
         {"start", "/srv/mdb", R"HELP(usage: meradb start [-h] [-D DATA] [--host HOST] [--port PORT]
-                    [--password PASSWORD] [-v]
+                    [--password PASSWORD] [-v] [--tls-cert TLS_CERT]
+                    [--tls-key TLS_KEY]
 
 options:
   -h, --help            show this help message and exit
@@ -35,6 +40,9 @@ options:
   --port PORT           TCP port (default 6372, ya MERADB_PORT)
   --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)
   -v, --verbose         har query log karo
+  --tls-cert TLS_CERT   TLS certificate file (--tls-key ke saath); phir har
+                        connection TLS hoga
+  --tls-key TLS_KEY     TLS private key file (--tls-cert ke saath)
 )HELP"},
         {"stop", "/srv/mdb", R"HELP(usage: meradb stop [-h] [-D DATA] [-W] [--force]
 
@@ -52,7 +60,7 @@ options:
   -W, --password        password poocho (ya MERADB_PASSWORD)
 )HELP"},
         {"shell", "/srv/mdb", R"HELP(usage: meradb shell [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                    [-U USER] [--local]
+                    [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
 
 options:
   -h, --help            show this help message and exit
@@ -65,9 +73,13 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
         {"workbench", "/srv/mdb", R"HELP(usage: meradb workbench [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                        [-U USER] [--local]
+                        [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
 
 options:
   -h, --help            show this help message and exit
@@ -80,9 +92,13 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
         {"run", "/srv/mdb", R"HELP(usage: meradb run [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                  [-U USER] [--local]
+                  [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
                   files [files ...]
 
 positional arguments:
@@ -99,9 +115,14 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
         {"server", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb server [-h] [-D DATA] [--host HOST] [--port PORT]
-                     [--password PASSWORD] [-v]
+                     [--password PASSWORD] [-v] [--tls-cert TLS_CERT]
+                     [--tls-key TLS_KEY]
 
 options:
   -h, --help            show this help message and exit
@@ -112,9 +133,13 @@ options:
   --port PORT           TCP port (default 6372, ya MERADB_PORT)
   --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)
   -v, --verbose         har query log karo
+  --tls-cert TLS_CERT   TLS certificate file (--tls-key ke saath); phir har
+                        connection TLS hoga
+  --tls-key TLS_KEY     TLS private key file (--tls-cert ke saath)
 )HELP"},
         {"start", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb start [-h] [-D DATA] [--host HOST] [--port PORT]
-                    [--password PASSWORD] [-v]
+                    [--password PASSWORD] [-v] [--tls-cert TLS_CERT]
+                    [--tls-key TLS_KEY]
 
 options:
   -h, --help            show this help message and exit
@@ -125,6 +150,9 @@ options:
   --port PORT           TCP port (default 6372, ya MERADB_PORT)
   --password PASSWORD   clients ko ye password dena hoga (ya MERADB_PASSWORD)
   -v, --verbose         har query log karo
+  --tls-cert TLS_CERT   TLS certificate file (--tls-key ke saath); phir har
+                        connection TLS hoga
+  --tls-key TLS_KEY     TLS private key file (--tls-cert ke saath)
 )HELP"},
         {"stop", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb stop [-h] [-D DATA] [-W] [--force]
 
@@ -144,7 +172,7 @@ options:
   -W, --password        password poocho (ya MERADB_PASSWORD)
 )HELP"},
         {"shell", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb shell [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                    [-U USER] [--local]
+                    [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
 
 options:
   -h, --help            show this help message and exit
@@ -158,9 +186,13 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
         {"workbench", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb workbench [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                        [-U USER] [--local]
+                        [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
 
 options:
   -h, --help            show this help message and exit
@@ -174,9 +206,13 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
         {"run", "/var/lib/mera db/data folder/with a rather long path name/x", R"HELP(usage: meradb run [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W]
-                  [-U USER] [--local]
+                  [-U USER] [--local] [--tls] [--tls-ca TLS_CA]
                   files [files ...]
 
 positional arguments:
@@ -194,6 +230,10 @@ options:
   -U USER, --user USER  is USERNAME se login karo (ya MERADB_USER) --
                         privileges ke saath, server-wide password ki jagah
   --local               server ke bina, seedha data folder kholo
+  --tls                 TLS se connect karo aur certificate check karo (ya
+                        MERADB_TLS=1)
+  --tls-ca TLS_CA       is certificate file par bharosa karo (ya
+                        MERADB_TLS_CA); --tls apne aap lag jata hai
 )HELP"},
     };
     count = 14;

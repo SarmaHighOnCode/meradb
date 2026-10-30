@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -18,6 +19,18 @@ public:
     explicit NetError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// What a Socket does through when it carries TLS (see tls.h). The socket's users do not know the difference.
+class SecureChannel {
+public:
+    virtual ~SecureChannel() = default;
+    // seconds < 0: for ever.
+    virtual bool waitReadable(double seconds) = 0;
+    virtual std::size_t read(char* buffer, std::size_t capacity) = 0;
+    virtual void write(const std::string& data, const std::atomic<bool>* stop, double stallSeconds) = 0;
+    virtual void setTimeout(double seconds) = 0;
+    virtual void closeNotify() noexcept = 0;
+};
+
 // A move-only owner of one TCP socket (a connection or a listener).
 class Socket {
 public:
@@ -26,15 +39,21 @@ public:
     ~Socket() { close(); }
     Socket(const Socket&) = delete;
     Socket& operator=(const Socket&) = delete;
-    Socket(Socket&& other) noexcept : handle_(other.handle_) { other.handle_ = kInvalid; }
+    Socket(Socket&& other) noexcept : handle_(other.handle_), secure_(std::move(other.secure_)) { other.handle_ = kInvalid; }
     Socket& operator=(Socket&& other) noexcept {
         if (this != &other) {
             close();
             handle_ = other.handle_;
+            secure_ = std::move(other.secure_);
             other.handle_ = kInvalid;
         }
         return *this;
     }
+
+    // Everything sent and received from now on goes through `channel`.
+    void attachSecure(std::unique_ptr<SecureChannel> channel) { secure_ = std::move(channel); }
+    // The first byte the peer sent, left unread; -1 when none came within `seconds` (or *stop), or the peer closed.
+    int peekByte(double seconds, const std::atomic<bool>* stop);
 
     bool valid() const { return handle_ != kInvalid; }
     std::intptr_t handle() const { return handle_; }
@@ -73,7 +92,17 @@ public:
 
 private:
     std::intptr_t handle_ = kInvalid;
+    std::unique_ptr<SecureChannel> secure_;
 };
+
+// For the TLS code, which needs the socket without the rest of Socket. rawSend and rawRecv return the byte count (0 from
+// rawRecv: the peer closed), kRawWouldBlock or kRawFailed; they never throw.
+constexpr long kRawWouldBlock = -1;
+constexpr long kRawFailed = -2;
+long rawSend(std::intptr_t handle, const void* data, std::size_t size) noexcept;
+long rawRecv(std::intptr_t handle, void* data, std::size_t size) noexcept;
+bool waitHandle(std::intptr_t handle, bool forWrite, double seconds);
+void setHandleNonBlocking(std::intptr_t handle, bool on);
 
 // Connects to host:port (IPv4; `host` may be a name). Throws NetError
 // ("timed out", "Connection refused", ...).
