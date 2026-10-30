@@ -81,3 +81,14 @@ TEST_CASE("A DATE compares with text that has a time", "[gaps][date]") {
     REQUIRE(q(e, "DIKHAO id SE d JAHAN day = '2024-03-01 00:00:00';") == "2");
     REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE d JAHAN day < '2024-02-29 xx';"), ContainsSubstring("valid DATETIME"));
 }
+
+TEST_CASE("MEIN over a subquery matches a DATE with its text", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE d (id INT, day DATE, s TEXT);");
+    run(e, "DAALO MEIN d MAAN (1, '2024-02-29', '2024-02-29'), (2, '2024-03-01', 'abc');");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day MEIN ('2024-02-29');") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day MEIN (DIKHAO '2024-02-29');") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN s MEIN (DIKHAO day SE d) KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day NAHI MEIN (DIKHAO '2024-02-29');") == "2");
+}

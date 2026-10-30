@@ -508,6 +508,15 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         bool isMember = false, sawNull = result->sawNull;
         if (result->members) {
             isMember = result->members->count(left) > 0;
+            // a DATE and its 'YYYY-MM-DD' text are the same value, as in `dob = '2005-01-01'` and MEIN ('2005-01-01')
+            if (!isMember && std::holds_alternative<Date>(left.data)) {
+                isMember = result->members->count(Value(std::get<Date>(left.data).isoFormat())) > 0;
+            } else if (!isMember && isText(left)) {
+                try {
+                    isMember = result->members->count(Value(parseDate(std::get<std::string>(left.data)))) > 0;
+                } catch (const ExecutionError&) {  // not a date: it cannot equal one
+                }
+            }
         } else {
             for (const auto& v : result->values) {
                 if (v.isNull()) sawNull = true;
