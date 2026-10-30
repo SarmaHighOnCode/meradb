@@ -3061,6 +3061,16 @@ SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result)
         if (!result.rows.empty()) out.scalar = result.rows[0][0];
     } else {
         for (const auto& r : result.rows) out.values.push_back(r[0]);
+        auto* in = dynamic_cast<const ast::InSubquery*>(&node);
+        if (in != nullptr && in->kind == "IN") {  // the membership test is a hash lookup, not a scan for every outer row
+            auto members = std::make_shared<std::unordered_set<Value, PyValueHash, PyValueEq>>();
+            members->reserve(out.values.size());
+            for (const auto& v : out.values) {
+                if (v.isNull()) out.sawNull = true;
+                else members->insert(v);
+            }
+            out.members = std::move(members);
+        }
     }
     return out;
 }

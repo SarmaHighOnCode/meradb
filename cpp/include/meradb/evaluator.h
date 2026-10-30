@@ -15,8 +15,11 @@
 #pragma once
 #include "meradb/ast.h"
 #include "meradb/datatypes.h"
+#include "meradb/pyvalue.h"
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace meradb {
@@ -36,6 +39,10 @@ using Row = std::unordered_map<std::string, Value>;
 struct SubqueryResult {
     Value scalar;
     std::vector<Value> values;
+    // MEIN: the non-KHALI `values` as a hash set, built once by the engine and shared by the per-row copies of this
+    // result, and whether a KHALI was among them. Without it the evaluator scans `values`.
+    std::shared_ptr<const std::unordered_set<Value, PyValueHash, PyValueEq>> members;
+    bool sawNull = false;
 };
 using SubqueryResults = std::unordered_map<const ast::Expr*, SubqueryResult>;
 

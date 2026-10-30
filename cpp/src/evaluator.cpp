@@ -497,10 +497,14 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         if (in->kind == "ANY" || in->kind == "ALL") return quantified(*in, left, result->values);
         // x MEIN (a, b, KHALI): SACH on a match, otherwise KHALI when the list held a KHALI (x might be that unknown value),
         // otherwise JHOOTH. NAHI MEIN is exactly its negation, so x NAHI MEIN (.., KHALI) is never SACH.
-        bool isMember = false, sawNull = false;
-        for (const auto& v : result->values) {
-            if (v.isNull()) sawNull = true;
-            else if (pyEquals(left, v)) { isMember = true; break; }
+        bool isMember = false, sawNull = result->sawNull;
+        if (result->members) {
+            isMember = result->members->count(left) > 0;
+        } else {
+            for (const auto& v : result->values) {
+                if (v.isNull()) sawNull = true;
+                else if (pyEquals(left, v)) { isMember = true; break; }
+            }
         }
         if (isMember) return Value(!in->negated);
         if (sawNull) return Value();
