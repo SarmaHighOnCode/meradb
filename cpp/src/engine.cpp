@@ -658,9 +658,10 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
     for (const ast::Select* sub : strict.subs) checkSelectAccess(*sub, &scope);
     for (const ast::Select* sub : lenient.subs) checkSelectAccess(*sub, &scope);
 
-    bool restricted = false;
-    for (const auto& s : scope.sources)
-        if (!s.access.full) restricted = true;
+    bool restricted = false;  // the query around this one counts too: a correlated sub-select reads its row
+    for (const PrivScope* sc = &scope; sc != nullptr; sc = sc->outer)
+        for (const auto& s : sc->sources)
+            if (!s.access.full) restricted = true;
     if (!restricted) return;
 
     std::set<std::string> outputNames;
@@ -696,8 +697,15 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
         }
     }
     for (const ast::ColumnRef* ref : strict.refs) resolve(*ref);
+    // An output alias only excuses a name that is not also a real column: KRAM prefers the real column, so
+    // `DIKHAO id KAHO secret SE t KRAM secret` would reveal the order of the hidden values.
+    auto isRealColumn = [&](const std::string& name) {
+        for (const auto& s : scope.sources)
+            if (std::find(s.columns.begin(), s.columns.end(), name) != s.columns.end()) return true;
+        return false;
+    };
     for (const ast::ColumnRef* ref : lenient.refs)
-        if (ref->table || !outputNames.count(ref->name)) resolve(*ref);
+        if (ref->table || !outputNames.count(ref->name) || isRealColumn(ref->name)) resolve(*ref);
 }
 
 // Sub-selects hidden inside an expression (JAHAN x MEIN (DIKHAO ...), a value, ...) read tables too.
@@ -736,6 +744,26 @@ void Engine::checkGrantAllowed(const ast::Grant& stmt) {
 void Engine::checkPrivileges(const ast::Statement& stmt) {
     if (!user) return;  // superuser: checking is skipped entirely
     using namespace ast;
+    // BADLO / MITAO expressions read the row they change. A user whose DIKHAO is limited to some columns must not get at
+    // the others through them: `RAKHO naam = CONCAT('', secret)` copies a hidden value somewhere readable, and
+    // `JAHAN secret > 5` tells it apart by the rows it touches. Holding no DIKHAO at all stays allowed: nothing is readable.
+    auto checkColumnsReadable = [this](const std::string& table, const Expr* expr) {
+        Access read = accessOf("DIKHAO", table);
+        if (read.full || !read.any() || expr == nullptr) return;
+        PrivScope scope;
+        PrivScope::Source source;
+        source.alias = source.table = table;
+        source.access = read;
+        if (const TableSchema* schema = catalog().find(table)) source.columns = schema->columnNames();
+        else source.unknown = true;
+        scope.sources.push_back(std::move(source));
+        RefCollector found;
+        found.add(expr);
+        for (const ColumnRef* ref : found.refs)
+            if (!ref->table || *ref->table == table)
+                if (!read.covers(ref->name)) denyColumn("DIKHAO", table, ref->name);
+        for (const Select* sub : found.subs) checkSelectAccess(*sub, &scope);  // a correlated sub-select reads the row too
+    };
     if (auto* ex = dynamic_cast<const Explain*>(&stmt)) {
         // A plan never runs the query, so nothing re-checks the sides of a set operation later: check them here.
         auto checkExplained = [this](auto& self, const Statement& inner) -> void {
@@ -773,6 +801,7 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
             for (const auto& assignment : *ins->onConflictUpdate) {
                 if (!update.covers(assignment.first)) denyColumn("BADLO", ins->table, assignment.first);
                 checkExprSubqueries(assignment.second.get());
+                checkColumnsReadable(ins->table, assignment.second.get());
             }
         }
         return;
@@ -782,13 +811,18 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
         if (!access.full)
             for (const auto& assignment : upd->assignments)
                 if (!access.covers(assignment.first)) denyColumn("BADLO", upd->table, assignment.first);
-        for (const auto& assignment : upd->assignments) checkExprSubqueries(assignment.second.get());
+        for (const auto& assignment : upd->assignments) {
+            checkExprSubqueries(assignment.second.get());
+            checkColumnsReadable(upd->table, assignment.second.get());
+        }
         checkExprSubqueries(upd->where.get());
+        checkColumnsReadable(upd->table, upd->where.get());
         return;
     }
     if (auto* del = dynamic_cast<const Delete*>(&stmt)) {
         requirePrivilege("MITAO", del->table);
         checkExprSubqueries(del->where.get());
+        checkColumnsReadable(del->table, del->where.get());
         return;
     }
     // Open to every session: choosing the database (grants are per database, so nothing is exposed), SET ROLE, and

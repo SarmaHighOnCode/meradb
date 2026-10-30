@@ -62,3 +62,30 @@ TEST_CASE("security TAKRAAV PAR BADLO needs BADLO, on the assigned columns", "[s
     CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (1, 'x', 0) TAKRAAV PAR BADLO secret = 5;").error.empty());
     CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (9, 'new', 0);").error.empty());  // a plain insert still only needs DAALO
 }
+
+TEST_CASE("security a column-limited DIKHAO cannot be widened through BADLO, MITAO or KRAM", "[security][privileges]") {
+    SecFixture f;
+    const std::string denied = "[Execution Galti] 'ravi' ko table 'pub' ke column 'secret' par DIKHAO ka adhikar nahi hai";
+    f.admin.execute("ADHIKAR DO DIKHAO (id, name) PAR pub KO ravi;"
+                    "ADHIKAR DO DAALO, BADLO (name), MITAO PAR pub KO ravi;");
+    // copying a hidden value into a readable column
+    CHECK(runLast(f.ravi, "BADLO pub RAKHO name = CONCAT('', secret) JAHAN id = 1;").error == denied);
+    CHECK(f.nameOf(1) == "a");
+    CHECK(runLast(f.ravi, "DAALO MEIN pub MAAN (1, 'x', 0) TAKRAAV PAR BADLO name = CONCAT('', secret);").error == denied);
+    CHECK(f.nameOf(1) == "a");
+    // telling hidden values apart by the rows touched
+    CHECK(runLast(f.ravi, "BADLO pub RAKHO name = 'z' JAHAN secret > 25;").error == denied);
+    CHECK(runLast(f.ravi, "MITAO SE pub JAHAN secret > 25;").error == denied);
+    CHECK(runLast(f.ravi, "MITAO SE pub JAHAN pub.secret > 25;").error == denied);
+    // the same through a correlated sub-select
+    f.admin.execute("ADHIKAR DO DIKHAO PAR hidden KO ravi;");
+    CHECK(runLast(f.ravi, "MITAO SE pub JAHAN EXISTS (DIKHAO 1 SE hidden JAHAN secret > 25);").error == denied);
+    CHECK(runLast(f.ravi, "DIKHAO id SE pub JAHAN EXISTS (DIKHAO 1 SE hidden JAHAN secret > 25);").error == denied);
+    // an output alias does not excuse sorting by the real column of that name
+    CHECK(runLast(f.ravi, "DIKHAO id KAHO secret SE pub KRAM secret;").error == denied);
+    // what the grants do cover keeps working
+    CHECK(runLast(f.ravi, "BADLO pub RAKHO name = CONCAT(name, '!') JAHAN id = 1;").error.empty());
+    CHECK(f.nameOf(1) == "a!");
+    CHECK(runLast(f.ravi, "DIKHAO id KAHO n SE pub KRAM n;").error.empty());
+    CHECK(runLast(f.ravi, "MITAO SE pub JAHAN id = 3;").error.empty());
+}
