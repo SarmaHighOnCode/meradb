@@ -3014,7 +3014,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
 // Replace every ColumnRef in `expr` that does NOT resolve against the
 // subquery's OWN scope with a Literal of the matching outer-row value.
 std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub, const Row& outerRow,
-                                         const std::vector<std::string>& outerKeys, bool& fired) {
+                                         const std::vector<std::string>& outerKeys, std::set<std::string>& fired) {
     using namespace ast;
     requireStack();
     auto rec = [&](const Expr* e) -> std::unique_ptr<Expr> {
@@ -3045,7 +3045,7 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
                                      joinStrs(matches, " ya ") + " likho");
             key = matches[0];
         }
-        fired = true;
+        fired.insert(key);
         return std::make_unique<Literal>(outerRow.at(key));
     }
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
@@ -3465,7 +3465,7 @@ std::vector<Row> Engine::group(const std::vector<Row>& rows, const SelectPlan& p
 
 std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, const Scope& subqueryScope,
                                                      const Row& outerRow, const std::vector<std::string>& outerKeys,
-                                                     bool& fired) {
+                                                     OuterColumnsUsed& fired) {
     auto corr = [&](const ast::Expr* e) -> std::unique_ptr<ast::Expr> {
         return e ? correlateExpr(*e, subqueryScope, outerRow, outerKeys, fired) : nullptr;
     };
@@ -3505,7 +3505,7 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
 }
 
 std::unique_ptr<ast::SetOp> Engine::correlateSetOp(const ast::SetOp& stmt, const Row& outerRow,
-                                                   const std::vector<std::string>& outerKeys, bool& fired) {
+                                                   const std::vector<std::string>& outerKeys, OuterColumnsUsed& fired) {
     auto side = [&](const ast::Statement& s) -> std::unique_ptr<ast::Statement> {
         if (auto* inner = dynamic_cast<const ast::SetOp*>(&s)) return correlateSetOp(*inner, outerRow, outerKeys, fired);
         auto& select = static_cast<const ast::Select&>(s);
@@ -3534,11 +3534,105 @@ std::unique_ptr<ast::SetOp> Engine::correlateSetOp(const ast::SetOp& stmt, const
 // VALUES at all (only its KEYS, which are the same for every row of the same
 // outer query -- see precomputeSubqueries).
 Result Engine::runSubquery(const ast::Subquery& sub, const Row& outerRow, const std::vector<std::string>& outerKeys,
-                           bool& fired) {
+                           OuterColumnsUsed& fired) {
     const ast::Select& stmt = *sub.statement;
     Scope subqueryScope = selectSourcesScope(stmt, nullptr);
     auto newStmt = correlateSelect(stmt, subqueryScope, outerRow, outerKeys, fired);
     return execSelect(*newStmt);
+}
+
+namespace {
+
+// The exact bytes of a value: 1, 1.0, SACH and '1' are all different here, so a remembered answer is only ever reused for
+// the very same value.
+void appendExact(std::string& key, const Value& v) {
+    key += static_cast<char>(v.data.index());
+    std::visit([&](const auto& x) {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_same_v<T, std::string>) {
+            key += std::to_string(x.size());
+            key += ':';
+            key += x;
+        } else if constexpr (std::is_same_v<T, Date>) {
+            key += std::to_string(x.ordinal);
+            key += ':';
+        } else if constexpr (std::is_arithmetic_v<T>) {
+            key.append(reinterpret_cast<const char*>(&x), sizeof x);
+        }
+    }, v.data);
+}
+
+// Calls of stored functions anywhere in an expression, nested selects included.
+bool callsStoredFunction(const ast::Select& stmt);
+
+bool callsStoredFunction(const ast::Expr* e) {
+    using namespace ast;
+    if (e == nullptr) return false;
+    auto any = [](const auto& list) {
+        for (const auto& a : list)
+            if (callsStoredFunction(a.get())) return true;
+        return false;
+    };
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(e)) return sf->user || any(sf->args);
+    if (auto* b = dynamic_cast<const BinaryOp*>(e)) return callsStoredFunction(b->left.get()) || callsStoredFunction(b->right.get());
+    if (auto* u = dynamic_cast<const UnaryOp*>(e)) return callsStoredFunction(u->operand.get());
+    if (auto* isn = dynamic_cast<const IsNull*>(e)) return callsStoredFunction(isn->expr.get());
+    if (auto* f = dynamic_cast<const FuncCall*>(e)) return callsStoredFunction(f->arg.get());
+    if (auto* co = dynamic_cast<const Coalesce*>(e)) return any(co->args);
+    if (auto* cw = dynamic_cast<const CaseWhen*>(e)) {
+        for (const auto& [cond, value] : cw->branches)
+            if (callsStoredFunction(cond.get()) || callsStoredFunction(value.get())) return true;
+        return callsStoredFunction(cw->elseExpr.get());
+    }
+    if (auto* sub = dynamic_cast<const Subquery*>(e)) return callsStoredFunction(*sub->statement);
+    if (auto* in = dynamic_cast<const InSubquery*>(e)) return callsStoredFunction(in->left.get()) || callsStoredFunction(*in->subquery->statement);
+    return false;
+}
+
+bool callsStoredFunction(const ast::Select& stmt) {
+    if (stmt.compound) {
+        bool found = false;
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { found = found || callsStoredFunction(side); });
+        return found;
+    }
+    for (const auto& c : stmt.columns)
+        if (callsStoredFunction(c.get())) return true;
+    if (stmt.derived && callsStoredFunction(*stmt.derived)) return true;
+    for (const auto& j : stmt.joins)
+        if (callsStoredFunction(j.on.get()) || (j.derived && callsStoredFunction(*j.derived))) return true;
+    if (callsStoredFunction(stmt.where.get()) || callsStoredFunction(stmt.having.get())) return true;
+    for (const auto& g : stmt.groupBy)
+        if (callsStoredFunction(g.get())) return true;
+    for (const auto& o : stmt.orderBy)
+        if (callsStoredFunction(o.expr.get())) return true;
+    return false;
+}
+
+// Every table name a select reads, derived tables and sides included (subqueries in its expressions are not visited).
+void sourceNames(const ast::Select& stmt, std::vector<std::string>& out) {
+    if (stmt.compound) {
+        forEachSide(*stmt.compound, [&](const ast::Select& side) { sourceNames(side, out); });
+        return;
+    }
+    if (stmt.derived) sourceNames(*stmt.derived, out);
+    else if (!stmt.table.empty()) out.push_back(stmt.table);
+    for (const auto& j : stmt.joins) {
+        if (j.derived) sourceNames(*j.derived, out);
+        else if (!j.table.empty()) out.push_back(j.table);
+    }
+}
+
+}  // namespace
+
+// A stored function can read a @variable another call just set, and a view can hide such a call. Everything else in a
+// subquery depends only on the tables, which do not change while one statement computes its subqueries.
+bool Engine::sameAnswerEveryRun(const ast::Select& stmt) {
+    if (callsStoredFunction(stmt)) return false;
+    std::vector<std::string> names;
+    sourceNames(stmt, names);
+    for (const auto& name : names)
+        if (catalog().find(name) == nullptr) return false;
+    return true;
 }
 
 // One SubqueryResults per row, ready to pass into evaluate(). A subquery is
@@ -3546,7 +3640,8 @@ Result Engine::runSubquery(const ast::Subquery& sub, const Row& outerRow, const 
 // locally depends only on which KEYS the outer row has, not their values, and
 // every row here has the same keys -- so ONE dry run (against the first row)
 // decides correlated-vs-not for ALL rows: uncorrelated results are computed
-// once and shared; correlated ones are recomputed per row.
+// once and shared; correlated ones are recomputed per row, except that rows agreeing on every outer column the subquery
+// reads get the answer already computed for that combination.
 Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::Expr*>& exprs,
                                                    const std::vector<Row>& rows,
                                                    const std::vector<std::string>& outerKeys) {
@@ -3566,22 +3661,39 @@ Engine::RowSubqueries Engine::precomputeSubqueries(const std::vector<const ast::
         if (auto* s = dynamic_cast<const ast::Subquery*>(node)) return *s;
         return *static_cast<const ast::InSubquery*>(node)->subquery;
     };
-    std::unordered_set<const ast::Expr*> correlated;
+    struct Correlated {
+        const ast::Expr* node;
+        std::vector<std::string> outerColumns;  // what its answer depends on
+        bool remember;
+        std::unordered_map<std::string, SubqueryResult> answers;
+    };
+    std::vector<Correlated> correlated;
     for (const auto* node : nodes) {
-        bool fired = false;
+        OuterColumnsUsed fired;
         Result result = runSubquery(subqueryOf(node), rows[0], outerKeys, fired);
-        if (fired) correlated.insert(node);
-        else out.shared[node] = reduceSubqueryResult(*node, result);
+        if (fired.empty()) out.shared[node] = reduceSubqueryResult(*node, result);
+        else correlated.push_back({node, {fired.begin(), fired.end()}, sameAnswerEveryRun(*subqueryOf(node).statement), {}});
     }
     if (!correlated.empty()) {
         out.perRow.reserve(rows.size());
+        std::string key;
         for (const auto& row : rows) {
             SubqueryResults d = out.shared;
-            for (const auto* node : nodes) {
-                if (!correlated.count(node)) continue;
-                bool fired = false;
-                Result result = runSubquery(subqueryOf(node), row, outerKeys, fired);
-                d[node] = reduceSubqueryResult(*node, result);
+            for (auto& c : correlated) {
+                OuterColumnsUsed fired;
+                if (!c.remember) {
+                    Result result = runSubquery(subqueryOf(c.node), row, outerKeys, fired);
+                    d[c.node] = reduceSubqueryResult(*c.node, result);
+                    continue;
+                }
+                key.clear();
+                for (const auto& column : c.outerColumns) appendExact(key, row.at(column));
+                auto known = c.answers.find(key);
+                if (known == c.answers.end()) {
+                    Result result = runSubquery(subqueryOf(c.node), row, outerKeys, fired);
+                    known = c.answers.emplace(key, reduceSubqueryResult(*c.node, result)).first;
+                }
+                d[c.node] = known->second;
             }
             out.perRow.push_back(std::move(d));
         }
@@ -4376,10 +4488,10 @@ std::vector<std::string> Engine::explainSubqueries(const std::vector<const ast::
             if (!sub) sub = static_cast<const ast::InSubquery*>(node)->subquery.get();
             if (!seen.insert(sub).second) continue;
             Scope subqueryScope = selectSourcesScope(*sub->statement, nullptr);
-            bool fired = false;
+            OuterColumnsUsed fired;
             auto substituted = correlateSelect(*sub->statement, subqueryScope, dummyOuter, keys, fired);
             std::string firstLine = explainOne(*substituted).at(0);
-            lines.push_back(std::string("SUBQUERY (") + (fired ? "correlated" : "uncorrelated") + "): " + firstLine);
+            lines.push_back(std::string("SUBQUERY (") + (!fired.empty() ? "correlated" : "uncorrelated") + "): " + firstLine);
         }
     }
     return lines;

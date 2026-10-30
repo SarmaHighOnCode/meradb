@@ -375,13 +375,16 @@ private:
     // SELECT
     std::unique_ptr<SelectPlan> planSelect(const ast::Select& stmt);
     Scope selectSourcesScope(const ast::Select& stmt, std::vector<std::unique_ptr<Table>>* tablesOut);
+    // Which columns of the outer row a subquery read. Empty: it is not correlated at all.
+    using OuterColumnsUsed = std::set<std::string>;
     std::unique_ptr<ast::Select> correlateSelect(const ast::Select& stmt, const Scope& subqueryScope,
                                                  const Row& outerRow, const std::vector<std::string>& outerKeys,
-                                                 bool& fired);
+                                                 OuterColumnsUsed& fired);
     std::unique_ptr<ast::SetOp> correlateSetOp(const ast::SetOp& stmt, const Row& outerRow,
-                                               const std::vector<std::string>& outerKeys, bool& fired);
+                                               const std::vector<std::string>& outerKeys, OuterColumnsUsed& fired);
     Result runSubquery(const ast::Subquery& sub, const Row& outerRow, const std::vector<std::string>& outerKeys,
-                       bool& fired);
+                       OuterColumnsUsed& fired);
+    bool sameAnswerEveryRun(const ast::Select& stmt);  // false: a stored function or a view could change it
     RowSubqueries precomputeSubqueries(const std::vector<const ast::Expr*>& exprs, const std::vector<Row>& rows,
                                        const std::vector<std::string>& outerKeys);
     std::vector<Row> group(const std::vector<Row>& rows, const SelectPlan& plan);

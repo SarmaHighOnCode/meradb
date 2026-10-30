@@ -337,3 +337,22 @@ TEST_CASE("KRAM with SIRF gives what a full sort would", "[gaps][perf]") {
     REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 9999999999 OFFSET 9999999999;") == "");
     REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 2147483647 OFFSET 5;") == "6");
 }
+
+TEST_CASE("Reusing a correlated answer never mixes up two outer values", "[gaps][perf]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE o (id INT, k INT, f FLOAT, s TEXT);");
+    run(e, "BANAO TABLE i (k INT, v INT);");
+    run(e, "DAALO MEIN o MAAN (1, 1, 1.0, '1'), (2, 2, 2.0, '2'), (3, 1, 1.0, '1'), (4, KHALI, KHALI, KHALI), (5, 2, 2.5, 'x');");
+    run(e, "DAALO MEIN i MAAN (1, 10), (2, 20);");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.k) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.f) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|KHALI");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE i JAHAN i.k = o.k AUR v > o.f * 5) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+    REQUIRE(q(e, "DIKHAO id SE o JAHAN EXISTS (DIKHAO 1 SE i JAHAN i.k = o.k) KRAM id;") == "1;2;3;5");
+    REQUIRE(q(e, "DIKHAO id SE o JAHAN id MEIN (DIKHAO k SE i JAHAN k = o.k) KRAM id;") == "1;2");
+    // a subquery with a stored function or a view in it is not remembered, and still answers right
+    run(e, "BANAO FUNCTION twice(x INT) RETURNS INT SHURU RETURN x * 2; KHATAM;");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO twice(o.k)) SE o KRAM id;") == "1|2;2|4;3|2;4|KHALI;5|4");
+    run(e, "BANAO VIEW vi KAHO DIKHAO k, v SE i;");
+    REQUIRE(q(e, "DIKHAO id, (DIKHAO v SE vi JAHAN vi.k = o.k) SE o KRAM id;") == "1|10;2|20;3|10;4|KHALI;5|20");
+}
