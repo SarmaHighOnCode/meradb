@@ -156,8 +156,13 @@ void Instance::restoreCopy(const std::string& db, const std::string& tag) {
     std::error_code ec;
     fs::copy(from, staging, fs::copy_options::recursive, ec);
     if (ec) throw StorageError("Database '" + db + "' ki copy wapas nahi aa paayi: " + ec.message());
-    removeTreeQuietly(pathOf(dbDir(db)));
+    // The live folder steps aside in ONE rename, so a crash leaves it whole or leaves the finished staging copy, which
+    // recover() moves into place. (Deleting it first would lose the database if a crash came before the second rename.)
+    fs::path aside = pathOf(snapshotPath(db, ".aside.tmp"));
+    removeTreeQuietly(aside);
+    replacePath(pathOf(dbDir(db)), aside);
     replacePath(staging, pathOf(dbDir(db)));
+    removeTreeQuietly(aside);
     forget(db);
 }
 
@@ -177,6 +182,14 @@ std::vector<std::string> Instance::recover() {
     for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().u8string());
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
+        const std::string restoring = ".restoring.tmp";
+        if (endsWith(name, restoring)) {  // a restoreCopy that died between its two renames: this IS the database now
+            fs::path live = pathOf(dbDir(name.substr(0, name.size() - restoring.size())));
+            if (!fs::exists(live)) {
+                replacePath(root / pathOf(name), live);
+                continue;
+            }
+        }
         if (endsWith(name, ".tmp") || endsWith(name, ".done") || endsWith(name, ".sp")) {  // .sp = savepoint / statement copy
             removeTreeQuietly(root / pathOf(name));
         } else {

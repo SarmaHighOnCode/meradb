@@ -210,3 +210,20 @@ TEST_CASE("SIRF and OFFSET bigger than an int do not wrap around", "[semantics][
     REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 1 OFFSET 4294967297;") == "");
     REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 4294967297, 1;") == "");
 }
+
+TEST_CASE("A rollback to a copy survives a crash between the two renames", "[semantics][recovery]") {
+    TempDir dir;
+    {
+        Engine e(dir.str());
+        run(e, "BANAO TABLE t (id INT MUKHYA KUNJI);");
+        run(e, "DAALO MEIN t MAAN (1);");
+    }
+    // the state a crash leaves in the middle of restoreCopy: the database folder is gone, the finished copy is staged
+    namespace fs = std::filesystem;
+    fs::path wapas = dir.path() / ".wapas";
+    fs::create_directories(wapas);
+    fs::rename(dir.path() / "main", wapas / "main.restoring.tmp");
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO id SE t;") == "1");
+    REQUIRE_FALSE(fs::exists(wapas / "main.restoring.tmp"));
+}
