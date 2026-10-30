@@ -80,7 +80,7 @@ BANAO VIEW delhi_students KAHO DIKHAO naam, cgpa SE students JAHAN shehar = 'Del
 DIKHAO * SE delhi_students KRAM naam;
 DIKHAO VIEWS;
 BATAO delhi_students;
-DAALO MEIN delhi_students MAAN ('X', 1);                     -- FAILS ON PURPOSE: can't insert into a VIEW
+DAALO MEIN delhi_students MAAN ('X', 1);                     -- FAILS ON PURPOSE: the view does not give id, and id is ZAROORI
 HATAO VIEW delhi_students;
 
 -- ======================= SET OPERATIONS =======================

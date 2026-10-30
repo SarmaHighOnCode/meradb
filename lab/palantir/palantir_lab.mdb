@@ -921,8 +921,8 @@ BADLO contracts RAKHO value_musd = 9.0 JAHAN contract_id = 302;
 DIKHAO * SE active_contracts_v JAHAN contract_id = 302;
 
 -- DML through a view.
--- EXPECTED ERROR (MeraDB views are read-only; in MySQL this INSERT fails too,
--- because a view with a JOIN is not insertable -- update the base table instead)
+-- EXPECTED ERROR (a view with a JOIN is not updatable, in MeraDB as in MySQL; simple one-table
+-- views are writable -- here, update the base table instead)
 -- MySQL: INSERT INTO active_contracts_v VALUES (399, 'X', 'Y', 1, '2030-01-01');
 DAALO MEIN active_contracts_v MAAN (399, 'X', 'Y', 1, '2030-01-01');
 

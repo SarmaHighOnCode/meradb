@@ -58,6 +58,7 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `... WITH [LOCAL\|CASCADED] CHECK OPTION` | WITH CHECK OPTION | English words, no Hinglish equivalent |
 | `SHOW ...` / `DIKHAO GRANTS\|TRIGGERS\|PROCEDURES\|DATABASES` | SHOW GRANTS / TRIGGERS / PROCEDURE STATUS / DATABASES | see "Introspection: SHOW" |
 | `SANYUKT`         | UNION           | sanyukt = united/combined |
+| `SANYUKT ALL`     | UNION ALL       | keeps the copies |
 | `SAAJHA`          | INTERSECT       | saajha = shared/common |
 | `CHHODKAR`        | EXCEPT / MINUS  | chhodkar = leaving out |
 | `SAMAAN MILAO`    | NATURAL JOIN    | samaan = same/matching |
@@ -68,6 +69,10 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `MILAO t USING (c)` | JOIN t USING (c) | join on the shared column(s) `c` |
 | `EXISTS (...)` / `ANY` / `SOME` / `ALL` | EXISTS / ANY / SOME / ALL | subquery tests (English words) |
 | `SE (DIKHAO ...) t` | FROM (SELECT ...) t | derived table: a query used as a table |
+| `SE a, b`         | FROM a, b       | every row of `a` with every row of `b`; `JAHAN` filters |
+| `x JAISA 'a!%' ESCAPE '!'` | LIKE ... ESCAPE | the character after `!` stands for itself |
+| `GINO(ALAG x)`, `KUL(ALAG x)`, `AUSAT(ALAG x)` ... | COUNT(DISTINCT x) ... | each different value once |
+| `KRAM 2`          | ORDER BY 2      | the second output column (a bare whole number only) |
 | `DIKHAO NOW(), 1 + 1` (no `SE`) | SELECT NOW(), 1 + 1 | one row computed from the expressions alone |
 | `LIMIT n [OFFSET m]` / `LIMIT m, n` | the same | English spelling of `SIRF` (accepted wherever `SIRF` is) |
 | `a / b`, `a DIV b` | `/` and `DIV` | `/` is exact (`7 / 2` = 3.5, `6 / 2` = 3); `DIV` truncates (`7 DIV 2` = 3) |
@@ -331,7 +336,7 @@ set operations or sub-select source, no computed columns, and not a view over an
 BANAO VIEW cs_students KAHO DIKHAO naam, cgpa SE students JAHAN dept = 'CS'
     WITH CHECK OPTION;
 DAALO MEIN cs_students MAAN ('Asha', 8.1);     -- ok, if the table's other columns allow NULL/default
-BADLO cs_students SET cgpa = 9 JAHAN naam = 'Asha';
+BADLO cs_students RAKHO cgpa = 9 JAHAN naam = 'Asha';
 MITAO SE cs_students JAHAN naam = 'Asha';
 ```
 
@@ -647,7 +652,7 @@ PAKKA;                                     -- COMMIT: keep both changes
 
 ### Isolation level and locking
 
-```sql
+```text
 SET [SESSION | GLOBAL] TRANSACTION ISOLATION LEVEL READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE;
 DIKHAO * SE t JAHAN id = 1 FOR UPDATE;        -- also FOR SHARE, LOCK IN SHARE MODE, NOWAIT, SKIP LOCKED
 SHOW VARIABLES LIKE 'transaction_isolation';
@@ -679,7 +684,8 @@ Every `MUKHYA KUNJI` and `ANOKHA` column automatically gets a hash index. It is 
 
 ## Formal grammar (EBNF)
 
-This is exactly what `meradb/parser.py` implements. One grammar rule ≈ one method.
+This is what the C++ parser (`cpp/src/parser.cpp`) implements. One grammar rule ≈ one method. The Python
+engine (`meradb/parser.py`) is a smaller subset.
 
 ```ebnf
 script      = statement { ";" statement } [ ";" ] ;
@@ -774,18 +780,18 @@ tuple       = "(" expr { "," expr } ")" ;
 assignment  = IDENT "=" expr ;
 
 select_stmt = select { set_op select } ;                        (* left-associative chaining *)
-set_op      = "SANYUKT" | "SAAJHA" | "CHHODKAR" ;                (* UNION / INTERSECT / EXCEPT *)
+set_op      = "SANYUKT" [ "ALL" ] | "SAAJHA" | "CHHODKAR" ;      (* UNION [ALL] / INTERSECT / EXCEPT *)
 select      = "DIKHAO" select_body ;
 select_body = [ "ALAG" ] item { "," item } [ "SE" source           (* no SE: one row of constants *)
-              { join } ]
+              { join | "," source } ]                               (* "," = every row with every row *)
               [ "JAHAN" expr ]
               [ "SAMOOH" expr { "," expr } ]
               [ "JINKA" expr ]
               [ "KRAM" order_item { "," order_item } ]
               [ ( "SIRF" | "LIMIT" ) INTEGER [ "OFFSET" INTEGER | "," INTEGER ] ] ;   (* SIRF m, n = SIRF n OFFSET m *)
-select_stmt_body = select_body { set_op "DIKHAO" select_body } ;  (* what follows DIKHAO in create_tbl *)
+select_stmt_body = select_body { set_op "DIKHAO" select_body } ;  (* what follows DIKHAO in create_tbl and in every subquery *)
 source      = IDENT [ IDENT ]
-            | "(" "DIKHAO" select_body ")" [ "KAHO" | "AS" ] IDENT ;   (* derived table: alias is required *)
+            | "(" "DIKHAO" select_stmt_body ")" [ "KAHO" | "AS" ] IDENT ;   (* derived table: alias is required *)
 join        = ( [ "BAAYAN" | "DAHINA" | "DONO" ] "MILAO" source
                 ( "PAR" expr | "USING" "(" IDENT { "," IDENT } ")" ) )
             | ( "SAMAAN" "MILAO" source ) ;   (* NATURAL: no PAR -- synthesised at bind time *)
@@ -799,23 +805,23 @@ expr        = or_expr ;
 or_expr     = and_expr { "YA" and_expr } ;
 and_expr    = not_expr { "AUR" not_expr } ;
 not_expr    = ( "NAHI" | "NOT" "EXISTS" ) not_expr | comparison ;   (* NOT is only taken before EXISTS *)
-comparison  = additive [ ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) additive
-                       | ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) ( "ANY" | "SOME" | "ALL" ) "(" "DIKHAO" select_body ")"
+comparison  = additive { ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) additive   (* chains to the left: 1 < 2 = SACH *)
+                       | ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) ( "ANY" | "SOME" | "ALL" ) "(" "DIKHAO" select_stmt_body ")"
                        | "HAI" [ "NAHI" ] "KHALI"
-                       | [ "NAHI" ] "JAISA" additive
+                       | [ "NAHI" ] "JAISA" additive [ "ESCAPE" additive ]
                        | [ "NAHI" ] "BEECH" additive "AUR" additive
-                       | [ "NAHI" ] "MEIN" "(" ( expr { "," expr } | "DIKHAO" select_body ) ")" ] ;
+                       | [ "NAHI" ] "MEIN" "(" ( expr { "," expr } | "DIKHAO" select_stmt_body ) ")" } ;
 additive    = term { ( "+" | "-" | "||" ) term } ;
 term        = unary { ( "*" | "/" | "DIV" | "%" ) unary } ;
 unary       = "-" unary | primary ;
-primary     = NUMBER | STRING | "SACH" | "JHOOTH" | "KHALI"
+primary     = NUMBER | STRING | "SACH" | "JHOOTH" | "KHALI"         (* NUMBER: 12, 1.5, 1e5, 2.5E-3 *)
             | case_expr | coalesce_expr | cast_expr
-            | "EXISTS" "(" "DIKHAO" select_body ")"
+            | "EXISTS" "(" "DIKHAO" select_stmt_body ")"
             | IDENT "(" [ expr { "," expr } ] ")"        (* scalar function: UPPER(x), NOW(), ... *)
             | "CURRENT_DATE"
-            | IDENT "(" ( "*" | expr ) ")"               (* aggregate call *)
+            | IDENT "(" ( "*" | [ "ALAG" | "DISTINCT" ] expr ) ")"   (* aggregate call *)
             | IDENT [ "." IDENT ]                        (* column, or alias.column *)
-            | "(" ( expr | "DIKHAO" select_body ) ")" ;   (* the 2nd form: a scalar subquery *)
+            | "(" ( expr | "DIKHAO" select_stmt_body ) ")" ;   (* the 2nd form: a scalar subquery *)
 case_expr   = "AGAR" expr "TAB" expr { "AGAR" expr "TAB" expr } [ "WARNA" expr ] "KHATAM" ;
 coalesce_expr = ( "PEHLA" | "COALESCE" ) "(" expr { "," expr } ")" | "IFNULL" "(" expr "," expr ")" ;
 cast_expr   = "CAST" "(" expr ( "KAHO" | "AS" ) TYPE ")" ;
@@ -832,12 +838,30 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   file. If order matters, use `KRAM`.
 - **`MUKHYA KUNJI`** = `ZAROORI` + `ANOKHA`. Only one per table.
 - **`ANOKHA` allows many KHALI values**, like SQL.
-- **`JAISA` ignores upper/lower case**: `'r%'` matches `Ravi`.
+- **`JAISA` ignores upper/lower case**: `'r%'` matches `Ravi`. To look for a real `%` or `_`, name an
+  escape character: `x JAISA '10!%' ESCAPE '!'` matches the text `10%`.
+- **A condition must be a condition.** `JAHAN`, `JINKA`, `PAR`, `AGAR ... TAB` and the `IF` / `WHILE` / `UNTIL` of a body
+  take `SACH`, `JHOOTH` or `KHALI` (which does not hold). `JAHAN 1` or `JAHAN naam` is an error, not zero rows.
+- **Numbers.** `1e5` and `2.5E-3` are FLOATs, and so is anything with a `.`. The smallest INT can be written:
+  `-9223372036854775808`. A FLOAT result too big to hold (`1e308 * 10`, a `KUL` that outgrows FLOAT, `POWER(10, 400)`,
+  the literal `1e999`) is an error, never `inf`, and so is `POWER(0, -1)`; `POWER(-8, 0.5)` and `SQRT(-1)` are `KHALI`.
+- **`DATE` and text with a time.** `day < '2024-02-29 12:00:00'` and `day < NOW()` compare the `DATE` as midnight of its day.
+  Text that is not a whole valid date (and time) is an error everywhere: `YEAR('2024-01-01 garbage')` included.
 - **Aggregates skip KHALI.** `GINO(*)` counts rows, `GINO(cgpa)` counts non-KHALI cgpa values.
   On zero rows `GINO` gives 0 and the others give KHALI. The English names
   `COUNT/SUM/AVG/MIN/MAX` also work.
 - **In a grouped query, every plain column must be in `SAMOOH`.** `DIKHAO naam, GINO(*) SE s`
-  is an error, because one output row stands for many rows, each with its own `naam`.
+  is an error, because one output row stands for many rows, each with its own `naam`. An expression counts
+  when the whole of it was grouped on: `SAMOOH a + 1` allows `a + 1` and `(a + 1) * 2`, but not `a` alone.
+- **Aggregates take `ALAG`.** `GINO(ALAG x)`, `KUL(ALAG x)`, `AUSAT(ALAG x)`, `NYUNTAM(ALAG x)`, `ADHIKTAM(ALAG x)` use
+  each different value once (`DISTINCT` works too; `GINO(ALAG *)` is an error).
+- **Output aliases (`KAHO`).** `KRAM` looks at the aliases first, so `DIKHAO b KAHO a SE t KRAM a` sorts by the
+  output, even when `t` has a column `a`. `SAMOOH` and `JINKA` look at the table's columns first and fall back to an alias,
+  like MySQL. `JAHAN` never sees an alias: it runs before the output exists.
+- **`KRAM` by position.** A bare whole number is an output column: `KRAM 2 ULTA`. Anything else, even
+  `KRAM 1 + 1`, is an expression. A number outside the columns is an error.
+- **Column headers keep brackets that matter.** `(a + 1) * 2` is shown as `(a + 1) * 2`, while `(a * 2) + 1` is shown as
+  `a * 2 + 1`.
 - **`SANDARBH` (FOREIGN KEY) is RESTRICT unless you say otherwise.** Deleting/changing a parent row that a
   child still points at is an error -- you must remove or repoint the child rows first -- unless the
   foreign key has `ON DELETE` / `ON UPDATE` `CASCADE` or `SET NULL` (see "Foreign key actions"). The
@@ -853,8 +877,10 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   literal; MeraDB converts it to a real date and validates the format. Comparing a `DATE` column
   to a string literal (`JAHAN dob > '2005-01-01'`) also works. Arithmetic and `JAISA` on dates
   are errors; `NYUNTAM`/`ADHIKTAM` work, `KUL`/`AUSAT` don't (same as for TEXT/BOOL).
-- **`SANYUKT`/`SAAJHA`/`CHHODKAR` only have the dedupe form** (like bare SQL
-  `UNION`/`INTERSECT`/`EXCEPT`) -- there is no `ALL` variant that keeps duplicates.
+- **`SANYUKT`/`SAAJHA`/`CHHODKAR` remove duplicates** (like bare SQL `UNION`/`INTERSECT`/`EXCEPT`); `SANYUKT ALL` keeps
+  them. `KRAM` / `SIRF` after the last side apply to the whole result, by output name or position. They work
+  inside `(...)` too: in `MEIN`, `EXISTS`, `ANY`/`ALL`, a scalar subquery and a derived table, each side seeing the outer row
+  if the subquery is correlated. Only `BANAO VIEW` still takes one plain `DIKHAO` at its top level.
 - **`SAMAAN MILAO` (NATURAL JOIN) may repeat shared columns in `*`.** Getting the JOIN itself
   correct (rows filtered by the synthesised condition) matters far more than `*` cosmetics, so
   `DIKHAO * SE a SAMAAN MILAO b` currently lists a shared column once per side rather than once
