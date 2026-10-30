@@ -202,3 +202,26 @@ TEST_CASE("The writing area is saved before a card swaps it, even inside the sav
     CHECK(s.editor().text() == "-- college ka script");
     CHECK(QueryStore(dir.path.string()).loadScript("main") == "-- main ka script, aakhri badlav");
 }
+
+TEST_CASE("Looking at an old query with Pichli never overwrites the saved script", "[wb][querystore]") {
+    TempDir dir;
+    QueryStore(dir.path.string()).append("main", {"DIKHAO * SE a;", ""});
+    QueryStore(dir.path.string()).saveScript("main", "-- mera poora script");
+    ManualPoster poster;
+    auto owned = std::make_unique<FakeBackend>();
+    owned->desc = "local (" + dir.path.string() + ")";
+    SessionOptions opts;
+    opts.dataDir = dir.path.string();
+    {
+        Session s(std::move(owned), std::move(opts), poster.poster());
+        REQUIRE(poster.pumpIdle(s));
+        CHECK(s.editor().text() == "-- mera poora script");
+        s.historyStep(-1);
+        CHECK(s.editor().text() == "DIKHAO * SE a;");
+        s.persistEditor(true);   // what a quit or the autosave does while the old query is on screen
+        CHECK(QueryStore(dir.path.string()).loadScript("main") == "-- mera poora script");
+        s.editor().setText("DIKHAO * SE a; -- badla");   // an edit of it is real work: saved
+        s.persistEditor(true);
+        CHECK(QueryStore(dir.path.string()).loadScript("main") == "DIKHAO * SE a; -- badla");
+    }
+}

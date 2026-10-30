@@ -298,6 +298,10 @@ void Session::persistEditor(bool force) {
     if (!store_.enabled() || scriptDb_.empty()) return;
     const std::string text = editor_.text();
     if (text == lastScript_) return;
+    // A history entry shown by Pichli / Agli is a look at an old query, not an edit of the script: it is only saved once
+    // the user changes it. Agli past the newest entry brings the script back.
+    if (stepping_ && text == steppedText_) return;
+    stepping_ = false;
     const auto now = std::chrono::steady_clock::now();
     if (!force && now - lastScriptWrite_ < std::chrono::milliseconds(700)) return;
     store_.saveScript(scriptDb_, text);
@@ -420,6 +424,7 @@ void Session::historyStep(int delta) {
             stepping_ = false;
         } else {
             editor_.setText(*t);
+            steppedText_ = editor_.text();
         }
         focusRequest_ = Panel::Editor;
     }
