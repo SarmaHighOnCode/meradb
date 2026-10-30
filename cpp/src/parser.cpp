@@ -1559,13 +1559,27 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
     }
 
     std::unique_ptr<Statement> result = parseSelectBody();
+    // `DIKHAO a KRAM x SIRF 2 SANYUKT DIKHAO b` sorts and cuts that side by itself. When no side but the last has such
+    // clauses they are written after the whole query and apply to its whole result, as in SQL.
+    auto hasOwnClauses = [](const Select& s) { return !s.orderBy.empty() || s.limit.has_value() || s.offset.has_value(); };
+    bool earlierClauses = hasOwnClauses(*static_cast<Select*>(result.get()));
     while (isSetOpKeyword(peek())) {
         auto op = std::make_unique<SetOp>();
         op->op = advance().textValue;
         spend();
         expectKeyword("DIKHAO");
         op->left = std::move(result);
-        op->right = parseSelectBody();
+        auto right = parseSelectBody();
+        if (!isSetOpKeyword(peek()) && !earlierClauses) {
+            op->orderBy = std::move(right->orderBy);
+            right->orderBy.clear();
+            op->limit = right->limit;
+            op->offset = right->offset;
+            right->limit.reset();
+            right->offset.reset();
+        }
+        earlierClauses = earlierClauses || hasOwnClauses(*right);
+        op->right = std::move(right);
         result = std::move(op);
     }
     return result;

@@ -3545,6 +3545,34 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
         for (const auto& row : left.rows)
             if ((rightSet.count(row) > 0) == intersect && seen.insert(row).second) out.push_back(row);
     }
+    // KRAM / SIRF after the last side belong to the whole result. Only what it shows can sort it, so each key is an output
+    // column: its name (the first side's names count) or its position.
+    std::vector<std::pair<size_t, bool>> sortColumns;
+    for (const auto& o : stmt.orderBy) {
+        std::optional<size_t> position = orderPosition(*o.expr, left.columns.size());
+        if (!position) {
+            auto* ref = dynamic_cast<const ast::ColumnRef*>(o.expr.get());
+            const std::string name = ref ? ref->name : exprLabel(*o.expr);
+            auto it = std::find(left.columns.begin(), left.columns.end(), name);
+            if (it == left.columns.end())
+                throw ExecutionError("KRAM '" + name + "': " + stmt.op + " ka result sirf apne output columns se sort ho sakta hai (naam ya number)");
+            position = static_cast<size_t>(it - left.columns.begin());
+        }
+        sortColumns.emplace_back(*position, o.descending);
+    }
+    if (!sortColumns.empty())
+        std::stable_sort(out.begin(), out.end(), [&](const std::vector<Value>& a, const std::vector<Value>& b) {
+            for (const auto& [column, descending] : sortColumns) {
+                if (sortLess(a[column], b[column])) return !descending;
+                if (sortLess(b[column], a[column])) return descending;
+            }
+            return false;
+        });
+    if (stmt.offset.has_value()) {
+        if (static_cast<size_t>(*stmt.offset) >= out.size()) out.clear();
+        else out.erase(out.begin(), out.begin() + *stmt.offset);
+    }
+    if (stmt.limit.has_value() && static_cast<size_t>(*stmt.limit) < out.size()) out.resize(static_cast<size_t>(*stmt.limit));
     Result result;
     result.columns = left.columns;
     result.message = std::to_string(out.size()) + " row(s)";
@@ -4035,6 +4063,14 @@ Result Engine::execExplain(const ast::Explain& stmt) {
             lines.push_back(std::string("  ") + label + ":");
             for (const auto& line : subLines) lines.push_back("    " + line);
         }
+        if (!setOp->orderBy.empty()) {
+            std::vector<std::string> keys;
+            for (const auto& o : setOp->orderBy) keys.push_back(exprLabel(*o.expr) + (o.descending ? " ULTA" : ""));
+            lines.push_back("SORT   KRAM " + joinStrs(keys, ", "));
+        }
+        if (setOp->limit.has_value())
+            lines.push_back("LIMIT  SIRF " + std::to_string(*setOp->limit) +
+                            (setOp->offset.has_value() ? " OFFSET " + std::to_string(*setOp->offset) : std::string()));
     } else if (dynamic_cast<const ast::Update*>(&inner) || dynamic_cast<const ast::Delete*>(&inner)) {
         auto* upd = dynamic_cast<const ast::Update*>(&inner);
         const std::string& tableName = upd ? upd->table : static_cast<const ast::Delete&>(inner).table;

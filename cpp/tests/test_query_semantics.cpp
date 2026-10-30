@@ -161,3 +161,21 @@ TEST_CASE("KRAM takes output column positions", "[semantics][order]") {
     // only a bare number is a position: an expression stays an expression
     REQUIRE(q(e, "DIKHAO id SE t KRAM 1 + 1, id ULTA SIRF 1;") == "5");
 }
+
+TEST_CASE("KRAM and SIRF after a set operation apply to the whole result", "[semantics][setop]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    run(e, "BANAO TABLE u (id INT MUKHYA KUNJI);");
+    run(e, "DAALO MEIN u MAAN (100), (2);");
+    REQUIRE(q(e, "DIKHAO id SE t SANYUKT DIKHAO id SE u KRAM id ULTA SIRF 2;") == "100;5");
+    REQUIRE(q(e, "DIKHAO id SE t SANYUKT DIKHAO id SE u KRAM 1 SIRF 2 OFFSET 1;") == "2;3");
+    REQUIRE(q(e, "DIKHAO id SE t SAAJHA DIKHAO id SE u KRAM id;") == "2");
+    REQUIRE(q(e, "DIKHAO id SE u SANYUKT DIKHAO id SE t SANYUKT DIKHAO 7 KRAM id ULTA SIRF 1;") == "100");
+    // the first side's alias names the column
+    REQUIRE(q(e, "DIKHAO id KAHO k SE u SANYUKT DIKHAO id SE t KRAM k SIRF 1;") == "1");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t SANYUKT DIKHAO id SE u KRAM zzz;"), ContainsSubstring("zzz"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t SANYUKT DIKHAO id SE u KRAM 2;"), ContainsSubstring("KRAM"));
+    // a SELECT in a view keeps its own clauses
+    REQUIRE(q(e, "DIKHAO id SE (DIKHAO id SE t KRAM id ULTA SIRF 1) d;") == "5");
+}

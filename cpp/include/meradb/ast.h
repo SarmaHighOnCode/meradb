@@ -249,6 +249,10 @@ struct SetOp : Statement {
     std::string op;  // SANYUKT | SAAJHA | CHHODKAR
     std::unique_ptr<Statement> left;
     std::unique_ptr<Statement> right;
+    // KRAM / SIRF written after the last side, when no earlier side has clauses of its own: they apply to the whole result
+    std::vector<OrderItem> orderBy;
+    std::optional<int> limit;
+    std::optional<int> offset;
 };
 
 struct Update : Statement {
