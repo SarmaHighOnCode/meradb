@@ -172,3 +172,51 @@ TEST_CASE("A condition must be a condition", "[gaps][condition]") {
     REQUIRE(q(e, "DIKHAO a SE t JAHAN JHOOTH;") == "");
     REQUIRE(q(e, "DIKHAO AGAR KHALI TAB 2 WARNA 3 KHATAM;") == "3");
 }
+
+TEST_CASE("Headers keep the brackets that change the meaning", "[gaps][label]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b INT);");
+    run(e, "DAALO MEIN t MAAN (1, 2);");
+    auto header = [&](const std::string& sql) { return run(e, sql).columns.at(0); };
+    REQUIRE(header("DIKHAO (a + 1) * 2 SE t;") == "(a + 1) * 2");
+    REQUIRE(header("DIKHAO a + 1 * 2 SE t;") == "a + 1 * 2");
+    REQUIRE(header("DIKHAO (a * 2) + 1 SE t;") == "a * 2 + 1");
+    REQUIRE(header("DIKHAO a - (b - 1) SE t;") == "a - (b - 1)");
+    REQUIRE(header("DIKHAO (a - b) - 1 SE t;") == "a - b - 1");
+    REQUIRE(header("DIKHAO -(a + 1) SE t;") == "-(a + 1)");
+    REQUIRE(header("DIKHAO NAHI (a = 1 YA b = 1) SE t;") == "NAHI (a = 1 YA b = 1)");
+    REQUIRE(header("DIKHAO (a = 1 YA b = 1) AUR a = 1 SE t;") == "(a = 1 YA b = 1) AUR a = 1");
+    REQUIRE(header("DIKHAO (a + 1) HAI KHALI SE t;") == "a + 1 HAI KHALI");
+    REQUIRE(header("DIKHAO (a = 1 YA b = 1) HAI KHALI SE t;") == "(a = 1 YA b = 1) HAI KHALI");
+    REQUIRE(header("DIKHAO KUL((a + 1) * 2) SE t;") == "KUL((a + 1) * 2)");
+}
+
+TEST_CASE("Two different aggregates never share one answer", "[gaps][aggregate]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT);");
+    run(e, "DAALO MEIN t MAAN (1), (15), (25);");
+    REQUIRE(q(e, "DIKHAO KUL((a + 1) * 2), KUL(a + 1 * 2) SE t;") == "88|47");
+    REQUIRE(q(e, "DIKHAO KUL(AGAR a > 10 TAB 1 WARNA 0 KHATAM), KUL(AGAR a > 20 TAB 1 WARNA 0 KHATAM) SE t;") == "2|1");
+    REQUIRE(q(e, "DIKHAO KUL(a * 0.12345678901), KUL(a * 0.12345678902) SE t;") != "");
+    const Result floats = run(e, "DIKHAO KUL(a * 0.12345678901), KUL(a * 0.12345678902) SE t;");
+    REQUIRE(formatValue(floats.rows[0][0]) != formatValue(floats.rows[0][1]));
+    // the same call twice is still one aggregate, found again by KRAM and JINKA
+    REQUIRE(q(e, "DIKHAO a, KUL((a + 1) * 2) SE t SAMOOH a JINKA KUL((a + 1) * 2) > 4 KRAM KUL((a + 1) * 2) ULTA;") == "25|52;15|32");
+}
+
+TEST_CASE("A column is only as grouped as what SAMOOH named", "[gaps][group]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b INT);");
+    run(e, "DAALO MEIN t MAAN (1, 1), (1, 2), (3, 3);");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a * 2 SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a + 1, b SE t SAMOOH a + 1;"), ContainsSubstring("SAMOOH mein nahi"));
+    REQUIRE(q(e, "DIKHAO a + 1, GINO(*) SE t SAMOOH a + 1 KRAM 1;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO (a + 1) * 2, GINO(*) SE t SAMOOH a + 1 KRAM 1;") == "4|2;8|1");
+    REQUIRE(q(e, "DIKHAO a + 1, GINO(*) SE t SAMOOH a KRAM 1;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO a + 1 KAHO x, GINO(*) SE t SAMOOH x KRAM x;") == "2|2;4|1");
+    REQUIRE(q(e, "DIKHAO AGAR a > 1 TAB 'big' WARNA 'small' KHATAM, GINO(*) SE t SAMOOH a KRAM 1;") == "big|1;small|2");
+}

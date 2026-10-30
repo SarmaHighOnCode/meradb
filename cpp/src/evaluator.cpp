@@ -671,42 +671,89 @@ void findSubqueries(const Expr& expr, std::vector<const Expr*>& out) { findSubqu
 std::string aggKey(const FuncCall& func) {
     // Python uses the tuple ("agg", label), which can never equal a column
     // name; the ':' plays that role here (no identifier contains one).
-    return "agg:" + exprLabel(func);
+    return "agg:" + exprKey(func);
 }
 
-std::string exprLabel(const Expr& expr) {
+namespace {
+
+// How tightly an expression binds, in the parser's own order; a child binding less tightly than its place needs brackets.
+int labelPrecedence(const Expr& expr) {
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        if (b->op == "YA") return 1;
+        if (b->op == "AUR") return 2;
+        if (b->op == "+" || b->op == "-" || b->op == "||") return 5;
+        if (b->op == "*" || b->op == "/" || b->op == "%" || b->op == "DIV") return 6;
+        return 4;  // comparisons and JAISA
+    }
+    if (auto* u = dynamic_cast<const UnaryOp*>(&expr)) return u->op == "NAHI" ? 3 : 7;
+    if (dynamic_cast<const IsNull*>(&expr)) return 4;
+    if (auto* in = dynamic_cast<const InSubquery*>(&expr)) return in->kind == "EXISTS" ? 8 : 4;
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) return sf->name == "JAISA" ? 4 : 8;
+    return 8;
+}
+
+std::string labelOf(const Expr& expr, bool full);
+
+std::string labelAtLeast(const Expr& child, int precedence, bool full) {
+    const std::string text = labelOf(child, full);
+    return labelPrecedence(child) < precedence ? "(" + text + ")" : text;
+}
+
+std::string labelOf(const Expr& expr, bool full) {
     requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) return ref->table ? *ref->table + "." + ref->name : ref->name;
-    if (auto* lit = dynamic_cast<const Literal*>(&expr))
-        return isText(lit->value) ? pyRepr(std::get<std::string>(lit->value.data)) : formatValue(lit->value);
-    if (auto* b = dynamic_cast<const BinaryOp*>(&expr))
-        return exprLabel(*b->left) + " " + b->op + " " + exprLabel(*b->right);
+    if (auto* lit = dynamic_cast<const Literal*>(&expr)) {
+        if (isText(lit->value)) return pyRepr(std::get<std::string>(lit->value.data));
+        if (full && std::holds_alternative<double>(lit->value.data)) return pyReprFloat(std::get<double>(lit->value.data));
+        return formatValue(lit->value);
+    }
+    if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
+        const int own = labelPrecedence(*b);
+        // chains lean left: a - (b - c) keeps its brackets, (a - b) - c needs none. AUR and YA do not care.
+        const int rightNeeds = own == 1 || own == 2 ? own : own + 1;
+        return labelAtLeast(*b->left, own, full) + " " + b->op + " " + labelAtLeast(*b->right, rightNeeds, full);
+    }
     if (auto* u = dynamic_cast<const UnaryOp*>(&expr))
-        return u->op == "NAHI" ? u->op + " " + exprLabel(*u->operand) : "-" + exprLabel(*u->operand);
+        return u->op == "NAHI" ? "NAHI " + labelAtLeast(*u->operand, 3, full) : "-" + labelAtLeast(*u->operand, 8, full);
     if (auto* isn = dynamic_cast<const IsNull*>(&expr))
-        return exprLabel(*isn->expr) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
+        return labelAtLeast(*isn->expr, 4, full) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
     if (auto* f = dynamic_cast<const FuncCall*>(&expr))
-        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
+        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? labelOf(*f->arg, full) : std::string()) + ")";
     if (auto* s = dynamic_cast<const Star*>(&expr)) return s->table ? *s->table + ".*" : "*";
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
         std::string out = "PEHLA(";
-        for (size_t i = 0; i < co->args.size(); ++i) out += (i ? ", " : "") + exprLabel(*co->args[i]);
+        for (size_t i = 0; i < co->args.size(); ++i) out += (i ? ", " : "") + labelOf(*co->args[i], full);
         return out + ")";
     }
-    if (dynamic_cast<const CaseWhen*>(&expr)) return "AGAR ... KHATAM";
+    if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
+        if (!full) return "AGAR ... KHATAM";
+        std::string out = "AGAR";
+        for (const auto& [cond, value] : cw->branches) out += " " + labelOf(*cond, true) + " TAB " + labelOf(*value, true);
+        if (cw->elseExpr) out += " WARNA " + labelOf(*cw->elseExpr, true);
+        return out + " KHATAM";
+    }
     if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        if (sf->name == "JAISA" && !sf->user)
+            return labelAtLeast(*sf->args[0], 4, full) + " JAISA " + labelAtLeast(*sf->args[1], 5, full) + " ESCAPE " + labelAtLeast(*sf->args[2], 5, full);
         std::string out = sf->name + "(";
-        for (size_t i = 0; i < sf->args.size(); ++i) out += (i ? ", " : "") + exprLabel(*sf->args[i]);
+        for (size_t i = 0; i < sf->args.size(); ++i) out += (i ? ", " : "") + labelOf(*sf->args[i], full);
         if (sf->name == "CAST") out += " AS " + sf->castType;
         return out + ")";
     }
     if (dynamic_cast<const Subquery*>(&expr)) return "(DIKHAO ...)";
     if (auto* in = dynamic_cast<const InSubquery*>(&expr)) {
         if (in->kind == "EXISTS") return "EXISTS (DIKHAO ...)";
-        if (in->kind == "ANY" || in->kind == "ALL") return exprLabel(*in->left) + " " + in->op + " " + in->kind + " (DIKHAO ...)";
-        return exprLabel(*in->left) + " " + (in->negated ? "NAHI " : "") + "MEIN (DIKHAO ...)";
+        const std::string left = labelAtLeast(*in->left, 4, full);
+        if (in->kind == "ANY" || in->kind == "ALL") return left + " " + in->op + " " + in->kind + " (DIKHAO ...)";
+        return left + " " + (in->negated ? "NAHI " : "") + "MEIN (DIKHAO ...)";
     }
     return "?";
 }
+
+}  // namespace
+
+std::string exprLabel(const Expr& expr) { return labelOf(expr, false); }
+
+std::string exprKey(const Expr& expr) { return labelOf(expr, true); }
 
 }  // namespace meradb

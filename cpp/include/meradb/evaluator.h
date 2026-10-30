@@ -104,5 +104,7 @@ void findSubqueries(const ast::Expr& expr, std::vector<const ast::Expr*>& out);
 std::string aggKey(const ast::FuncCall& func);
 // A readable column header for a SELECT expression, e.g. `umar + 1`.
 std::string exprLabel(const ast::Expr& expr);
+// Tells apart any two different expressions: unlike the header text it spells out AGAR and every digit of a FLOAT.
+std::string exprKey(const ast::Expr& expr);
 
 }  // namespace meradb

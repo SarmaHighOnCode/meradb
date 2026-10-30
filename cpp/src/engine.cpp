@@ -3233,6 +3233,38 @@ Scope Engine::selectSourcesScope(const ast::Select& stmt, std::vector<std::uniqu
     return scope;
 }
 
+static void checkGroupedExpr(const ast::Expr& e, const std::set<std::string>& grouped, const Scope& scope) {
+    using namespace ast;
+    if (grouped.count(exprKey(e)) || dynamic_cast<const FuncCall*>(&e)) return;
+    auto rec = [&](const Expr* child) {
+        if (child) checkGroupedExpr(*child, grouped, scope);
+    };
+    if (auto* ref = dynamic_cast<const ColumnRef*>(&e)) {
+        throw ExecutionError("Column '" + scope.display(refKey(*ref)) +
+                             "' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate "
+                             "(GINO, KUL, AUSAT...) ke andar use karo");
+    } else if (auto* b = dynamic_cast<const BinaryOp*>(&e)) {
+        rec(b->left.get());
+        rec(b->right.get());
+    } else if (auto* u = dynamic_cast<const UnaryOp*>(&e)) {
+        rec(u->operand.get());
+    } else if (auto* isn = dynamic_cast<const IsNull*>(&e)) {
+        rec(isn->expr.get());
+    } else if (auto* co = dynamic_cast<const Coalesce*>(&e)) {
+        for (const auto& a : co->args) rec(a.get());
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(&e)) {
+        for (const auto& a : sf->args) rec(a.get());
+    } else if (auto* cw = dynamic_cast<const CaseWhen*>(&e)) {
+        for (const auto& [cond, value] : cw->branches) {
+            rec(cond.get());
+            rec(value.get());
+        }
+        rec(cw->elseExpr.get());
+    } else if (auto* in = dynamic_cast<const InSubquery*>(&e)) {
+        rec(in->left.get());
+    }
+}
+
 std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) {
     auto plan = std::make_unique<SelectPlan>();
     if (stmt.table.empty() && !stmt.derived) {  // DIKHAO without SE: there is no table to read a column from
@@ -3351,15 +3383,12 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
     if (plan->grouped) {
         // In a grouped query each output row stands for a whole GROUP of rows,
         // so a bare column like `naam` has no single value -- unless we grouped by it.
+        // SAMOOH a + 1 fixes the value of a + 1 in a group, not of a: an expression is fine when the whole of it, or each
+        // column left in it, is something grouped on.
         std::set<std::string> grouped;
-        for (const auto& g : plan->groupBy)
-            for (const auto& name : columnRefKeys(g.get())) grouped.insert(name);
+        for (const auto& g : plan->groupBy) grouped.insert(exprKey(*g));
         for (const auto* e : aggSources)
-            for (const auto& name : columnRefKeys(e, true))
-                if (!grouped.count(name))
-                    throw ExecutionError("Column '" + scope.display(name) +
-                                         "' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate "
-                                         "(GINO, KUL, AUSAT...) ke andar use karo");
+            if (e) checkGroupedExpr(*e, grouped, scope);
     }
 
     plan->access = chooseAccess(*plan->tables[0], scope, plan->where.get());
