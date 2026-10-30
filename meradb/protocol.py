@@ -40,6 +40,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 6372  # M-E-R-A on a phone keypad
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024  # refuse absurdly large lines
+MAX_HELLO_BYTES = 64 * 1024  # before login nobody needs more than this
 PID_FILE = "meradb.pid"
 
 
@@ -53,12 +54,12 @@ def send(wfile, message: dict) -> None:
     wfile.flush()
 
 
-def receive(rfile) -> Optional[dict]:
+def receive(rfile, max_bytes: int = MAX_MESSAGE_BYTES) -> Optional[dict]:
     """Read one message. None means the other side closed the connection."""
-    line = rfile.readline(MAX_MESSAGE_BYTES + 1)
+    line = rfile.readline(max_bytes + 1)
     if not line:
         return None
-    if len(line) > MAX_MESSAGE_BYTES:
+    if len(line) > max_bytes:
         raise ProtocolError("Message bahut bada hai")
     try:
         message = json.loads(line.decode("utf-8"))

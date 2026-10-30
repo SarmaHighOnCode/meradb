@@ -13,8 +13,11 @@
 //   "roles":               ["clerk"]                                   roles granted to this user
 // A ROLE is an entry shaped { "role": true, "grants": {...} } -- no salt or hash, so nobody can log in as one.
 //
-// Passwords are never stored: PBKDF2-HMAC-SHA256, 100,000 iterations, a random
-// 16-byte salt per user. Every method is thread-safe.
+//   "iterations":          600000   the PBKDF2 work factor of "hash"; a file without it was written with 100,000
+//
+// Passwords are never stored: PBKDF2-HMAC-SHA256, 600,000 iterations (OWASP's figure for this hash), a random 16-byte
+// salt per user. An account still on a lower work factor is rehashed at its next successful login. Every method is
+// thread-safe.
 #pragma once
 #include <cstdint>
 #include <map>
@@ -27,7 +30,9 @@
 
 namespace meradb {
 
-constexpr std::uint32_t PBKDF2_ITERATIONS = 100000;
+constexpr std::uint32_t PBKDF2_ITERATIONS = 600000;
+constexpr std::uint32_t PBKDF2_LEGACY_ITERATIONS = 100000;  // an entry with no "iterations" key
+constexpr std::int64_t PBKDF2_MAX_ITERATIONS = 100000000;   // more than this in a file is damage: it would hang a login
 
 // DIKHAO, DAALO, BADLO, MITAO -- the order privileges are stored in.
 const std::vector<std::string>& allPrivileges();
@@ -57,7 +62,8 @@ public:
     bool exists(const std::string& name) const;
     void create(const std::string& name, const std::string& password);
     void drop(const std::string& name);
-    bool verify(const std::string& name, const std::string& password) const;
+    // Takes as long for a name that does not exist as for one that does, so the answer cannot be used to find users.
+    bool verify(const std::string& name, const std::string& password);
 
     // Grants are keyed "database.table" (a VIEW uses the same keyspace). `name` is a user or a role. A privilege that
     // has an entry in `columns` is granted on those columns only; the others on the whole table.

@@ -205,7 +205,8 @@ TEST_CASE("server counts sessions and logs connects and disconnects", "[server]"
         CHECK(s.logContains("connected  (active sessions: "));
     }
     CHECK(waitFor([&] { return s.server().sessions() == 0; }));
-    CHECK(s.logContains("disconnected  (active sessions: 0)"));
+    // the count drops just before the line is written
+    CHECK(waitFor([&] { return s.logContains("disconnected  (active sessions: 0)"); }));
     for (const auto& line : s.logLines()) CHECK(line.size() > 21);  // "YYYY-MM-DD HH:MM:SS  " prefix
 }
 

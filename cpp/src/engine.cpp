@@ -70,7 +70,10 @@ Instance::Instance(std::string dataDir, bool served)
     fs::create_directories(pathOf(dbDir(DEFAULT_DATABASE)));
 }
 
-std::string Instance::dbDir(const std::string& name) const { return (pathOf(dataDir_) / pathOf(name)).u8string(); }
+std::string Instance::dbDir(const std::string& name) const {
+    if (!isSafeFileName(name)) throw ExecutionError("Database ka naam " + pyRepr(name) + " sahi nahi hai");
+    return (pathOf(dataDir_) / pathOf(name)).u8string();
+}
 
 std::vector<std::string> Instance::databases() const {
     std::vector<std::string> names;
@@ -79,7 +82,7 @@ std::vector<std::string> Instance::databases() const {
     for (fs::directory_iterator it(pathOf(dataDir_), ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         std::string name = it->path().filename().u8string();
-        if (!name.empty() && name[0] != '.' && it->is_directory(entryEc) && !entryEc) names.push_back(name);
+        if (isSafeFileName(name) && it->is_directory(entryEc) && !entryEc) names.push_back(name);
     }
     std::sort(names.begin(), names.end());
     return names;
@@ -179,7 +182,7 @@ std::vector<std::string> Instance::recover() {
     for (const auto& name : names) {
         if (endsWith(name, ".tmp") || endsWith(name, ".done") || endsWith(name, ".sp")) {  // .sp = savepoint / statement copy
             removeTreeQuietly(root / pathOf(name));
-        } else {
+        } else if (isSafeFileName(name)) {  // anything else was not put here by a transaction
             restoreSnapshot(name);
             recovered.push_back(name);
         }
@@ -469,6 +472,10 @@ std::unique_lock<std::recursive_timed_mutex> Engine::acquireLock(double timeoutS
 nlohmann::ordered_json Engine::schemaTree() {
     using nlohmann::ordered_json;
     auto guard = acquireLock(2.0);
+    if (user && !rolesInit_) {  // the same start as executeStatement: this may be the session's first request
+        rolesInit_ = true;
+        if (auto defaults = instance_->users().defaultRoles(*user)) activeRoles = std::set<std::string>(defaults->begin(), defaults->end());
+    }
     ordered_json tree = ordered_json::array();
     for (const auto& db : instance_->databases()) {
         Catalog& cat = instance_->catalog(db);
@@ -477,13 +484,26 @@ nlohmann::ordered_json Engine::schemaTree() {
         std::sort(names.begin(), names.end());  // Python: sorted(catalog.tables)
         ordered_json tables = ordered_json::array();
         for (const auto& name : names) {
+            // A restricted user sees only what a grant lets it name: the tables it holds a privilege on, and on a
+            // column-limited table only those columns.
+            Access held;
+            if (user) {
+                for (const auto& privilege : allPrivileges()) {
+                    Access one = instance_->users().access(*user, activeRoles, db, name, privilege);
+                    held.full = held.full || one.full;
+                    held.columns.insert(one.columns.begin(), one.columns.end());
+                }
+                if (!held.any()) continue;
+            }
             ordered_json columns = ordered_json::array();
-            for (const auto& col : cat.tables.at(name).columns) columns.push_back(col.toJson());
+            for (const auto& col : cat.tables.at(name).columns)
+                if (!user || held.covers(col.name)) columns.push_back(col.toJson());
             ordered_json table = ordered_json::object();
             table["name"] = name;
             table["columns"] = std::move(columns);
             tables.push_back(std::move(table));
         }
+        if (user && tables.empty() && db != currentDb) continue;  // not even the name of a database it has nothing in
         ordered_json entry = ordered_json::object();
         entry["name"] = db;
         entry["current"] = (db == currentDb);
@@ -658,9 +678,10 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
     for (const ast::Select* sub : strict.subs) checkSelectAccess(*sub, &scope);
     for (const ast::Select* sub : lenient.subs) checkSelectAccess(*sub, &scope);
 
-    bool restricted = false;
-    for (const auto& s : scope.sources)
-        if (!s.access.full) restricted = true;
+    bool restricted = false;  // the query around this one counts too: a correlated sub-select reads its row
+    for (const PrivScope* sc = &scope; sc != nullptr; sc = sc->outer)
+        for (const auto& s : sc->sources)
+            if (!s.access.full) restricted = true;
     if (!restricted) return;
 
     std::set<std::string> outputNames;
@@ -696,8 +717,15 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
         }
     }
     for (const ast::ColumnRef* ref : strict.refs) resolve(*ref);
+    // An output alias only excuses a name that is not also a real column: KRAM prefers the real column, so
+    // `DIKHAO id KAHO secret SE t KRAM secret` would reveal the order of the hidden values.
+    auto isRealColumn = [&](const std::string& name) {
+        for (const auto& s : scope.sources)
+            if (std::find(s.columns.begin(), s.columns.end(), name) != s.columns.end()) return true;
+        return false;
+    };
     for (const ast::ColumnRef* ref : lenient.refs)
-        if (ref->table || !outputNames.count(ref->name)) resolve(*ref);
+        if (ref->table || !outputNames.count(ref->name) || isRealColumn(ref->name)) resolve(*ref);
 }
 
 // Sub-selects hidden inside an expression (JAHAN x MEIN (DIKHAO ...), a value, ...) read tables too.
@@ -736,8 +764,37 @@ void Engine::checkGrantAllowed(const ast::Grant& stmt) {
 void Engine::checkPrivileges(const ast::Statement& stmt) {
     if (!user) return;  // superuser: checking is skipped entirely
     using namespace ast;
+    // BADLO / MITAO expressions read the row they change. A user whose DIKHAO is limited to some columns must not get at
+    // the others through them: `RAKHO naam = CONCAT('', secret)` copies a hidden value somewhere readable, and
+    // `JAHAN secret > 5` tells it apart by the rows it touches. Holding no DIKHAO at all stays allowed: nothing is readable.
+    auto checkColumnsReadable = [this](const std::string& table, const Expr* expr) {
+        Access read = accessOf("DIKHAO", table);
+        if (read.full || !read.any() || expr == nullptr) return;
+        PrivScope scope;
+        PrivScope::Source source;
+        source.alias = source.table = table;
+        source.access = read;
+        if (const TableSchema* schema = catalog().find(table)) source.columns = schema->columnNames();
+        else source.unknown = true;
+        scope.sources.push_back(std::move(source));
+        RefCollector found;
+        found.add(expr);
+        for (const ColumnRef* ref : found.refs)
+            if (!ref->table || *ref->table == table)
+                if (!read.covers(ref->name)) denyColumn("DIKHAO", table, ref->name);
+        for (const Select* sub : found.subs) checkSelectAccess(*sub, &scope);  // a correlated sub-select reads the row too
+    };
     if (auto* ex = dynamic_cast<const Explain*>(&stmt)) {
-        checkPrivileges(*ex->statement);
+        // A plan never runs the query, so nothing re-checks the sides of a set operation later: check them here.
+        auto checkExplained = [this](auto& self, const Statement& inner) -> void {
+            if (auto* setOp = dynamic_cast<const SetOp*>(&inner)) {
+                self(self, *setOp->left);
+                self(self, *setOp->right);
+            } else {
+                checkPrivileges(inner);
+            }
+        };
+        checkExplained(checkExplained, *ex->statement);
         return;
     }
     if (dynamic_cast<const SetOp*>(&stmt)) return;  // execSetOp re-enters executeStatement for each side
@@ -759,8 +816,14 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
         if (ins->select) checkSelectAccess(*ins->select, nullptr);
         for (const auto& row : ins->rows)
             for (const auto& e : row) checkExprSubqueries(e.get());
-        if (ins->onConflictUpdate)
-            for (const auto& assignment : *ins->onConflictUpdate) checkExprSubqueries(assignment.second.get());
+        if (ins->onConflictUpdate) {  // TAKRAAV PAR BADLO changes an existing row: that is a BADLO, not a DAALO
+            Access update = requireAccess("BADLO", ins->table);
+            for (const auto& assignment : *ins->onConflictUpdate) {
+                if (!update.covers(assignment.first)) denyColumn("BADLO", ins->table, assignment.first);
+                checkExprSubqueries(assignment.second.get());
+                checkColumnsReadable(ins->table, assignment.second.get());
+            }
+        }
         return;
     }
     if (auto* upd = dynamic_cast<const Update*>(&stmt)) {
@@ -768,13 +831,18 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
         if (!access.full)
             for (const auto& assignment : upd->assignments)
                 if (!access.covers(assignment.first)) denyColumn("BADLO", upd->table, assignment.first);
-        for (const auto& assignment : upd->assignments) checkExprSubqueries(assignment.second.get());
+        for (const auto& assignment : upd->assignments) {
+            checkExprSubqueries(assignment.second.get());
+            checkColumnsReadable(upd->table, assignment.second.get());
+        }
         checkExprSubqueries(upd->where.get());
+        checkColumnsReadable(upd->table, upd->where.get());
         return;
     }
     if (auto* del = dynamic_cast<const Delete*>(&stmt)) {
         requirePrivilege("MITAO", del->table);
         checkExprSubqueries(del->where.get());
+        checkColumnsReadable(del->table, del->where.get());
         return;
     }
     // Open to every session: choosing the database (grants are per database, so nothing is exposed), SET ROLE, and
@@ -1059,6 +1127,7 @@ void Engine::noTransaction(const std::string& command) const {
 
 Result Engine::execCreateDatabase(const ast::CreateDatabase& stmt) {
     noTransaction("BANAO DATABASE");
+    if (isReservedDeviceName(stmt.name)) throw ExecutionError("'" + stmt.name + "' Windows ka reserved naam hai -- koi aur naam chuno");
     fs::path path = pathOf(instance_->dbDir(stmt.name));
     if (fs::is_directory(path)) {
         if (stmt.ifNotExists) return messageResult("Database '" + stmt.name + "' pehle se hai -- kuch nahi badla");
@@ -1425,6 +1494,7 @@ void Engine::checkShartExpr(const Column& col, const TableSchema& schema) const 
 }
 
 Result Engine::execCreateTable(const ast::CreateTable& stmt) {
+    if (isReservedDeviceName(stmt.name)) throw ExecutionError("'" + stmt.name + "' Windows ka reserved naam hai -- koi aur naam chuno");
     Catalog& cat = catalog();
     if (cat.find(stmt.name)) {
         if (stmt.ifNotExists) return messageResult("Table '" + stmt.name + "' pehle se hai -- kuch nahi badla");
@@ -2064,6 +2134,7 @@ Result Engine::execAlterDropForeignKey(const ast::AlterDropForeignKey& stmt) {
 }
 
 Result Engine::execRenameTable(const ast::RenameTable& stmt) {
+    if (isReservedDeviceName(stmt.newName)) throw ExecutionError("'" + stmt.newName + "' Windows ka reserved naam hai -- koi aur naam chuno");
     Catalog& cat = catalog();
     TableSchema schema = cat.get(stmt.table);  // raises if it doesn't exist
     if (stmt.newName == stmt.table) throw ExecutionError("Naya naam purane naam '" + stmt.table + "' jaisa hi hai");

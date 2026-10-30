@@ -20,10 +20,14 @@ Architecture:
 """
 
 import hmac
+import json
 import os
+import re
+import socket
 import socketserver
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 
@@ -34,6 +38,7 @@ from .errors import MeraDBError
 from .protocol import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    MAX_HELLO_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
     receive,
@@ -44,15 +49,29 @@ from .protocol import (
 )
 
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+# A script that may carry a password (BANAO USER naam GUPT '...') must not reach the log, not even echoed in a parse error.
+_SENSITIVE_WORD = re.compile(r"(?<![A-Za-z0-9_])(USER|GUPT|IDENTIFIED)(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
 class MeraDBServer(socketserver.ThreadingTCPServer):
     daemon_threads = True  # don't let a hanging client block shutdown
     # On Windows SO_REUSEADDR lets TWO servers bind the same port -- never want that.
     allow_reuse_address = os.name != "nt"
+    # Limits on a peer that has not logged in. Every connection costs a thread, so these keep idle or slow strangers
+    # from using them all up. (A logged-in session has no idle limit: a workbench may legitimately sit open for hours.)
+    handshake_timeout = 10.0
+    max_connections = 256
+    # After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
+    # login_lock_seconds whatever it sends (and costs no hashing).
+    login_failure_limit = 10
+    login_lock_seconds = 30.0
 
     def __init__(self, data_dir: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  password: str | None = None, verbose: bool = False, log=None):
+        self._login_failures: dict[str, list] = {}  # address -> [count, locked_until]
+        self._login_lock = threading.Lock()
+        self._connections = 0
+        self._connections_lock = threading.Lock()
         self.instance = Instance(data_dir, served=True)
         self.password = password or None
         self.verbose = verbose
@@ -73,6 +92,42 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
         with self._sessions_lock:
             self.sessions += delta
 
+    def login_locked(self, ip: str) -> bool:
+        with self._login_lock:
+            entry = self._login_failures.get(ip)
+            return entry is not None and time.monotonic() < entry[1]
+
+    def note_login(self, ip: str, succeeded: bool) -> None:
+        with self._login_lock:
+            if succeeded:
+                self._login_failures.pop(ip, None)
+                return
+            if len(self._login_failures) >= 10000 and ip not in self._login_failures:
+                self._login_failures.clear()  # the table stays bounded
+            entry = self._login_failures.setdefault(ip, [0, 0.0])
+            entry[0] += 1
+            if entry[0] >= self.login_failure_limit:
+                entry[0] = self.login_failure_limit - 1  # after the lock, one more wrong guess locks again
+                entry[1] = time.monotonic() + self.login_lock_seconds
+
+    def verify_request(self, request, client_address) -> bool:
+        with self._connections_lock:
+            if self._connections < self.max_connections:
+                self._connections += 1
+                return True
+        try:
+            request.sendall((json.dumps({"ok": False, "error": "Server par bahut zyada connections hain -- thodi der baad try karo"}) + "\n").encode())
+        except OSError:
+            pass
+        return False
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._connections_lock:
+                self._connections -= 1
+
 
 class ClientHandler(socketserver.StreamRequestHandler):
     server: MeraDBServer
@@ -82,14 +137,26 @@ class ClientHandler(socketserver.StreamRequestHandler):
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
 
         # ---- 1. handshake ----
+        # An absolute deadline: a per-read socket timeout would let one byte now and then keep the thread for ever.
+        deadline = threading.Timer(server.handshake_timeout, self._hang_up)
+        deadline.daemon = True
+        deadline.start()
         try:
-            hello = receive(self.rfile)
+            hello = receive(self.rfile, MAX_HELLO_BYTES)
         except (ProtocolError, OSError):
             return
+        finally:
+            deadline.cancel()
         if not hello or hello.get("type") != "hello":
             return
 
         user = hello.get("user")
+        ip = self.client_address[0]
+        if (user or server.password) and server.login_locked(ip):
+            # the same answer as a wrong password: it tells a guesser nothing
+            send(self.wfile, {"ok": False, "error": "User ya password galat hai" if user else "Password galat hai"})
+            server.log(f"{peer}  login mana (is address se bahut galat koshishen)")
+            return
         if user:
             # A per-user login SUPERSEDES the single shared server password --
             # the whole-server password check below is skipped entirely for
@@ -98,13 +165,19 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 # bare message: the client wraps this in a ConnectionFailed exception,
                 # whose own __str__ already adds "[Connection Galti] " -- adding it here
                 # too would print it twice
+                server.note_login(ip, False)
                 send(self.wfile, {"ok": False, "error": "User ya password galat hai"})
                 server.log(f"{peer}  login fail (galat user/password: {user!r})")
                 return
-        elif server.password and not hmac.compare_digest(str(hello.get("password") or ""), server.password):
+        # bytes: compare_digest raises TypeError on a str with a non-ASCII character
+        elif server.password and not hmac.compare_digest(str(hello.get("password") or "").encode("utf-8", "surrogatepass"),
+                                                         server.password.encode("utf-8", "surrogatepass")):
+            server.note_login(ip, False)
             send(self.wfile, {"ok": False, "error": "Password galat hai"})  # bare: see note above
             server.log(f"{peer}  login fail (galat password)")
             return
+        if user or server.password:
+            server.note_login(ip, True)
 
         session = Engine(server.instance)
         if user:
@@ -144,14 +217,22 @@ class ClientHandler(socketserver.StreamRequestHandler):
             server.track(-1)
             server.log(f"{peer}  disconnected  (active sessions: {server.sessions})")
 
+    def _hang_up(self) -> None:
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)  # wakes the thread blocked in receive()
+        except OSError:
+            pass
+
     def dispatch(self, session: Engine, request: dict, peer: str) -> tuple[dict, bool]:
         server = self.server
         kind = request.get("type")
 
         if kind == "query":
             text = str(request.get("text", ""))
+            secret_text = _SENSITIVE_WORD.search(text) is not None
             if server.verbose:
-                server.log(f"{peer}  [{session.current_db}]  {' '.join(text.split())[:200]}")
+                shown = "(user/password wali query -- log mein nahi likhi)" if secret_text else " ".join(text.split())[:200]
+                server.log(f"{peer}  [{session.current_db}]  {shown}")
             try:
                 results = session.run_script(text)
             except Exception as e:  # a bug must not kill the whole server
@@ -159,7 +240,7 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 results = [Result(error=f"[Internal Galti] {e!r}")]
             for r in results:
                 if r.error:
-                    server.log(f"{peer}  {r.error}")
+                    server.log(f"{peer}  {'user/password wali query fail hui' if secret_text else r.error}")
             return {
                 "ok": True,
                 "results": [r.to_dict() for r in results],
@@ -174,6 +255,8 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 return {"ok": False, "error": e.message}, False  # see note above: schema_tree() also wraps in ConnectionFailed
 
         if kind == "status":
+            if session.user is not None:  # the folder, the pid and every database name are for a superuser
+                return {"ok": True, "server": f"MeraDB {__version__}"}, False
             return {
                 "ok": True,
                 "server": f"MeraDB {__version__}",
@@ -188,6 +271,8 @@ class ClientHandler(socketserver.StreamRequestHandler):
             return {"ok": True}, False
 
         if kind == "shutdown":
+            if session.user is not None:
+                return {"ok": False, "error": "Shutdown sirf superuser (bina username connect kiya session) kar sakta hai"}, False
             if self.client_address[0] not in LOOPBACK:
                 return {"ok": False, "error": "Shutdown sirf usi computer se ho sakta hai jahan server chal raha hai"}, False
             server.log(f"{peer}  shutdown requested")
@@ -206,6 +291,12 @@ def serve(data_dir: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
     if existing:
         print(f"Is data folder ka server pehle se chal raha hai: {existing['host']}:{existing['port']} "
               f"(pid {existing['pid']})", file=sys.stderr)
+        return 1
+    # Without a password a connection is a superuser, so this would open the whole data folder to the network. Refused
+    # before anything is bound.
+    if not password and host not in LOOPBACK and os.environ.get("MERADB_ALLOW_NO_PASSWORD") != "1":
+        print(f"Server start nahi hua: bina password ke network par ({host}) nahi khol sakte -- --password ya "
+              "MERADB_PASSWORD do (sach mein aisa hi chahiye to MERADB_ALLOW_NO_PASSWORD=1 set karo)", file=sys.stderr)
         return 1
     try:
         server = MeraDBServer(data_dir, host, port, password, verbose)

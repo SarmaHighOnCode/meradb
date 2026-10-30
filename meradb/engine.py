@@ -70,7 +70,7 @@ from typing import Optional
 from . import aggregates
 from . import ast_nodes as ast
 from . import planner
-from .catalog import Catalog, Column, TableSchema
+from .catalog import Catalog, Column, TableSchema, is_reserved_device_name, is_safe_file_name
 from .datatypes import coerce, format_value
 from .errors import ExecutionError, MeraDBError
 from .evaluator import (
@@ -88,7 +88,7 @@ from .planner import Scope, bind, natural_join_condition
 from .protocol import default_data_dir, running_server
 from .storage import HeapFile, encode_row
 from .table import MaterializedTable, Table
-from .users import UserStore
+from .users import ALL_PRIVILEGES, UserStore
 
 DEFAULT_DATABASE = "main"
 SNAPSHOT_DIR = ".wapas"  # where transactions keep their "before" copy
@@ -176,11 +176,13 @@ class Instance:
         os.makedirs(self.db_dir(DEFAULT_DATABASE), exist_ok=True)
 
     def db_dir(self, name: str) -> str:
+        if not is_safe_file_name(name):
+            raise ExecutionError(f"Database ka naam {name!r} sahi nahi hai")
         return os.path.join(self.data_dir, name)
 
     def databases(self) -> list[str]:
         return sorted(
-            d for d in os.listdir(self.data_dir) if not d.startswith(".") and os.path.isdir(self.db_dir(d))
+            d for d in os.listdir(self.data_dir) if is_safe_file_name(d) and os.path.isdir(self.db_dir(d))
         )
 
     def catalog(self, db: str) -> Catalog:
@@ -236,7 +238,7 @@ class Instance:
             path = os.path.join(root, name)
             if name.endswith((".tmp", ".done")):
                 shutil.rmtree(path, ignore_errors=True)
-            else:
+            elif is_safe_file_name(name):  # anything else was not put here by a transaction
                 self.restore_snapshot(name)
                 recovered.append(name)
         return recovered
@@ -327,25 +329,31 @@ class Engine:
         if self.user is None:
             return
         if isinstance(stmt, ast.Explain):
-            self._check_privileges(stmt.statement)
+            # a plan never runs the query, so nothing re-checks the sides of a set operation later
+            self._check_explained(stmt.statement)
             return
         if isinstance(stmt, ast.SetOp):
             return  # _exec_SetOp re-enters execute_statement for each side, which re-checks it
         if isinstance(stmt, ast.Select):
-            for table in self._tables_read(stmt):
-                self._require_privilege("DIKHAO", table)
+            self._check_select(stmt)
             return
         if isinstance(stmt, ast.Insert):
             self._require_privilege("DAALO", stmt.table)
             if stmt.select is not None:
-                for table in self._tables_read(stmt.select):
-                    self._require_privilege("DIKHAO", table)
+                self._check_select(stmt.select)
+            for row in stmt.rows or []:
+                self._check_subqueries(row)
+            if stmt.on_conflict_update is not None:  # TAKRAAV PAR BADLO changes an existing row: that is a BADLO
+                self._require_privilege("BADLO", stmt.table)
+                self._check_subqueries([e for _, e in stmt.on_conflict_update])
             return
         if isinstance(stmt, ast.Update):
             self._require_privilege("BADLO", stmt.table)
+            self._check_subqueries([e for _, e in stmt.assignments] + [stmt.where])
             return
         if isinstance(stmt, ast.Delete):
             self._require_privilege("MITAO", stmt.table)
+            self._check_subqueries([stmt.where])
             return
         # Everything else: DDL (BANAO/HATAO/SUDHARO/SAAF/SIKODO TABLE, VIEW,
         # TRIGGER, PROCEDURE), user/grant management (BANAO/HATAO USER,
@@ -354,6 +362,26 @@ class Engine:
             f"'{self.user}' superuser nahi hai -- '{type(stmt).__name__}' jaisa DDL/admin command "
             f"sirf superuser (bina username connect kiya session) chala sakta hai"
         )
+
+    def _check_explained(self, stmt: ast.Statement) -> None:
+        if isinstance(stmt, ast.SetOp):
+            self._check_explained(stmt.left)
+            self._check_explained(stmt.right)
+        else:
+            self._check_privileges(stmt)
+
+    def _check_select(self, stmt: ast.Select) -> None:
+        """DIKHAO on every table the query reads: FROM, MILAO and any sub-select, wherever it is written."""
+        for table in self._tables_read(stmt):
+            self._require_privilege("DIKHAO", table)
+        self._check_subqueries([*stmt.columns, stmt.where, *stmt.group_by, stmt.having,
+                                *(item.expr for item in stmt.order_by), *(join.on for join in stmt.joins)])
+
+    def _check_subqueries(self, exprs: list) -> None:
+        for expr in exprs:
+            for node in find_subqueries(expr):
+                subquery = node.subquery if isinstance(node, ast.InSubquery) else node
+                self._check_select(subquery.statement)
 
     @staticmethod
     def _tables_read(stmt: ast.Select) -> list[str]:
@@ -372,17 +400,24 @@ class Engine:
     def schema_tree(self) -> list[dict]:
         """Every database -> table -> column, as plain dicts (sent as JSON by the server)."""
         with self._locked(timeout=2.0):
-            return [
-                {
+            tree = []
+            for db in self.instance.databases():
+                catalog = self.instance.catalog(db)
+                # a restricted user sees only what a grant lets it name
+                names = [n for n in sorted(catalog.tables) if self.user is None or self._holds_any_privilege(db, n)]
+                if self.user is not None and not names and db != self.current_db:
+                    continue
+                tree.append({
                     "name": db,
                     "current": db == self.current_db,
                     "tables": [
-                        {"name": t.name, "columns": [c.to_dict() for c in t.columns]}
-                        for t in (self.instance.catalog(db).tables[n] for n in sorted(self.instance.catalog(db).tables))
+                        {"name": n, "columns": [c.to_dict() for c in catalog.tables[n].columns]} for n in names
                     ],
-                }
-                for db in self.instance.databases()
-            ]
+                })
+            return tree
+
+    def _holds_any_privilege(self, db: str, table: str) -> bool:
+        return any(self.instance.users.has_privilege(self.user, db, table, p) for p in ALL_PRIVILEGES)
 
     def close(self) -> None:
         """End the session. An unfinished transaction is rolled back (standard database behaviour)."""
@@ -414,6 +449,8 @@ class Engine:
     # ------------------------------------------------------------------
     def _exec_CreateDatabase(self, stmt: ast.CreateDatabase) -> Result:
         self._no_transaction("BANAO DATABASE")
+        if is_reserved_device_name(stmt.name):
+            raise ExecutionError(f"'{stmt.name}' Windows ka reserved naam hai -- koi aur naam chuno")
         path = self.instance.db_dir(stmt.name)
         if os.path.isdir(path):
             raise ExecutionError(f"Database '{stmt.name}' pehle se hai")
@@ -723,6 +760,8 @@ class Engine:
         )
 
     def _exec_CreateTable(self, stmt: ast.CreateTable) -> Result:
+        if is_reserved_device_name(stmt.name):
+            raise ExecutionError(f"'{stmt.name}' Windows ka reserved naam hai -- koi aur naam chuno")
         if self.catalog.find(stmt.name):
             raise ExecutionError(f"Table '{stmt.name}' pehle se hai")
         if stmt.name in self.catalog.views:
@@ -969,6 +1008,8 @@ class Engine:
         return Result(message=f"Column '{stmt.column}' '{schema.name}' se hata diya")
 
     def _exec_RenameTable(self, stmt: ast.RenameTable) -> Result:
+        if is_reserved_device_name(stmt.new_name):
+            raise ExecutionError(f"'{stmt.new_name}' Windows ka reserved naam hai -- koi aur naam chuno")
         schema = self.catalog.get(stmt.table)  # raises if it doesn't exist
         if stmt.new_name == stmt.table:
             raise ExecutionError(f"Naya naam purane naam '{stmt.table}' jaisa hi hai")

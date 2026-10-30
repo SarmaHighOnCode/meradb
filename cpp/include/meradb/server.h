@@ -19,8 +19,10 @@
 #include "meradb/net_compat.h"
 #include "meradb/protocol.h"
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -37,6 +39,15 @@ struct ServerOptions {
     // Where log lines go (already stamped "YYYY-MM-DD HH:MM:SS  message"). Default: stdout.
     std::function<void(const std::string&)> log;
     std::size_t maxMessageBytes = protocol::kMaxMessageBytes;  // tests lower it
+    // Limits on a peer that has not logged in. Every connection costs a thread, so these keep idle or slow strangers
+    // from using them all up. (A logged-in session has no idle limit: a workbench may legitimately sit open for hours.)
+    std::size_t maxHelloBytes = protocol::kMaxHelloBytes;
+    double handshakeTimeoutSeconds = 10.0;
+    int maxConnections = 256;  // beyond this a new connection is told so and closed
+    // After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
+    // loginLockSeconds whatever it sends (and costs no hashing). 0 = no limit.
+    int loginFailureLimit = 10;
+    double loginLockSeconds = 30.0;
 };
 
 class Server {
@@ -72,6 +83,15 @@ private:
     protocol::Json dispatch(Engine& session, const protocol::Json& request, const std::string& peerIp,
                             const std::string& peer, bool& stopConnection);
     void reap(bool everything);
+    bool loginLocked(const std::string& ip);
+    void noteLogin(const std::string& ip, bool succeeded);
+
+    struct LoginFailures {
+        int count = 0;
+        std::chrono::steady_clock::time_point lockedUntil;
+    };
+    std::mutex loginMutex_;
+    std::map<std::string, LoginFailures> loginFailures_;
 
     ServerOptions options_;
     std::shared_ptr<Instance> instance_;

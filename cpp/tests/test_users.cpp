@@ -36,7 +36,8 @@ TEST_CASE("users create stores salt and PBKDF2 hash, never the password", "[user
     std::string hashHex = j["ravi"]["hash"];
     CHECK(saltHex.size() == 32);   // 16 random bytes
     CHECK(hashHex.size() == 64);   // 32-byte digest
-    CHECK(hashHex == crypto::toHex(crypto::pbkdf2HmacSha256("hunter2", crypto::fromHex(saltHex), 100000, 32)));
+    CHECK(j["ravi"]["iterations"] == PBKDF2_ITERATIONS);
+    CHECK(hashHex == crypto::toHex(crypto::pbkdf2HmacSha256("hunter2", crypto::fromHex(saltHex), PBKDF2_ITERATIONS, 32)));
     CHECK(j["ravi"]["grants"].is_object());
     CHECK(j["ravi"]["grants"].empty());
 }
@@ -100,13 +101,10 @@ TEST_CASE("users file has exactly Python's json.dump(indent=2) shape", "[users]"
               "    }\n"
               "  }\n"
               "}");
-    // that file was written by the Python engine for password "pw": we must accept it ...
     UserStore users(dir.str());
-    CHECK(users.verify("ravi", "pw"));
-    CHECK_FALSE(users.verify("ravi", "PW"));
     CHECK(users.hasPrivilege("ravi", "main", "students", "DAALO"));
 
-    // ... and write it back byte for byte (no trailing newline, 2-space indent, insertion order)
+    // We must write that file back byte for byte (no trailing newline, 2-space indent, insertion order) ...
     users.grant("ravi", "main", "students", {"DIKHAO"});  // no change in content
     CHECK(readText(dir.file("users.json")) ==
           "{\n"
@@ -121,6 +119,11 @@ TEST_CASE("users file has exactly Python's json.dump(indent=2) shape", "[users]"
           "    }\n"
           "  }\n"
           "}");
+
+    // ... and accept it: it was written by the Python engine for password "pw". (Checked last: since the work factor
+    // went up, a successful login with an old hash rewrites the entry -- see test_security.cpp.)
+    CHECK(users.verify("ravi", "pw"));
+    CHECK_FALSE(users.verify("ravi", "PW"));
 }
 
 TEST_CASE("users persist across instances and non-ASCII passwords work", "[users]") {

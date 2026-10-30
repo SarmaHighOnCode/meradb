@@ -380,6 +380,7 @@ void Catalog::save() {
 }
 
 std::string Catalog::tablePath(const std::string& table) const {
+    if (!isSafeFileName(table)) throw StorageError(path_ + " corrupt hai: table ka naam " + pyRepr(table) + " sahi nahi hai");
     return (pathOf(dbDir_) / pathOf(table + ".tbl")).u8string();
 }
 

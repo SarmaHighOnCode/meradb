@@ -7,6 +7,7 @@
 #include "meradb/pytext.h"
 #include "meradb/sys_compat.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <filesystem>
@@ -99,6 +100,23 @@ std::string collapseWhitespace(const std::string& text, std::size_t limit) {
     return joined.substr(0, at);
 }
 
+// A script that may carry a password (BANAO USER naam GUPT '...') must not reach the log, not even echoed in a parse
+// error. It looks at whole words anywhere in the text, so PREPARE's quoted statement and a typo are caught too; a
+// false alarm only costs one log line its detail.
+bool mayHoldPassword(const std::string& text) {
+    std::string word;
+    auto sensitive = [&] { return word == "USER" || word == "GUPT" || word == "IDENTIFIED"; };
+    for (char c : text) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        } else {
+            if (sensitive()) return true;
+            word.clear();
+        }
+    }
+    return sensitive();
+}
+
 Json failure(const std::string& message) {
     Json reply = Json::object();
     reply["ok"] = false;
@@ -136,6 +154,30 @@ void Server::log(const std::string& message) {
     options_.log(sys::localLogStamp() + "  " + message);
 }
 
+bool Server::loginLocked(const std::string& ip) {
+    if (options_.loginFailureLimit <= 0) return false;
+    std::lock_guard<std::mutex> guard(loginMutex_);
+    auto it = loginFailures_.find(ip);
+    return it != loginFailures_.end() && std::chrono::steady_clock::now() < it->second.lockedUntil;
+}
+
+void Server::noteLogin(const std::string& ip, bool succeeded) {
+    if (options_.loginFailureLimit <= 0) return;
+    std::lock_guard<std::mutex> guard(loginMutex_);
+    if (succeeded) {
+        loginFailures_.erase(ip);
+        return;
+    }
+    if (loginFailures_.size() >= 10000 && !loginFailures_.count(ip)) loginFailures_.clear();  // the table stays bounded
+    LoginFailures& failures = loginFailures_[ip];
+    if (++failures.count >= options_.loginFailureLimit) {
+        failures.count = options_.loginFailureLimit - 1;  // after the lock, one more wrong guess locks again
+        failures.lockedUntil = std::chrono::steady_clock::now() +
+                               std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                   std::chrono::duration<double>(options_.loginLockSeconds));
+    }
+}
+
 void Server::reap(bool everything) {
     for (auto it = connections_.begin(); it != connections_.end();) {
         if (everything || (*it)->finished.load()) {
@@ -154,6 +196,7 @@ void Server::serveForever() {
     int failures = 0;
     std::string lastFailure;
     clock::time_point lastLogged;
+    bool atConnectionLimit = false;
     while (!stop_) {
         net::Socket accepted;
         try {
@@ -174,6 +217,16 @@ void Server::serveForever() {
         }
         reap(false);
         if (!accepted.valid()) continue;
+        if (options_.maxConnections > 0 && connections_.size() >= static_cast<std::size_t>(options_.maxConnections)) {
+            if (!atConnectionLimit) log("connection limit (" + std::to_string(options_.maxConnections) + ") poori -- naye connection mana");
+            atConnectionLimit = true;  // once per episode: a flood of refusals must not flood the log too
+            try {
+                protocol::send(accepted, failure("Server par bahut zyada connections hain -- thodi der baad try karo"), &stop_);
+            } catch (const net::NetError&) {
+            }
+            continue;
+        }
+        atConnectionLimit = false;
 
         auto connection = std::make_unique<Connection>();
         connection->socket = std::move(accepted);
@@ -203,12 +256,18 @@ void Server::serveConnection(Connection& connection) {
         protocol::MessageReader reader(socket, options_.maxMessageBytes, &stop_);
 
         // ---- 1. handshake ----
+        reader.setMaxBytes(std::min(options_.maxHelloBytes, options_.maxMessageBytes));
+        reader.setDeadline(std::chrono::steady_clock::now() +
+                           std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                               std::chrono::duration<double>(options_.handshakeTimeoutSeconds)));
         std::optional<Json> hello;
         try {
             hello = reader.receive();
         } catch (const protocol::ProtocolError&) {
             return;
         }
+        reader.setMaxBytes(options_.maxMessageBytes);
+        reader.setDeadline(std::nullopt);
         const Json* type = hello ? field(*hello, "type") : nullptr;
         if (!hello || type == nullptr || !type->is_string() || type->get<std::string>() != "hello") return;
 
@@ -217,18 +276,28 @@ void Server::serveConnection(Connection& connection) {
         const bool hasUser = pyTruthy(userField);
         const std::string user = hasUser ? pyStr(*userField) : "";
         const std::string password = pyTruthy(passwordField) ? pyStr(*passwordField) : "";
-        if (hasUser) {
-            // A per-user login SUPERSEDES the shared server password entirely.
-            // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
-            if (!instance_->users().verify(user, password)) {
-                protocol::send(socket, failure("User ya password galat hai"), &stop_);
-                log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
+        if (hasUser || !options_.password.empty()) {
+            if (loginLocked(peerIp)) {  // the same answer as a wrong password: it tells a guesser nothing
+                protocol::send(socket, failure(hasUser ? "User ya password galat hai" : "Password galat hai"), &stop_);
+                log(peer + "  login mana (is address se bahut galat koshishen)");
                 return;
             }
-        } else if (!options_.password.empty() && !constantTimeEquals(password, options_.password)) {
-            protocol::send(socket, failure("Password galat hai"), &stop_);
-            log(peer + "  login fail (galat password)");
-            return;
+            if (hasUser) {
+                // A per-user login SUPERSEDES the shared server password entirely.
+                // The message is bare: the client wraps it in ConnectionFailed, which adds the "[Connection Galti] " tag.
+                if (!instance_->users().verify(user, password)) {
+                    noteLogin(peerIp, false);
+                    protocol::send(socket, failure("User ya password galat hai"), &stop_);
+                    log(peer + "  login fail (galat user/password: " + pyRepr(user) + ")");
+                    return;
+                }
+            } else if (!constantTimeEquals(password, options_.password)) {
+                noteLogin(peerIp, false);
+                protocol::send(socket, failure("Password galat hai"), &stop_);
+                log(peer + "  login fail (galat password)");
+                return;
+            }
+            noteLogin(peerIp, true);
         }
 
         Engine session(instance_);
@@ -307,7 +376,10 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "query") {
         const Json* textField = field(request, "text");
         const std::string text = textField ? pyStr(*textField) : "";
-        if (options_.verbose) log(peer + "  [" + session.currentDb + "]  " + collapseWhitespace(text, 200));
+        const bool secretText = mayHoldPassword(text);
+        if (options_.verbose)
+            log(peer + "  [" + session.currentDb + "]  " + (secretText ? std::string("(user/password wali query -- log mein nahi likhi)")
+                                                                       : collapseWhitespace(text, 200)));
         std::vector<Result> results;
         try {
             results = session.runScript(text);
@@ -319,7 +391,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
         }
         Json encoded = Json::array();
         for (const auto& r : results) {
-            if (!r.error.empty()) log(peer + "  " + r.error);
+            if (!r.error.empty()) log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
             encoded.push_back(protocol::resultToJson(r));
         }
         Json reply = success();
@@ -342,6 +414,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "status") {
         Json reply = success();
         reply["server"] = protocol::kServerName;
+        if (session.user) return reply;  // the folder, the pid and every database name are for a superuser
         reply["pid"] = static_cast<std::int64_t>(sys::processId());
         reply["data_dir"] = instance_->dataDir();
         reply["started"] = started_;
@@ -355,6 +428,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "ping") return success();
 
     if (type == "shutdown") {
+        if (session.user) return failure("Shutdown sirf superuser (bina username connect kiya session) kar sakta hai");
         if (!isLoopback(peerIp))
             return failure("Shutdown sirf usi computer se ho sakta hai jahan server chal raha hai");
         log(peer + "  shutdown requested");
@@ -396,6 +470,15 @@ int serve(ServerOptions options) {
                       << plainText(existing->value("pid", Json(nullptr))) << ")\n";
             return 1;
         }
+    }
+
+    // Without a password a connection is a superuser (see the login code), so this would open the whole data folder to
+    // the network. Refused before anything is bound.
+    if (options.password.empty() && !isLoopback(options.host) && sys::getEnv("MERADB_ALLOW_NO_PASSWORD").value_or("") != "1") {
+        std::cerr << "Server start nahi hua: bina password ke network par (" << options.host
+                  << ") nahi khol sakte -- --password ya MERADB_PASSWORD do "
+                     "(sach mein aisa hi chahiye to MERADB_ALLOW_NO_PASSWORD=1 set karo)\n";
+        return 1;
     }
 
     std::unique_ptr<Server> server;
