@@ -143,6 +143,15 @@ TEST_CASE("security the hello message cannot choose a database outside the data 
     std::filesystem::remove_all(outside, ignored);
 }
 
+// ---- passwords ----
+
+TEST_CASE("security a user cannot be created with an empty password", "[security][passwords]") {
+    SecFixture f;
+    CHECK(runLast(f.admin, "BANAO USER blank GUPT '';").error ==
+          "[Execution Galti] User 'blank' ka password khali nahi ho sakta");
+    CHECK_FALSE(f.inst->users().exists("blank"));
+}
+
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 namespace {

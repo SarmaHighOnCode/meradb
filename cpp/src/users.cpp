@@ -202,6 +202,7 @@ std::vector<std::string> UserStore::names() const {
 
 void UserStore::create(const std::string& name, const std::string& password) {
     if (exists(name)) throw ExecutionError("User '" + name + "' pehle se hai");
+    if (password.empty()) throw ExecutionError("User '" + name + "' ka password khali nahi ho sakta");
     // the slow part (100,000 iterations) runs without the lock
     crypto::Bytes salt = sys::randomBytes(16);
     std::string hash = hashHex(password, salt);

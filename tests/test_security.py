@@ -13,6 +13,7 @@ from meradb.catalog import Catalog
 from meradb.engine import Engine
 from meradb.errors import ExecutionError, StorageError
 from meradb.server import MeraDBServer
+from meradb.users import UserStore
 
 
 class RawClient:
@@ -55,6 +56,18 @@ class ServerCase(unittest.TestCase):
         c = RawClient(self.server.port)
         self.clients.append(c)
         return c
+
+
+class PasswordTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.users = UserStore(self.dir)
+
+    def test_empty_password_is_refused(self):
+        with self.assertRaises(ExecutionError):
+            self.users.create("blank", "")
+        self.assertFalse(self.users.exists("blank"))
 
 
 class PathTests(ServerCase):

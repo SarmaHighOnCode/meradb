@@ -69,6 +69,8 @@ class UserStore:
     def create(self, name: str, password: str) -> None:
         if name in self.users:
             raise ExecutionError(f"User '{name}' pehle se hai")
+        if not password:
+            raise ExecutionError(f"User '{name}' ka password khali nahi ho sakta")
         salt = secrets.token_bytes(16)
         self.users[name] = {
             "salt": salt.hex(),
