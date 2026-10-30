@@ -8,6 +8,7 @@
 #include "meradb/scalar_funcs.h"
 #include "meradb/stack_guard.h"
 #include <algorithm>
+#include <limits>
 #include <cctype>
 
 namespace meradb {
@@ -374,6 +375,13 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             }
             auto fc = std::make_unique<FuncCall>();
             fc->name = upper;
+            // ALAG / DISTINCT. A column may be called distinct: only a value right after it makes it the soft word.
+            const bool softDistinct = isSoftWord(0, "distinct") && (peek(1).type != TokenType::Symbol || peek(1).textValue == "(" || peek(1).textValue == "*");
+            if (softDistinct) advance();
+            if (softDistinct || matchKeyword("ALAG")) {
+                fc->distinct = true;
+                if (checkSymbol("*")) error("ALAG ke baad column chahiye -- " + upper + "(ALAG *) nahi chalta");
+            }
             if (checkSymbol("*")) { advance(); fc->arg = std::make_unique<Star>(); }
             else fc->arg = parseOr();
             expectSymbol(")");
@@ -1559,13 +1567,27 @@ std::unique_ptr<Statement> Parser::parseDikhaoStmt() {
     }
 
     std::unique_ptr<Statement> result = parseSelectBody();
+    // `DIKHAO a KRAM x SIRF 2 SANYUKT DIKHAO b` sorts and cuts that side by itself. When no side but the last has such
+    // clauses they are written after the whole query and apply to its whole result, as in SQL.
+    auto hasOwnClauses = [](const Select& s) { return !s.orderBy.empty() || s.limit.has_value() || s.offset.has_value(); };
+    bool earlierClauses = hasOwnClauses(*static_cast<Select*>(result.get()));
     while (isSetOpKeyword(peek())) {
         auto op = std::make_unique<SetOp>();
         op->op = advance().textValue;
         spend();
         expectKeyword("DIKHAO");
         op->left = std::move(result);
-        op->right = parseSelectBody();
+        auto right = parseSelectBody();
+        if (!isSetOpKeyword(peek()) && !earlierClauses) {
+            op->orderBy = std::move(right->orderBy);
+            right->orderBy.clear();
+            op->limit = right->limit;
+            op->offset = right->offset;
+            right->limit.reset();
+            right->offset.reset();
+        }
+        earlierClauses = earlierClauses || hasOwnClauses(*right);
+        op->right = std::move(right);
         result = std::move(op);
     }
     return result;
@@ -1659,7 +1681,8 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
             const Token& t = peek();
             if (t.type != TokenType::Number || t.isFloat) error(std::string(what) + " ke baad ek whole number expected tha");
             advance();
-            return static_cast<int>(t.intValue);
+            // no result has more rows than an int can count, so a bigger number means the same as the largest int
+            return static_cast<int>(std::min<int64_t>(t.intValue, std::numeric_limits<int>::max()));
         };
         int first = wholeNumber("SIRF");
         if (matchSymbol(",")) {

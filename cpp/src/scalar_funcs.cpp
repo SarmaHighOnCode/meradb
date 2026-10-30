@@ -324,7 +324,7 @@ Value castValue(const Value& value, const std::string& type) {
         }
         if (isTextValue(value)) {
             const std::string& s = std::get<std::string>(value.data);
-            if (auto n = pytext::parseInt(s)) return Value(static_cast<int64_t>(*n));
+            if (auto n = pytext::parseIntExact(s)) return Value(static_cast<int64_t>(*n));
             double d = 0;
             if (parseFullDouble(s, d) && std::fabs(d) < 9.2e18) return Value(static_cast<int64_t>(std::round(d)));
         }

@@ -79,11 +79,11 @@ TEST_CASE("engine_triggers BEFORE trigger error vetoes the whole statement", "[e
     CHECK(d.q("DIKHAO * SE accounts;").rows.empty());
 }
 
-TEST_CASE("engine_triggers AFTER trigger error does not undo written rows", "[engine][triggers]") {
+TEST_CASE("engine_triggers AFTER trigger error undoes the written rows", "[engine][triggers]") {
     Db d;
     d.q("BANAO TRIGGER bad BAAD DAALO PAR accounts SHURU MITAO SE nosuch; KHATAM;");
     CHECK(d.q("DAALO MEIN accounts MAAN (1, 1), (2, 2);").error == "[Execution Galti] Table 'nosuch' exist nahi karta");
-    CHECK(d.q("DIKHAO * SE accounts;").rows.size() == 2);  // known limitation, mirrored from Python
+    CHECK(d.q("DIKHAO * SE accounts;").rows.empty());
 }
 
 TEST_CASE("engine_triggers upsert collisions fire UPDATE triggers, fresh rows fire INSERT triggers", "[engine][triggers]") {

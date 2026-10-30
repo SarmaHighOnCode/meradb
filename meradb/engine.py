@@ -256,6 +256,7 @@ class Engine:
         self.instance = data if isinstance(data, Instance) else Instance(data)
         self.current_db = DEFAULT_DATABASE
         self.txn_db: Optional[str] = None  # database of the open transaction, if any
+        self._no_statement_guard = 0  # > 0 inside a trigger or procedure body: see _all_or_nothing
         # The session's authenticated username, or None. None means SUPERUSER
         # (unrestricted) -- every embedded Engine and every session that
         # connects without a username (server clients only) behaves this way,
@@ -307,7 +308,38 @@ class Engine:
                 gone, self.current_db = self.current_db, DEFAULT_DATABASE
                 raise ExecutionError(f"Database '{gone}' ab exist nahi karta. Ab '{DEFAULT_DATABASE}' use ho raha hai.")
             self._check_privileges(stmt)
+            if isinstance(stmt, (ast.Insert, ast.Update, ast.Delete)) and self._may_fire_triggers(stmt.table):
+                return self._all_or_nothing(handler, stmt)
             return handler(stmt)
+
+    def _may_fire_triggers(self, table: str) -> bool:
+        if self._no_statement_guard > 0:  # inside a body: the statement around it owns the copy
+            return False
+        catalog = self.catalog
+        return any(t["table"] == table or table in catalog.views for t in catalog.triggers.values())
+
+    def _all_or_nothing(self, handler, stmt: ast.Statement) -> Result:
+        """
+        A statement that fires triggers is all or nothing: ANY error that stops it
+        (one raised inside a trigger body included) undoes its rows and whatever
+        the bodies wrote. Its copy is named .tmp, so crash recovery just drops it.
+        """
+        db = self.current_db
+        copy = self.instance._snapshot(db, ".stmt.tmp")
+        shutil.rmtree(copy, ignore_errors=True)
+        shutil.copytree(self.instance.db_dir(db), copy)
+        self._no_statement_guard += 1
+        try:
+            result = handler(stmt)
+        except Exception:
+            shutil.rmtree(self.instance.db_dir(db), ignore_errors=True)
+            os.replace(copy, self.instance.db_dir(db))
+            self.instance.forget(db)
+            raise
+        finally:
+            self._no_statement_guard -= 1
+        shutil.rmtree(copy, ignore_errors=True)
+        return result
 
     # ------------------------------------------------------------------
     # privileges (see users.py and docs/LANGUAGE.md "Users & privileges")
@@ -581,12 +613,9 @@ class Engine:
         `NAYA.col`/`PURANA.col` reference in it is replaced by a Literal of
         the matching value from new_row/old_row BEFORE it runs.
 
-        A PEHLE (BEFORE) trigger's error propagates and ABORTS the outer
-        DAALO/BADLO/MITAO entirely -- this doubles as a real, useful way to
-        veto a write from a trigger. A BAAD (AFTER) trigger's error also
-        propagates, but -- known limitation, see docs/ARCHITECTURE.md -- it
-        does NOT roll back the row(s) already written; it only prevents
-        anything scheduled after it in the same batch from happening.
+        An error in a PEHLE (BEFORE) or BAAD (AFTER) trigger propagates and undoes
+        the outer DAALO/BADLO/MITAO entirely, see _all_or_nothing -- this doubles
+        as a real, useful way to veto a write from a trigger.
         """
         for _name, trig in self.catalog.triggers_for(timing, event, table):
 
@@ -621,6 +650,13 @@ class Engine:
         return Result(message=f"Procedure '{stmt.name}' hata diya")
 
     def _exec_CallProcedure(self, stmt: ast.CallProcedure) -> Result:
+        self._no_statement_guard += 1  # a procedure's statements are not undone one by one: same as the C++ engine
+        try:
+            return self._call_procedure(stmt)
+        finally:
+            self._no_statement_guard -= 1
+
+    def _call_procedure(self, stmt: ast.CallProcedure) -> Result:
         proc = self.catalog.procedures.get(stmt.name)
         if proc is None:
             raise ExecutionError(f"Procedure '{stmt.name}' exist nahi karta")

@@ -173,6 +173,7 @@ std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
         auto out = std::make_unique<FuncCall>();
         out->name = f->name;
         out->arg = bind(f->arg.get(), scope);
+        out->distinct = f->distinct;
         return out;
     }
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {

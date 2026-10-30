@@ -102,6 +102,7 @@ void substituteStatementInPlace(Statement& stmt, const RefReplacer& replace, boo
         if (auto* setop = dynamic_cast<SetOp*>(&stmt)) {
             if (setop->left) substituteStatementInPlace(*setop->left, replace, true);
             if (setop->right) substituteStatementInPlace(*setop->right, replace, true);
+            for (auto& o : setop->orderBy) substituteInPlace(o.expr, replace, true);
             return;
         }
         if (auto* ex = dynamic_cast<Explain*>(&stmt)) {

@@ -489,15 +489,26 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         if (in->kind == "EXISTS") return result->scalar;  // the engine stored SACH/JHOOTH
         Value left = evaluate(*in->left, row, subqueries);
         if (left.isNull()) {
-            // KHALI op ANY/ALL (nothing) still has a definite answer; every other case is unknown
+            // KHALI op ANY/ALL (nothing) and KHALI MEIN (nothing) still have a definite answer; every other case is unknown
             if ((in->kind == "ANY" || in->kind == "ALL") && result->values.empty()) return Value(in->kind == "ALL");
+            if (in->kind == "IN" && result->values.empty()) return Value(in->negated);
             return Value();
         }
         if (in->kind == "ANY" || in->kind == "ALL") return quantified(*in, left, result->values);
-        bool isMember = false;
-        for (const auto& v : result->values)
-            if (!v.isNull() && pyEquals(left, v)) { isMember = true; break; }
-        return Value(in->negated ? !isMember : isMember);
+        // x MEIN (a, b, KHALI): SACH on a match, otherwise KHALI when the list held a KHALI (x might be that unknown value),
+        // otherwise JHOOTH. NAHI MEIN is exactly its negation, so x NAHI MEIN (.., KHALI) is never SACH.
+        bool isMember = false, sawNull = result->sawNull;
+        if (result->members) {
+            isMember = result->members->count(left) > 0;
+        } else {
+            for (const auto& v : result->values) {
+                if (v.isNull()) sawNull = true;
+                else if (pyEquals(left, v)) { isMember = true; break; }
+            }
+        }
+        if (isMember) return Value(!in->negated);
+        if (sawNull) return Value();
+        return Value(in->negated);
     }
 
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
@@ -647,7 +658,7 @@ std::string exprLabel(const Expr& expr) {
     if (auto* isn = dynamic_cast<const IsNull*>(&expr))
         return exprLabel(*isn->expr) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
     if (auto* f = dynamic_cast<const FuncCall*>(&expr))
-        return f->name + "(" + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
+        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
     if (auto* s = dynamic_cast<const Star*>(&expr)) return s->table ? *s->table + ".*" : "*";
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
         std::string out = "PEHLA(";

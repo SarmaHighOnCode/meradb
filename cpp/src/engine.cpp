@@ -159,8 +159,13 @@ void Instance::restoreCopy(const std::string& db, const std::string& tag) {
     std::error_code ec;
     fs::copy(from, staging, fs::copy_options::recursive, ec);
     if (ec) throw StorageError("Database '" + db + "' ki copy wapas nahi aa paayi: " + ec.message());
-    removeTreeQuietly(pathOf(dbDir(db)));
+    // The live folder steps aside in ONE rename, so a crash leaves it whole or leaves the finished staging copy, which
+    // recover() moves into place. (Deleting it first would lose the database if a crash came before the second rename.)
+    fs::path aside = pathOf(snapshotPath(db, ".aside.tmp"));
+    removeTreeQuietly(aside);
+    replacePath(pathOf(dbDir(db)), aside);
     replacePath(staging, pathOf(dbDir(db)));
+    removeTreeQuietly(aside);
     forget(db);
 }
 
@@ -180,6 +185,14 @@ std::vector<std::string> Instance::recover() {
     for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().u8string());
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
+        const std::string restoring = ".restoring.tmp";
+        if (endsWith(name, restoring)) {  // a restoreCopy that died between its two renames: this IS the database now
+            fs::path live = pathOf(dbDir(name.substr(0, name.size() - restoring.size())));
+            if (!fs::exists(live)) {
+                replacePath(root / pathOf(name), live);
+                continue;
+            }
+        }
         if (endsWith(name, ".tmp") || endsWith(name, ".done") || endsWith(name, ".sp")) {  // .sp = savepoint / statement copy
             removeTreeQuietly(root / pathOf(name));
         } else if (isSafeFileName(name)) {  // anything else was not put here by a transaction
@@ -424,9 +437,9 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const CreateFunction*>(&stmt)) return execCreateFunction(*s);
     if (auto* s = dynamic_cast<const DropFunction*>(&stmt)) return execDropFunction(*s);
     if (auto* s = dynamic_cast<const ShowFunctions*>(&stmt)) return execShowFunctions(*s);
-    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return guardSignal([&] { return execInsert(*s); });
-    if (auto* s = dynamic_cast<const Update*>(&stmt)) return guardSignal([&] { return execUpdate(*s); });
-    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return guardSignal([&] { return execDelete(*s); });
+    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return guardSignal(s->table, [&] { return execInsert(*s); });
+    if (auto* s = dynamic_cast<const Update*>(&stmt)) return guardSignal(s->table, [&] { return execUpdate(*s); });
+    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return guardSignal(s->table, [&] { return execDelete(*s); });
     if (auto* s = dynamic_cast<const Select*>(&stmt)) return execSelect(*s);
     if (auto* s = dynamic_cast<const SetOp*>(&stmt)) return execSetOp(*s);
     if (auto* s = dynamic_cast<const CreateView*>(&stmt)) return execCreateView(*s);
@@ -1361,25 +1374,31 @@ Result Engine::execReleaseSavepoint(const ast::ReleaseSavepoint& stmt) {
     return messageResult("Savepoint '" + stmt.name + "' hata diya (changes jaise ke taise rahe)");
 }
 
-// A trigger's SIGNAL undoes the whole DAALO / BADLO / MITAO that fired it: the statement runs between two copies of the
-// database folder, and a SignalError puts the copy back. Only the outermost statement does this (a nested one would
-// pull the files out from under the statements around it), and only when the database has triggers at all.
-Result Engine::guardSignal(const std::function<Result()>& run) {
-    if (bodyDepth_ > 0 || functionDepth_ > 0 || catalog().triggers.empty()) return run();
+// A statement that fires triggers is all or nothing: ANY error that stops it (a SIGNAL, a duplicate key or a division by
+// zero inside a body, the depth limit...) undoes its rows and whatever the bodies wrote. The statement runs between two
+// copies of the database folder, and the error puts the copy back. Only the outermost statement does this (a nested one would
+// pull the files out from under the statements around it), and only when this statement can fire one: a trigger on its
+// table (FK cascades fire none). A view stands for a base table not known here, and a stored function called by the
+// statement may write anywhere, so with either of those any trigger in the database counts.
+Result Engine::guardSignal(const std::string& table, const std::function<Result()>& run) {
+    if (bodyDepth_ > 0 || functionDepth_ > 0) return run();
+    Catalog& cat = catalog();
+    const bool anyTriggerCounts = cat.find(table) == nullptr || !cat.functions.empty();
+    bool mayFire = false;
+    for (auto it = cat.triggers.begin(); it != cat.triggers.end() && !mayFire; ++it)
+        mayFire = anyTriggerCounts || it.value().value("table", "") == table;
+    if (!mayFire) return run();
     const std::string db = currentDb;
     instance_->takeCopy(db, "stmt");
     try {
         Result r = run();
         instance_->dropCopy(db, "stmt");
         return r;
-    } catch (const SignalError&) {
+    } catch (...) {
         try {
             instance_->restoreCopy(db, "stmt");
         } catch (const std::exception&) {
         }
-        instance_->dropCopy(db, "stmt");
-        throw;
-    } catch (...) {
         instance_->dropCopy(db, "stmt");
         throw;
     }
@@ -2657,7 +2676,10 @@ Result Engine::execInsert(const ast::Insert& stmt, const RowCheck* check) {
             (void)oldValues;
             ignore.insert(rowId);
         }
-        checkUnique(*t, updatedNewRows, ignore);
+        // the updated rows and the rows going in fresh end up in the same table: they must not collide with each other
+        std::vector<std::vector<Value>> finalRows = updatedNewRows;
+        finalRows.insert(finalRows.end(), toInsert.begin(), toInsert.end());
+        checkUnique(*t, finalRows, ignore);
         checkFk(*t, updatedNewRows);
         // a TAKRAAV collision is really an UPDATE of an existing row, so it fires
         // BADLO triggers (not DAALO) -- matches real upsert semantics
@@ -3029,6 +3051,7 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
         auto out = std::make_unique<FuncCall>();
         out->name = f->name;
         out->arg = rec(f->arg.get());
+        out->distinct = f->distinct;
         return out;
     }
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
@@ -3059,6 +3082,48 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
     throw ExecutionError("Unknown expression");
 }
 
+// Replaces the column references `pick` chooses with a copy of the expression it returns. Does not enter subqueries:
+// they have names of their own. Used for KAHO aliases in JINKA.
+void replaceRefs(std::unique_ptr<ast::Expr>& expr, const std::function<const ast::Expr*(const ast::ColumnRef&)>& pick) {
+    using namespace ast;
+    if (!expr) return;
+    requireStack();
+    Expr* node = expr.get();
+    if (auto* ref = dynamic_cast<ColumnRef*>(node)) {
+        if (const Expr* replacement = pick(*ref)) expr = cloneExpr(*replacement);
+    } else if (auto* b = dynamic_cast<BinaryOp*>(node)) {
+        replaceRefs(b->left, pick);
+        replaceRefs(b->right, pick);
+    } else if (auto* u = dynamic_cast<UnaryOp*>(node)) {
+        replaceRefs(u->operand, pick);
+    } else if (auto* isn = dynamic_cast<IsNull*>(node)) {
+        replaceRefs(isn->expr, pick);
+    } else if (auto* co = dynamic_cast<Coalesce*>(node)) {
+        for (auto& e : co->args) replaceRefs(e, pick);
+    } else if (auto* sf = dynamic_cast<ScalarFunc*>(node)) {
+        for (auto& e : sf->args) replaceRefs(e, pick);
+    } else if (auto* cw = dynamic_cast<CaseWhen*>(node)) {
+        for (auto& branch : cw->branches) {
+            replaceRefs(branch.first, pick);
+            replaceRefs(branch.second, pick);
+        }
+        replaceRefs(cw->elseExpr, pick);
+    } else if (auto* in = dynamic_cast<InSubquery*>(node)) {
+        replaceRefs(in->left, pick);
+    }
+}
+
+// KRAM <whole number>: the 0-based output column it names; nullopt for any other expression.
+std::optional<size_t> orderPosition(const ast::Expr& e, size_t outputCount) {
+    auto* lit = dynamic_cast<const ast::Literal*>(&e);
+    if (lit == nullptr || !isIntValue(lit->value)) return std::nullopt;
+    int64_t n = std::get<int64_t>(lit->value.data);
+    if (n < 1 || static_cast<uint64_t>(n) > outputCount)
+        throw ExecutionError("KRAM " + std::to_string(n) + ": is query mein " + std::to_string(outputCount) +
+                             " output column(s) hain -- 1 se " + std::to_string(outputCount) + " tak ka number likho");
+    return static_cast<size_t>(n - 1);
+}
+
 // Scalar context (Subquery): exactly 1 column, 0 or 1 row. List context
 // (InSubquery): exactly 1 column, any number of rows.
 SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result) {
@@ -3075,6 +3140,16 @@ SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result)
         if (!result.rows.empty()) out.scalar = result.rows[0][0];
     } else {
         for (const auto& r : result.rows) out.values.push_back(r[0]);
+        auto* in = dynamic_cast<const ast::InSubquery*>(&node);
+        if (in != nullptr && in->kind == "IN") {  // the membership test is a hash lookup, not a scan for every outer row
+            auto members = std::make_shared<std::unordered_set<Value, PyValueHash, PyValueEq>>();
+            members->reserve(out.values.size());
+            for (const auto& v : out.values) {
+                if (v.isNull()) out.sawNull = true;
+                else members->insert(v);
+            }
+            out.members = std::move(members);
+        }
     }
     return out;
 }
@@ -3174,10 +3249,9 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
     plan->scope = std::make_unique<Scope>(selectSourcesScope(stmt, &plan->tables));
     const Scope& scope = *plan->scope;
 
-    // KAHO: an output alias becomes the column header, and (only) KRAM may
-    // refer back to it by name -- JAHAN/JINKA do not (standard SQL: they run
-    // before the output list exists). We collect {alias: unbound expr} here so
-    // KRAM can be rewritten to that expr BEFORE binding.
+    // KAHO: an output alias becomes the column header, and KRAM, SAMOOH and JINKA may refer back to it by name -- JAHAN
+    // does not (it runs before the output list exists). We collect {alias: unbound expr} here so they can be rewritten
+    // to that expr BEFORE binding.
     std::unordered_map<std::string, const ast::Expr*> aliasExprs;
 
     // MILAO ... USING (c): an unqualified c means the shared column (see Scope::declareUsing), and an unqualified
@@ -3227,20 +3301,36 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
         }
         return false;
     };
-    // a bare `naam` in KRAM that matches an alias (and isn't a real column)
-    // means the output expression, not a column lookup
-    auto orderExpr = [&](const ast::Expr& e) -> const ast::Expr& {
-        if (auto* ref = dynamic_cast<const ast::ColumnRef*>(&e)) {
-            auto it = aliasExprs.find(ref->name);
-            if (!ref->table.has_value() && it != aliasExprs.end() && !isRealColumn(ref->name)) return *it->second;
-        }
-        return e;
+    // A bare name in KRAM that matches an alias means the output expression, even when a column has that name too
+    // (standard SQL: ORDER BY looks at the output columns first). SAMOOH and JINKA look at the table's columns first and
+    // fall back to an alias, like MySQL.
+    auto aliasOf = [&](const ast::Expr& e, bool columnsFirst) -> const ast::Expr* {
+        auto* ref = dynamic_cast<const ast::ColumnRef*>(&e);
+        if (ref == nullptr || ref->table.has_value()) return nullptr;
+        auto it = aliasExprs.find(ref->name);
+        if (it == aliasExprs.end() || (columnsFirst && isRealColumn(ref->name))) return nullptr;
+        return it->second;
     };
 
     plan->where = bind(stmt.where.get(), scope);
-    for (const auto& g : stmt.groupBy) plan->groupBy.push_back(bind(*g, scope));
-    plan->having = bind(stmt.having.get(), scope);
-    for (const auto& o : stmt.orderBy) plan->orderBy.emplace_back(bind(orderExpr(*o.expr), scope), o.descending);
+    for (const auto& g : stmt.groupBy) {
+        const ast::Expr* alias = aliasOf(*g, true);
+        plan->groupBy.push_back(bind(alias ? *alias : *g, scope));
+    }
+    if (stmt.having) {
+        auto having = cloneExpr(*stmt.having);
+        replaceRefs(having, [&](const ast::ColumnRef& ref) { return aliasOf(ref, true); });
+        plan->having = bind(having.get(), scope);
+    }
+    for (const auto& o : stmt.orderBy) {
+        // KRAM 2: the second output column. Only a bare whole number is a position; KRAM 1 + 1 stays an expression.
+        if (auto position = orderPosition(*o.expr, plan->outputs.size())) {
+            plan->orderBy.emplace_back(cloneExpr(*plan->outputs[*position]), o.descending);
+            continue;
+        }
+        const ast::Expr* alias = aliasOf(*o.expr, false);
+        plan->orderBy.emplace_back(bind(alias ? *alias : *o.expr, scope), o.descending);
+    }
 
     // every distinct aggregate call, in first-seen order
     std::vector<const ast::Expr*> aggSources;
@@ -3558,6 +3648,34 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
         for (const auto& row : left.rows)
             if ((rightSet.count(row) > 0) == intersect && seen.insert(row).second) out.push_back(row);
     }
+    // KRAM / SIRF after the last side belong to the whole result. Only what it shows can sort it, so each key is an output
+    // column: its name (the first side's names count) or its position.
+    std::vector<std::pair<size_t, bool>> sortColumns;
+    for (const auto& o : stmt.orderBy) {
+        std::optional<size_t> position = orderPosition(*o.expr, left.columns.size());
+        if (!position) {
+            auto* ref = dynamic_cast<const ast::ColumnRef*>(o.expr.get());
+            const std::string name = ref ? ref->name : exprLabel(*o.expr);
+            auto it = std::find(left.columns.begin(), left.columns.end(), name);
+            if (it == left.columns.end())
+                throw ExecutionError("KRAM '" + name + "': " + stmt.op + " ka result sirf apne output columns se sort ho sakta hai (naam ya number)");
+            position = static_cast<size_t>(it - left.columns.begin());
+        }
+        sortColumns.emplace_back(*position, o.descending);
+    }
+    if (!sortColumns.empty())
+        std::stable_sort(out.begin(), out.end(), [&](const std::vector<Value>& a, const std::vector<Value>& b) {
+            for (const auto& [column, descending] : sortColumns) {
+                if (sortLess(a[column], b[column])) return !descending;
+                if (sortLess(b[column], a[column])) return descending;
+            }
+            return false;
+        });
+    if (stmt.offset.has_value()) {
+        if (static_cast<size_t>(*stmt.offset) >= out.size()) out.clear();
+        else out.erase(out.begin(), out.begin() + *stmt.offset);
+    }
+    if (stmt.limit.has_value() && static_cast<size_t>(*stmt.limit) < out.size()) out.resize(static_cast<size_t>(*stmt.limit));
     Result result;
     result.columns = left.columns;
     result.message = std::to_string(out.size()) + " row(s)";
@@ -4048,6 +4166,14 @@ Result Engine::execExplain(const ast::Explain& stmt) {
             lines.push_back(std::string("  ") + label + ":");
             for (const auto& line : subLines) lines.push_back("    " + line);
         }
+        if (!setOp->orderBy.empty()) {
+            std::vector<std::string> keys;
+            for (const auto& o : setOp->orderBy) keys.push_back(exprLabel(*o.expr) + (o.descending ? " ULTA" : ""));
+            lines.push_back("SORT   KRAM " + joinStrs(keys, ", "));
+        }
+        if (setOp->limit.has_value())
+            lines.push_back("LIMIT  SIRF " + std::to_string(*setOp->limit) +
+                            (setOp->offset.has_value() ? " OFFSET " + std::to_string(*setOp->offset) : std::string()));
     } else if (dynamic_cast<const ast::Update*>(&inner) || dynamic_cast<const ast::Delete*>(&inner)) {
         auto* upd = dynamic_cast<const ast::Update*>(&inner);
         const std::string& tableName = upd ? upd->table : static_cast<const ast::Delete&>(inner).table;

@@ -41,6 +41,7 @@ std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         auto f = std::make_unique<FuncCall>();
         f->name = fc->name;
         f->arg = cloneExpr(*fc->arg);
+        f->distinct = fc->distinct;
         return f;
     }
     if (const auto* sub = dynamic_cast<const Subquery*>(&e)) {
