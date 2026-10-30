@@ -7,12 +7,14 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 import unittest
 
 from meradb import ast_nodes as ast
 from meradb.catalog import Catalog
 from meradb.engine import Engine
 from meradb.errors import ExecutionError, StorageError
+from meradb.protocol import MAX_HELLO_BYTES
 from meradb.server import MeraDBServer
 from meradb.users import PBKDF2_ITERATIONS, PBKDF2_LEGACY_ITERATIONS, UserStore
 
@@ -135,6 +137,65 @@ class LogTests(ServerCase):
         self.assertNotIn("TopSecret99", "\n".join(self.log))
         c.request(type="query", text="DIKHAO 'still logged';")
         self.assertIn("still logged", "\n".join(self.log))
+
+
+class LimitTests(ServerCase):
+    def closed_within(self, client: RawClient, seconds: float) -> bool:
+        client.sock.settimeout(seconds)
+        try:
+            return client.rfile.readline() == b""
+        except socket.timeout:
+            return False
+        except OSError:
+            return True
+
+    def test_a_peer_that_never_says_hello_is_dropped(self):
+        self.server.handshake_timeout = 0.2
+        self.assertTrue(self.closed_within(self.client(), 3.0))
+
+    def test_a_slow_hello_does_not_extend_the_deadline(self):
+        self.server.handshake_timeout = 0.3
+        c = self.client()
+        try:
+            for _ in range(30):  # 1.5 s in all: five times the deadline
+                c.sock.sendall(b" ")
+                time.sleep(0.05)
+        except OSError:
+            return  # the server hung up while we were still sending
+        self.assertTrue(self.closed_within(c, 1.0))
+
+    def test_a_logged_in_session_has_no_deadline(self):
+        self.server.handshake_timeout = 0.2
+        c = self.client()
+        self.assertTrue(c.request(type="hello").get("ok"))
+        time.sleep(0.5)
+        self.assertTrue(c.request(type="ping").get("ok"))
+
+    def test_a_hello_is_limited_in_size(self):
+        c = self.client()
+        try:
+            self.assertFalse(c.request(type="hello", padding="x" * MAX_HELLO_BYTES).get("ok"))
+        except OSError:
+            pass  # closed with bytes still unread, which the OS reports as a reset
+
+    def test_connections_beyond_the_limit_are_refused(self):
+        self.server.max_connections = 2
+        held = [self.client(), self.client()]
+        for c in held:
+            self.assertTrue(c.request(type="hello").get("ok"))
+        extra = self.client()
+        try:
+            self.assertFalse(extra.request(type="hello").get("ok"))
+        except OSError:
+            pass  # the refusal can lose the race with our hello
+        for c in held:
+            c.close()
+        self.clients = [extra]
+        for _ in range(100):  # the slots come back once the handler threads end
+            if self.server._connections == 0:
+                break
+            time.sleep(0.02)
+        self.assertTrue(self.client().request(type="hello").get("ok"))
 
 
 class PathTests(ServerCase):

@@ -18,7 +18,8 @@ namespace fs = std::filesystem;
 MessageReader::Fill MessageReader::fill() {
     if (stop_ != nullptr) {
         while (!socket_.waitReadable(0.1))
-            if (stop_->load()) return Fill::Stopped;
+            if (stop_->load() || (deadline_ && std::chrono::steady_clock::now() >= *deadline_)) return Fill::Stopped;
+        if (deadline_ && std::chrono::steady_clock::now() >= *deadline_) return Fill::Stopped;  // a steady trickle of bytes
     }
     char chunk[65536];
     std::size_t n = socket_.recvSome(chunk, sizeof chunk);

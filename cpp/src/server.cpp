@@ -172,6 +172,7 @@ void Server::serveForever() {
     int failures = 0;
     std::string lastFailure;
     clock::time_point lastLogged;
+    bool atConnectionLimit = false;
     while (!stop_) {
         net::Socket accepted;
         try {
@@ -192,6 +193,16 @@ void Server::serveForever() {
         }
         reap(false);
         if (!accepted.valid()) continue;
+        if (options_.maxConnections > 0 && connections_.size() >= static_cast<std::size_t>(options_.maxConnections)) {
+            if (!atConnectionLimit) log("connection limit (" + std::to_string(options_.maxConnections) + ") poori -- naye connection mana");
+            atConnectionLimit = true;  // once per episode: a flood of refusals must not flood the log too
+            try {
+                protocol::send(accepted, failure("Server par bahut zyada connections hain -- thodi der baad try karo"), &stop_);
+            } catch (const net::NetError&) {
+            }
+            continue;
+        }
+        atConnectionLimit = false;
 
         auto connection = std::make_unique<Connection>();
         connection->socket = std::move(accepted);
@@ -221,12 +232,18 @@ void Server::serveConnection(Connection& connection) {
         protocol::MessageReader reader(socket, options_.maxMessageBytes, &stop_);
 
         // ---- 1. handshake ----
+        reader.setMaxBytes(std::min(options_.maxHelloBytes, options_.maxMessageBytes));
+        reader.setDeadline(std::chrono::steady_clock::now() +
+                           std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                               std::chrono::duration<double>(options_.handshakeTimeoutSeconds)));
         std::optional<Json> hello;
         try {
             hello = reader.receive();
         } catch (const protocol::ProtocolError&) {
             return;
         }
+        reader.setMaxBytes(options_.maxMessageBytes);
+        reader.setDeadline(std::nullopt);
         const Json* type = hello ? field(*hello, "type") : nullptr;
         if (!hello || type == nullptr || !type->is_string() || type->get<std::string>() != "hello") return;
 

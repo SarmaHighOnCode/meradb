@@ -9,6 +9,7 @@
 #include "meradb/net_compat.h"
 #include "meradb/pyjson.h"
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -23,6 +24,7 @@ constexpr const char* kDefaultHost = "127.0.0.1";
 constexpr int kDefaultPort = 6372;  // M-E-R-A on a phone keypad
 constexpr int kVersion = 1;
 constexpr std::size_t kMaxMessageBytes = 64u * 1024u * 1024u;  // refuse absurdly large lines
+constexpr std::size_t kMaxHelloBytes = 64u * 1024u;            // before login nobody needs more than this
 constexpr const char* kPidFile = "meradb.pid";
 constexpr const char* kProgramVersion = "1.0.0";  // Python's __version__ (shown in the shell banner)
 constexpr const char* kServerName = "MeraDB 1.0.0";  // "MeraDB " + kProgramVersion
@@ -50,6 +52,11 @@ public:
     // call continues with the next line. net::NetError passes through.
     std::optional<Json> receive();
 
+    // Limits for a peer that has not logged in yet. A deadline is absolute, so sending one byte now and then does not
+    // extend it; it needs `stop` (the polling loop is what notices it). Past it receive() acts as if the peer had closed.
+    void setMaxBytes(std::size_t maxBytes) { maxBytes_ = maxBytes; }
+    void setDeadline(std::optional<std::chrono::steady_clock::time_point> deadline) { deadline_ = deadline; }
+
 private:
     enum class Fill { Data, Eof, Stopped };
     Fill fill();
@@ -59,6 +66,7 @@ private:
     net::Socket& socket_;
     std::size_t maxBytes_;
     const std::atomic<bool>* stop_;
+    std::optional<std::chrono::steady_clock::time_point> deadline_;
     std::string buffer_;
     std::size_t scanned_ = 0;  // bytes of buffer_ already searched for a newline
     bool discarding_ = false;  // skipping the rest of an oversize line

@@ -37,6 +37,11 @@ struct ServerOptions {
     // Where log lines go (already stamped "YYYY-MM-DD HH:MM:SS  message"). Default: stdout.
     std::function<void(const std::string&)> log;
     std::size_t maxMessageBytes = protocol::kMaxMessageBytes;  // tests lower it
+    // Limits on a peer that has not logged in. Every connection costs a thread, so these keep idle or slow strangers
+    // from using them all up. (A logged-in session has no idle limit: a workbench may legitimately sit open for hours.)
+    std::size_t maxHelloBytes = protocol::kMaxHelloBytes;
+    double handshakeTimeoutSeconds = 10.0;
+    int maxConnections = 256;  // beyond this a new connection is told so and closed
 };
 
 class Server {

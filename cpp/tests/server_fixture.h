@@ -5,6 +5,7 @@
 #include "test_util.h"
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,7 +33,8 @@ bool waitFor(F condition, double seconds = 3.0) {
 class RunningServer {
 public:
     explicit RunningServer(const std::string& password = "", bool verbose = false,
-                           std::size_t maxMessageBytes = meradb::protocol::kMaxMessageBytes) {
+                           std::size_t maxMessageBytes = meradb::protocol::kMaxMessageBytes,
+                           const std::function<void(meradb::ServerOptions&)>& configure = {}) {
         meradb::ServerOptions options;
         options.dataDir = dir_.str();
         options.port = 0;
@@ -43,6 +45,7 @@ public:
             std::lock_guard<std::mutex> guard(logMutex_);
             lines_.push_back(line);
         };
+        if (configure) configure(options);
         server_ = std::make_unique<meradb::Server>(options);
         server_->instance().lockTimeoutSeconds = 0.5;
         thread_ = std::thread([this] {

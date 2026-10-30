@@ -20,8 +20,10 @@ Architecture:
 """
 
 import hmac
+import json
 import os
 import re
+import socket
 import socketserver
 import sys
 import threading
@@ -35,6 +37,7 @@ from .errors import MeraDBError
 from .protocol import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    MAX_HELLO_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
     receive,
@@ -53,9 +56,15 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
     daemon_threads = True  # don't let a hanging client block shutdown
     # On Windows SO_REUSEADDR lets TWO servers bind the same port -- never want that.
     allow_reuse_address = os.name != "nt"
+    # Limits on a peer that has not logged in. Every connection costs a thread, so these keep idle or slow strangers
+    # from using them all up. (A logged-in session has no idle limit: a workbench may legitimately sit open for hours.)
+    handshake_timeout = 10.0
+    max_connections = 256
 
     def __init__(self, data_dir: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  password: str | None = None, verbose: bool = False, log=None):
+        self._connections = 0
+        self._connections_lock = threading.Lock()
         self.instance = Instance(data_dir, served=True)
         self.password = password or None
         self.verbose = verbose
@@ -76,6 +85,24 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
         with self._sessions_lock:
             self.sessions += delta
 
+    def verify_request(self, request, client_address) -> bool:
+        with self._connections_lock:
+            if self._connections < self.max_connections:
+                self._connections += 1
+                return True
+        try:
+            request.sendall((json.dumps({"ok": False, "error": "Server par bahut zyada connections hain -- thodi der baad try karo"}) + "\n").encode())
+        except OSError:
+            pass
+        return False
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._connections_lock:
+                self._connections -= 1
+
 
 class ClientHandler(socketserver.StreamRequestHandler):
     server: MeraDBServer
@@ -85,10 +112,16 @@ class ClientHandler(socketserver.StreamRequestHandler):
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
 
         # ---- 1. handshake ----
+        # An absolute deadline: a per-read socket timeout would let one byte now and then keep the thread for ever.
+        deadline = threading.Timer(server.handshake_timeout, self._hang_up)
+        deadline.daemon = True
+        deadline.start()
         try:
-            hello = receive(self.rfile)
+            hello = receive(self.rfile, MAX_HELLO_BYTES)
         except (ProtocolError, OSError):
             return
+        finally:
+            deadline.cancel()
         if not hello or hello.get("type") != "hello":
             return
 
@@ -148,6 +181,12 @@ class ClientHandler(socketserver.StreamRequestHandler):
             session.close()  # rolls back an unfinished transaction
             server.track(-1)
             server.log(f"{peer}  disconnected  (active sessions: {server.sessions})")
+
+    def _hang_up(self) -> None:
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)  # wakes the thread blocked in receive()
+        except OSError:
+            pass
 
     def dispatch(self, session: Engine, request: dict, peer: str) -> tuple[dict, bool]:
         server = self.server

@@ -33,6 +33,12 @@ struct SecFixture {
     }
 };
 
+protocol::Json requestOf(const char* type) {
+    protocol::Json message = protocol::Json::object();
+    message["type"] = type;
+    return message;
+}
+
 }  // namespace
 
 // ---- privileges: statements that read or write more than their check looked at ----
@@ -244,15 +250,104 @@ TEST_CASE("security passwords in queries never reach the server log", "[security
     CHECK(server.logContains("nothing_here"));
 }
 
-// ---- requests that are not statements: nothing in checkPrivileges looks at them ----
+// ---- strangers: a peer that has not logged in must not be able to use the server up ----
 
 namespace {
-protocol::Json requestOf(const char* type) {
-    protocol::Json message = protocol::Json::object();
-    message["type"] = type;
-    return message;
+// True when the server closes the connection within `seconds` (a receive timeout means it is still open).
+bool closedWithin(RawClient& client, double seconds) {
+    client.socket().setReceiveTimeout(seconds);
+    try {
+        return !client.receive().has_value();
+    } catch (const net::NetError&) {
+        return false;
+    }
 }
 }  // namespace
+
+TEST_CASE("security a peer that never says hello is dropped", "[security][server][limits]") {
+    RunningServer server("", false, protocol::kMaxMessageBytes,
+                         [](ServerOptions& options) { options.handshakeTimeoutSeconds = 0.3; });
+    RawClient silent(server.port());
+    CHECK(closedWithin(silent, 3.0));
+}
+
+TEST_CASE("security sending a hello one byte at a time does not extend the deadline", "[security][server][limits]") {
+    RunningServer server("", false, protocol::kMaxMessageBytes,
+                         [](ServerOptions& options) { options.handshakeTimeoutSeconds = 0.4; });
+    RawClient slow(server.port());
+    bool closed = false;
+    try {
+        for (int i = 0; i < 40; ++i) {  // 2 s in all: five times the deadline
+            slow.sendRaw(" ");
+            sleepMs(50);
+        }
+    } catch (const net::NetError&) {  // the server hung up while we were still sending
+        closed = true;
+    }
+    CHECK((closed || closedWithin(slow, 1.0)));
+}
+
+TEST_CASE("security a logged-in session has no handshake deadline", "[security][server][limits]") {
+    RunningServer server("", false, protocol::kMaxMessageBytes,
+                         [](ServerOptions& options) { options.handshakeTimeoutSeconds = 0.2; });
+    RawClient client(server.port());
+    REQUIRE(client.hello().value("ok", false));
+    sleepMs(600);
+    CHECK(client.request(requestOf("ping")).value("ok", false));
+}
+
+TEST_CASE("security a hello is limited in size, a logged-in session is not", "[security][server][limits]") {
+    RunningServer server;
+    {
+        RawClient client(server.port());
+        auto big = requestOf("hello");
+        big["padding"] = std::string(protocol::kMaxHelloBytes, 'x');
+        bool refused = true;
+        try {
+            client.send(big);
+            refused = !client.receive().has_value();
+        } catch (const net::NetError&) {  // closed with bytes still unread, which the OS reports as a reset
+        }
+        CHECK(refused);
+    }
+    RawClient client(server.port());
+    REQUIRE(client.hello().value("ok", false));
+    auto reply = client.query("DIKHAO '" + std::string(1024 * 1024, 'x') + "';");
+    CHECK(reply.value("ok", false));
+    CHECK(reply["results"][0]["error"] == "");
+}
+
+TEST_CASE("security connections beyond the limit are refused, and capacity comes back", "[security][server][limits]") {
+    RunningServer server("", false, protocol::kMaxMessageBytes, [](ServerOptions& options) { options.maxConnections = 4; });
+    std::vector<std::unique_ptr<RawClient>> held;
+    for (int i = 0; i < 4; ++i) {
+        held.push_back(std::make_unique<RawClient>(server.port()));
+        REQUIRE(held.back()->hello().value("ok", false));
+    }
+    {
+        RawClient extra(server.port());
+        bool refused = true;
+        try {
+            auto reply = extra.hello();
+            refused = !reply.value("ok", true);
+            CHECK(reply.value("error", std::string()).find("connections") != std::string::npos);
+        } catch (const std::exception&) {  // the refusal can lose the race with our hello: the OS then reports a reset
+        }
+        CHECK(refused);
+        CHECK(server.logContains("connection limit"));
+    }
+    held.clear();
+    CHECK(waitFor([&] {  // finished threads are reaped when the next connection arrives
+        try {
+            RawClient again(server.port());
+            return again.hello().value("ok", false);
+        } catch (const std::exception&) {
+            return false;
+        }
+    }));
+}
+
+// ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 TEST_CASE("security a restricted user cannot shut the server down", "[security][server]") {
     RunningServer server;
