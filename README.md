@@ -242,7 +242,7 @@ export MERADB_DATA=/tmp/mera-try                # bash / zsh
 ctest --test-dir cpp/build --output-on-failure       # add  -C Release  for MSVC
 ```
 
-There are 901 tests (899 on Linux, where three pseudo-terminal tests run and the workbench
+There are 919 tests on Windows (Linux differs by a few, where three pseudo-terminal tests run and the workbench
 comparison is skipped without Textual): unit tests for every layer, and the cross-checks that compare the
 C++ program with the Python engine (these need Python, and the workbench comparison also
 needs the `textual` package, otherwise it is reported as skipped). A full run takes a
