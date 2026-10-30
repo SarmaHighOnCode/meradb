@@ -6,6 +6,7 @@
 #include "meradb/errors.h"
 #include "meradb/parser.h"
 #include "meradb/protocol.h"
+#include "meradb/scalar_funcs.h"
 #include "meradb/pyvalue.h"
 #include "meradb/stack_guard.h"
 #include "meradb/storage.h"
@@ -14,7 +15,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <functional>
 #include <set>
 #include <unordered_set>
 
@@ -134,6 +137,34 @@ void Instance::restoreSnapshot(const std::string& db) {
     forget(db);
 }
 
+void Instance::takeCopy(const std::string& db, const std::string& tag) {
+    const std::string suffix = "." + tag + ".sp";
+    fs::path tmp = pathOf(snapshotPath(db, suffix + ".tmp"));
+    removeTreeQuietly(tmp);
+    fs::create_directories(tmp.parent_path());
+    std::error_code ec;
+    fs::copy(pathOf(dbDir(db)), tmp, fs::copy_options::recursive, ec);
+    if (ec) throw StorageError("Database '" + db + "' ki copy nahi ban paayi: " + ec.message());
+    removeTreeQuietly(pathOf(snapshotPath(db, suffix)));
+    replacePath(tmp, pathOf(snapshotPath(db, suffix)));
+}
+
+void Instance::restoreCopy(const std::string& db, const std::string& tag) {
+    fs::path from = pathOf(snapshotPath(db, "." + tag + ".sp"));
+    fs::path staging = pathOf(snapshotPath(db, ".restoring.tmp"));  // a half-done restore is cleaned up like any .tmp
+    removeTreeQuietly(staging);
+    std::error_code ec;
+    fs::copy(from, staging, fs::copy_options::recursive, ec);
+    if (ec) throw StorageError("Database '" + db + "' ki copy wapas nahi aa paayi: " + ec.message());
+    removeTreeQuietly(pathOf(dbDir(db)));
+    replacePath(staging, pathOf(dbDir(db)));
+    forget(db);
+}
+
+void Instance::dropCopy(const std::string& db, const std::string& tag) {
+    removeTreeQuietly(pathOf(snapshotPath(db, "." + tag + ".sp")));
+}
+
 std::vector<std::string> Instance::recover() {
     // CRASH RECOVERY, run at startup. A snapshot still lying around means the
     // process died in the middle of a transaction that never reached PAKKA,
@@ -146,7 +177,7 @@ std::vector<std::string> Instance::recover() {
     for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().u8string());
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
-        if (endsWith(name, ".tmp") || endsWith(name, ".done")) {
+        if (endsWith(name, ".tmp") || endsWith(name, ".done") || endsWith(name, ".sp")) {  // .sp = savepoint / statement copy
             removeTreeQuietly(root / pathOf(name));
         } else {
             restoreSnapshot(name);
@@ -246,6 +277,17 @@ void checkCompositeColumns(const std::string& table, const std::vector<std::stri
     }
 }
 
+// ENUM('a','b'): the value must be one of the listed members (text compare).
+void checkEnum(const Column& col, const Value& value) {
+    if (col.enumValues.empty() || !isTextValue(value)) return;
+    const std::string& s = std::get<std::string>(value.data);
+    if (std::find(col.enumValues.begin(), col.enumValues.end(), s) != col.enumValues.end()) return;
+    std::string members;
+    for (size_t i = 0; i < col.enumValues.size(); ++i) members += (i ? ", " : "") + pyRepr(col.enumValues[i]);
+    throw ExecutionError("Column '" + col.name + "' ENUM(" + members + ") hai, par value " + pyRepr(s) +
+                         " mili -- sirf inhi mein se ek chalegi");
+}
+
 // Python's Engine._check_length. `len(value)` counts characters.
 void checkLength(const Column& col, const Value& value) {
     if (col.maxLength.has_value() && isTextValue(value) &&
@@ -326,6 +368,7 @@ std::vector<Result> Engine::runScript(const std::string& text) {
 Result Engine::executeStatement(const ast::Statement& stmt) {
     StackBase base;
     requireStack();
+    ScopedSessionHost sessionHost(this);  // @variables and stored functions, for every expression this statement evaluates
     // Hold the instance lock for the statement (waiting at most lockTimeoutSeconds).
     auto guard = acquireLock(instance_->lockTimeoutSeconds);
     if (!fs::is_directory(pathOf(instance_->dbDir(currentDb)))) {
@@ -335,6 +378,13 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     }
     checkPrivileges(stmt);
     using namespace ast;
+    if (functionDepth_ > 0 && !isReadOnlyStatement(stmt))
+        throw ExecutionError("Function ke andar sirf padhne wali statements (DIKHAO) chal sakti hain -- data ya schema badalna mana hai");
+    // SET autocommit = 0: the first statement that changes something starts a transaction, kept open until PAKKA / WAPAS
+    if (!autocommit_ && !inTransaction() && startsTransaction(stmt)) {
+        beginTransaction();
+        implicitTxn_ = true;
+    }
     if (auto* s = dynamic_cast<const CreateDatabase*>(&stmt)) return execCreateDatabase(*s);
     if (auto* s = dynamic_cast<const DropDatabase*>(&stmt)) return execDropDatabase(*s);
     if (auto* s = dynamic_cast<const UseDatabase*>(&stmt)) return execUseDatabase(*s);
@@ -347,19 +397,44 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const AlterAddColumn*>(&stmt)) return execAlterAddColumn(*s);
     if (auto* s = dynamic_cast<const AlterAddComposite*>(&stmt)) return execAlterAddComposite(*s);
     if (auto* s = dynamic_cast<const AlterDropColumn*>(&stmt)) return execAlterDropColumn(*s);
+    if (auto* s = dynamic_cast<const AlterModifyColumn*>(&stmt)) return execAlterModifyColumn(*s);
+    if (auto* s = dynamic_cast<const AlterAddForeignKey*>(&stmt)) return execAlterAddForeignKey(*s);
+    if (auto* s = dynamic_cast<const AlterDropForeignKey*>(&stmt)) return execAlterDropForeignKey(*s);
     if (auto* s = dynamic_cast<const RenameTable*>(&stmt)) return execRenameTable(*s);
     if (auto* s = dynamic_cast<const RenameColumn*>(&stmt)) return execRenameColumn(*s);
     if (auto* s = dynamic_cast<const Begin*>(&stmt)) return execBegin(*s);
     if (auto* s = dynamic_cast<const Commit*>(&stmt)) return execCommit(*s);
     if (auto* s = dynamic_cast<const Rollback*>(&stmt)) return execRollback(*s);
-    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return execInsert(*s);
-    if (auto* s = dynamic_cast<const Update*>(&stmt)) return execUpdate(*s);
-    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return execDelete(*s);
+    if (auto* s = dynamic_cast<const Savepoint*>(&stmt)) return execSavepoint(*s);
+    if (auto* s = dynamic_cast<const RollbackToSavepoint*>(&stmt)) return execRollbackToSavepoint(*s);
+    if (auto* s = dynamic_cast<const ReleaseSavepoint*>(&stmt)) return execReleaseSavepoint(*s);
+    if (auto* s = dynamic_cast<const SetVariable*>(&stmt)) return execSetVariable(*s);
+    if (auto* s = dynamic_cast<const ShowVariables*>(&stmt)) return execShowVariables(*s);
+    if (auto* s = dynamic_cast<const Prepare*>(&stmt)) return execPrepare(*s);
+    if (auto* s = dynamic_cast<const ExecutePrepared*>(&stmt)) return execExecutePrepared(*s);
+    if (auto* s = dynamic_cast<const Deallocate*>(&stmt)) return execDeallocate(*s);
+    if (auto* s = dynamic_cast<const CreateFunction*>(&stmt)) return execCreateFunction(*s);
+    if (auto* s = dynamic_cast<const DropFunction*>(&stmt)) return execDropFunction(*s);
+    if (auto* s = dynamic_cast<const ShowFunctions*>(&stmt)) return execShowFunctions(*s);
+    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return guardSignal([&] { return execInsert(*s); });
+    if (auto* s = dynamic_cast<const Update*>(&stmt)) return guardSignal([&] { return execUpdate(*s); });
+    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return guardSignal([&] { return execDelete(*s); });
     if (auto* s = dynamic_cast<const Select*>(&stmt)) return execSelect(*s);
     if (auto* s = dynamic_cast<const SetOp*>(&stmt)) return execSetOp(*s);
     if (auto* s = dynamic_cast<const CreateView*>(&stmt)) return execCreateView(*s);
     if (auto* s = dynamic_cast<const DropView*>(&stmt)) return execDropView(*s);
     if (auto* s = dynamic_cast<const ShowViews*>(&stmt)) return execShowViews(*s);
+    if (auto* s = dynamic_cast<const ShowDatabases*>(&stmt)) return execShowDatabases(*s);
+    if (auto* s = dynamic_cast<const ShowTriggers*>(&stmt)) return execShowTriggers(*s);
+    if (auto* s = dynamic_cast<const ShowProcedures*>(&stmt)) return execShowProcedures(*s);
+    if (auto* s = dynamic_cast<const ShowGrants*>(&stmt)) return execShowGrants(*s);
+    if (auto* s = dynamic_cast<const ShowCreateTable*>(&stmt)) return execShowCreateTable(*s);
+    if (auto* s = dynamic_cast<const ShowCreateView*>(&stmt)) return execShowCreateView(*s);
+    if (auto* s = dynamic_cast<const CreateRole*>(&stmt)) return execCreateRole(*s);
+    if (auto* s = dynamic_cast<const DropRole*>(&stmt)) return execDropRole(*s);
+    if (auto* s = dynamic_cast<const GrantRole*>(&stmt)) return execGrantRole(*s);
+    if (auto* s = dynamic_cast<const RevokeRole*>(&stmt)) return execRevokeRole(*s);
+    if (auto* s = dynamic_cast<const SetRole*>(&stmt)) return execSetRole(*s);
     if (auto* s = dynamic_cast<const Explain*>(&stmt)) return execExplain(*s);
     if (auto* s = dynamic_cast<const CreateUser*>(&stmt)) return execCreateUser(*s);
     if (auto* s = dynamic_cast<const DropUser*>(&stmt)) return execDropUser(*s);
@@ -431,14 +506,221 @@ std::vector<std::string> Engine::tablesRead(const ast::Select& stmt) {
     // VIEW's own stored query (that runs via resolveSource, never through
     // executeStatement, so it is never re-checked; a view is meant to be granted
     // by its own name).
-    std::vector<std::string> tables{stmt.table};
-    for (const auto& join : stmt.joins) tables.push_back(join.table);
+    // A derived table (subquery in FROM) contributes the tables ITS query reads.
+    std::vector<std::string> tables;
+    auto add = [&](const std::string& name, const ast::Select* derived) {
+        if (derived == nullptr) {
+            if (!name.empty()) tables.push_back(name);  // DIKHAO 1 + 1 has no table at all
+            return;
+        }
+        for (auto& inner : tablesRead(*derived)) tables.push_back(std::move(inner));
+    };
+    add(stmt.table, stmt.derived.get());
+    for (const auto& join : stmt.joins) add(join.table, join.derived.get());
     return tables;
 }
 
+namespace {
+
+// Visits the column references, `*` items and sub-selects of an expression tree. A sub-select is reported, not entered:
+// it has tables of its own.
+struct ExprVisitor {
+    virtual ~ExprVisitor() = default;
+    virtual void ref(ast::ColumnRef&) {}
+    virtual void star(ast::Star&) {}
+    virtual void sub(ast::Select&) {}
+};
+
+void walkExpr(ast::Expr* e, ExprVisitor& v) {
+    if (e == nullptr) return;
+    requireStack();
+    using namespace ast;
+    if (auto* c = dynamic_cast<ColumnRef*>(e)) v.ref(*c);
+    else if (auto* s = dynamic_cast<Star*>(e)) v.star(*s);
+    else if (auto* b = dynamic_cast<BinaryOp*>(e)) { walkExpr(b->left.get(), v); walkExpr(b->right.get(), v); }
+    else if (auto* u = dynamic_cast<UnaryOp*>(e)) walkExpr(u->operand.get(), v);
+    else if (auto* n = dynamic_cast<IsNull*>(e)) walkExpr(n->expr.get(), v);
+    else if (auto* f = dynamic_cast<FuncCall*>(e)) {
+        if (!dynamic_cast<Star*>(f->arg.get())) walkExpr(f->arg.get(), v);  // COUNT(*) reads no column
+    } else if (auto* sf = dynamic_cast<ScalarFunc*>(e)) { for (auto& a : sf->args) walkExpr(a.get(), v); }
+    else if (auto* co = dynamic_cast<Coalesce*>(e)) { for (auto& a : co->args) walkExpr(a.get(), v); }
+    else if (auto* cw = dynamic_cast<CaseWhen*>(e)) {
+        for (auto& [cond, value] : cw->branches) { walkExpr(cond.get(), v); walkExpr(value.get(), v); }
+        walkExpr(cw->elseExpr.get(), v);
+    } else if (auto* sq = dynamic_cast<Subquery*>(e)) {
+        if (sq->statement) v.sub(*sq->statement);
+    } else if (auto* in = dynamic_cast<InSubquery*>(e)) {
+        walkExpr(in->left.get(), v);
+        if (in->subquery && in->subquery->statement) v.sub(*in->subquery->statement);
+    }
+}
+
+struct RefCollector : ExprVisitor {
+    std::vector<const ast::ColumnRef*> refs;
+    std::vector<const ast::Star*> stars;
+    std::vector<const ast::Select*> subs;
+    void ref(ast::ColumnRef& r) override { refs.push_back(&r); }
+    void star(ast::Star& s) override { stars.push_back(&s); }
+    void sub(ast::Select& s) override { subs.push_back(&s); }
+    void add(const ast::Expr* e) { walkExpr(const_cast<ast::Expr*>(e), *this); }
+};
+
+// Calls f(ColumnRef&) for every column reference of an expression owned by the caller.
+template <typename F>
+void forEachRef(ast::Expr* e, F f) {
+    struct Visitor : ExprVisitor {
+        F& f;
+        explicit Visitor(F& fn) : f(fn) {}
+        void ref(ast::ColumnRef& r) override { f(r); }
+    } visitor(f);
+    walkExpr(e, visitor);
+}
+
+}  // namespace
+
+// The tables of one SELECT as the privilege check sees them (innermost query first, `outer` = the query around it).
+struct Engine::PrivScope {
+    struct Source {
+        std::string alias, table;      // table is empty for a derived table
+        Access access;                 // what the session may DIKHAO there
+        std::vector<std::string> columns;
+        bool unknown = false;          // a view or derived table: its columns are not known here
+    };
+    std::vector<Source> sources;
+    const PrivScope* outer = nullptr;
+};
+
+Access Engine::accessOf(const std::string& privilege, const std::string& table) {
+    return instance_->users().access(*user, activeRoles, currentDb, table, privilege);
+}
+
 void Engine::requirePrivilege(const std::string& privilege, const std::string& table) {
-    if (!instance_->users().hasPrivilege(*user, currentDb, table, privilege))
+    if (!accessOf(privilege, table).full)
         throw ExecutionError("'" + *user + "' ko table '" + table + "' par " + privilege + " ka adhikar nahi hai");
+}
+
+Access Engine::requireAccess(const std::string& privilege, const std::string& table) {
+    Access access = accessOf(privilege, table);
+    if (!access.any())
+        throw ExecutionError("'" + *user + "' ko table '" + table + "' par " + privilege + " ka adhikar nahi hai");
+    return access;
+}
+
+void Engine::denyColumn(const std::string& privilege, const std::string& table, const std::string& column) const {
+    throw ExecutionError("'" + *user + "' ko table '" + table + "' ke column '" + column + "' par " + privilege +
+                         " ka adhikar nahi hai");
+}
+
+// DIKHAO needs DIKHAO on every table it reads (FROM, MILAO, derived tables and sub-selects). If a table is granted only
+// column by column, the select list, JAHAN, SAMOOH, JINKA, KRAM and the MILAO conditions may name nothing else, and `*`
+// needs every column.
+void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) {
+    PrivScope scope;
+    scope.outer = outer;
+    auto addSource = [&](const std::string& table, const std::string& alias, const ast::Select* derived) {
+        PrivScope::Source s;
+        if (derived != nullptr) {
+            checkSelectAccess(*derived, outer);  // a derived table cannot see the query around it
+            s.alias = alias;
+            s.unknown = true;
+            s.access.full = true;
+            scope.sources.push_back(std::move(s));
+            return;
+        }
+        if (table.empty()) return;  // DIKHAO 1 + 1 has no table at all
+        s.alias = alias.empty() ? table : alias;
+        s.table = table;
+        s.access = requireAccess("DIKHAO", table);
+        if (const TableSchema* schema = catalog().find(table)) s.columns = schema->columnNames();
+        else s.unknown = true;  // a view
+        scope.sources.push_back(std::move(s));
+    };
+    addSource(stmt.table, stmt.alias.value_or(stmt.table), stmt.derived.get());
+    for (const auto& join : stmt.joins) addSource(join.table, join.alias, join.derived.get());
+
+    RefCollector strict, lenient;  // lenient: JINKA / KRAM may name an output alias (KAHO)
+    for (const auto& c : stmt.columns) strict.add(c.get());
+    strict.add(stmt.where.get());
+    for (const auto& g : stmt.groupBy) strict.add(g.get());
+    for (const auto& join : stmt.joins) strict.add(join.on.get());
+    lenient.add(stmt.having.get());
+    for (const auto& o : stmt.orderBy) lenient.add(o.expr.get());
+    for (const ast::Select* sub : strict.subs) checkSelectAccess(*sub, &scope);
+    for (const ast::Select* sub : lenient.subs) checkSelectAccess(*sub, &scope);
+
+    bool restricted = false;
+    for (const auto& s : scope.sources)
+        if (!s.access.full) restricted = true;
+    if (!restricted) return;
+
+    std::set<std::string> outputNames;
+    for (const auto& a : stmt.aliases)
+        if (a) outputNames.insert(*a);
+    auto resolve = [&](const ast::ColumnRef& ref) {
+        for (const PrivScope* sc = &scope; sc != nullptr; sc = sc->outer) {
+            std::vector<const PrivScope::Source*> hits;
+            for (const auto& s : sc->sources) {
+                if (ref.table) {
+                    if (s.alias == *ref.table || (!s.table.empty() && s.table == *ref.table)) hits.push_back(&s);
+                } else if (!s.unknown && std::find(s.columns.begin(), s.columns.end(), ref.name) != s.columns.end()) {
+                    hits.push_back(&s);
+                }
+            }
+            if (hits.empty() && !ref.table)
+                for (const auto& s : sc->sources)
+                    if (s.unknown) hits.push_back(&s);
+            if (hits.empty()) continue;  // maybe a column of the query around this one
+            for (const auto* h : hits)
+                if (!h->access.covers(ref.name)) denyColumn("DIKHAO", h->table.empty() ? h->alias : h->table, ref.name);
+            return;
+        }
+    };
+    for (const ast::Star* star : strict.stars) {
+        for (const auto& s : scope.sources) {
+            if (star->table && s.alias != *star->table && s.table != *star->table) continue;
+            if (s.access.full) continue;
+            const std::string shown = s.table.empty() ? s.alias : s.table;
+            if (s.unknown) denyColumn("DIKHAO", shown, "*");
+            for (const auto& c : s.columns)
+                if (!s.access.covers(c)) denyColumn("DIKHAO", shown, c);
+        }
+    }
+    for (const ast::ColumnRef* ref : strict.refs) resolve(*ref);
+    for (const ast::ColumnRef* ref : lenient.refs)
+        if (ref->table || !outputNames.count(ref->name)) resolve(*ref);
+}
+
+// Sub-selects hidden inside an expression (JAHAN x MEIN (DIKHAO ...), a value, ...) read tables too.
+void Engine::checkExprSubqueries(const ast::Expr* expr) {
+    if (expr == nullptr) return;
+    RefCollector found;
+    found.add(expr);
+    for (const ast::Select* sub : found.subs) checkSelectAccess(*sub, nullptr);
+}
+
+// A session that is not a superuser may grant a privilege only if it holds it WITH GRANT OPTION -- and, for a column
+// grant, on at least those columns.
+void Engine::checkGrantAllowed(const ast::Grant& stmt) {
+    // holding no grant option at all is the plain "superuser only" refusal; holding some but not enough says what is missing
+    bool holdsAny = false;
+    for (const auto& priv : stmt.privileges)
+        if (instance_->users().access(*user, activeRoles, currentDb, stmt.table, priv, true).any()) holdsAny = true;
+    if (!holdsAny)
+        throw ExecutionError("'" + *user + "' superuser nahi hai -- '" + astClassName(stmt) +
+                             "' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai");
+    for (const auto& priv : stmt.privileges) {
+        Access held = instance_->users().access(*user, activeRoles, currentDb, stmt.table, priv, true);
+        auto limited = stmt.columns.find(priv);
+        bool allowed = held.full;
+        if (!allowed && limited != stmt.columns.end() && !limited->second.empty()) {
+            allowed = true;
+            for (const auto& c : limited->second)
+                if (!held.covers(c)) allowed = false;
+        }
+        if (!allowed)
+            throw ExecutionError("'" + *user + "' ke paas '" + stmt.table + "' par " + priv +
+                                 " ka WITH GRANT OPTION nahi hai -- jo adhikar apne paas grant option ke saath nahi, wo kisi ko de nahi sakte");
+    }
 }
 
 void Engine::checkPrivileges(const ast::Statement& stmt) {
@@ -450,25 +732,53 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
     }
     if (dynamic_cast<const SetOp*>(&stmt)) return;  // execSetOp re-enters executeStatement for each side
     if (auto* sel = dynamic_cast<const Select*>(&stmt)) {
-        for (const auto& t : tablesRead(*sel)) requirePrivilege("DIKHAO", t);
+        checkSelectAccess(*sel, nullptr);
         return;
     }
     if (auto* ins = dynamic_cast<const Insert*>(&stmt)) {
-        requirePrivilege("DAALO", ins->table);
-        if (ins->select)
-            for (const auto& t : tablesRead(*ins->select)) requirePrivilege("DIKHAO", t);
+        Access access = requireAccess("DAALO", ins->table);
+        if (!access.full) {  // column-level INSERT: every column being filled must be granted
+            std::vector<std::string> cols;
+            if (ins->columns.has_value() && !ins->columns->empty()) cols = *ins->columns;
+            else if (const TableSchema* schema = catalog().find(ins->table)) cols = schema->columnNames();
+            else cols = {"*"};
+            for (const auto& c : cols)
+                if (!access.covers(c)) denyColumn("DAALO", ins->table, c);
+        }
+        if (ins->replace) requirePrivilege("MITAO", ins->table);  // REPLACE deletes the rows it collides with
+        if (ins->select) checkSelectAccess(*ins->select, nullptr);
+        for (const auto& row : ins->rows)
+            for (const auto& e : row) checkExprSubqueries(e.get());
+        if (ins->onConflictUpdate)
+            for (const auto& assignment : *ins->onConflictUpdate) checkExprSubqueries(assignment.second.get());
         return;
     }
     if (auto* upd = dynamic_cast<const Update*>(&stmt)) {
-        requirePrivilege("BADLO", upd->table);
+        Access access = requireAccess("BADLO", upd->table);
+        if (!access.full)
+            for (const auto& assignment : upd->assignments)
+                if (!access.covers(assignment.first)) denyColumn("BADLO", upd->table, assignment.first);
+        for (const auto& assignment : upd->assignments) checkExprSubqueries(assignment.second.get());
+        checkExprSubqueries(upd->where.get());
         return;
     }
     if (auto* del = dynamic_cast<const Delete*>(&stmt)) {
         requirePrivilege("MITAO", del->table);
+        checkExprSubqueries(del->where.get());
         return;
     }
-    // Everything else: DDL, VIEW/TRIGGER/PROCEDURE management, users and grants,
-    // transactions, database switching.
+    // Open to every session: choosing the database (grants are per database, so nothing is exposed), SET ROLE, and
+    // SHOW GRANTS for yourself.
+    if (dynamic_cast<const UseDatabase*>(&stmt) || dynamic_cast<const SetRole*>(&stmt)) return;
+    if (auto* shown = dynamic_cast<const ShowGrants*>(&stmt)) {
+        if (!shown->user.has_value() || *shown->user == *user) return;
+    }
+    // Passing a privilege on needs WITH GRANT OPTION (checked here, executed by execGrant)
+    if (auto* grant = dynamic_cast<const Grant*>(&stmt)) {
+        checkGrantAllowed(*grant);
+        return;
+    }
+    // Everything else: DDL, VIEW/TRIGGER/PROCEDURE management, users, roles and revokes, transactions.
     throw ExecutionError("'" + *user + "' superuser nahi hai -- '" + astClassName(stmt) +
                          "' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai");
 }
@@ -483,16 +793,82 @@ Result Engine::execDropUser(const ast::DropUser& stmt) {
     return messageResult("User '" + stmt.name + "' hata diya");
 }
 
+namespace {
+// "DIKHAO (a, b), DAALO": the privileges of a GRANT / REVOKE with their column lists
+std::string privilegeText(const std::vector<std::string>& privileges,
+                          const std::map<std::string, std::vector<std::string>>& columns) {
+    std::string out;
+    for (const auto& p : privileges) {
+        if (!out.empty()) out += ", ";
+        out += p;
+        auto limited = columns.find(p);
+        if (limited != columns.end() && !limited->second.empty()) out += " (" + joinStrs(limited->second, ", ") + ")";
+    }
+    return out;
+}
+}  // namespace
+
 Result Engine::execGrant(const ast::Grant& stmt) {
-    instance_->users().grant(stmt.user, currentDb, stmt.table, stmt.privileges);
+    if (const TableSchema* schema = catalog().find(stmt.table))
+        for (const auto& entry : stmt.columns)
+            for (const auto& c : entry.second) schema->indexOf(c);  // raises if the column does not exist
+    instance_->users().grant(stmt.user, currentDb, stmt.table, stmt.privileges, stmt.columns, stmt.withGrantOption);
     return messageResult("'" + stmt.user + "' ko '" + currentDb + "." + stmt.table + "' par " +
-                         joinStrs(stmt.privileges, ", ") + " ka adhikar mil gaya");
+                         privilegeText(stmt.privileges, stmt.columns) + " ka adhikar mil gaya" +
+                         (stmt.withGrantOption ? " (WITH GRANT OPTION)" : ""));
 }
 
 Result Engine::execRevoke(const ast::Revoke& stmt) {
-    instance_->users().revoke(stmt.user, currentDb, stmt.table, stmt.privileges);
+    instance_->users().revoke(stmt.user, currentDb, stmt.table, stmt.privileges, stmt.columns);
     return messageResult("'" + stmt.user + "' se '" + currentDb + "." + stmt.table + "' par " +
-                         joinStrs(stmt.privileges, ", ") + " ka adhikar wapas le liya");
+                         privilegeText(stmt.privileges, stmt.columns) + " ka adhikar wapas le liya");
+}
+
+// ---- roles ----
+
+Result Engine::execCreateRole(const ast::CreateRole& stmt) {
+    if (stmt.name == "none" || stmt.name == "all" || stmt.name == "default")
+        throw ExecutionError("'" + stmt.name + "' role ka naam nahi ho sakta (SET ROLE mein iska alag matlab hai)");
+    instance_->users().createRole(stmt.name);
+    return messageResult("Role '" + stmt.name + "' ban gaya");
+}
+
+Result Engine::execDropRole(const ast::DropRole& stmt) {
+    instance_->users().dropRole(stmt.name);
+    if (activeRoles) activeRoles->erase(stmt.name);
+    return messageResult("Role '" + stmt.name + "' hata diya");
+}
+
+Result Engine::execGrantRole(const ast::GrantRole& stmt) {
+    for (const auto& role : stmt.roles) instance_->users().grantRole(role, stmt.user);
+    return messageResult("Role " + joinStrs(stmt.roles, ", ") + " ab '" + stmt.user + "' ko mil gaya");
+}
+
+Result Engine::execRevokeRole(const ast::RevokeRole& stmt) {
+    for (const auto& role : stmt.roles) instance_->users().revokeRole(role, stmt.user);
+    return messageResult("Role " + joinStrs(stmt.roles, ", ") + " '" + stmt.user + "' se wapas le liya");
+}
+
+// SET ROLE r [, r] | SAB | NONE: picks which of the user's granted roles count for this session.
+Result Engine::execSetRole(const ast::SetRole& stmt) {
+    if (!user) return messageResult("SET ROLE ka koi asar nahi -- bina username ka session superuser hai, sab adhikar pehle se hain");
+    if (stmt.all) {
+        activeRoles.reset();
+        return messageResult("Ab '" + *user + "' ke saare granted roles active hain");
+    }
+    if (stmt.none) {
+        activeRoles = std::set<std::string>();
+        return messageResult("Ab koi role active nahi hai -- sirf '" + *user + "' ke apne adhikar chalenge");
+    }
+    std::vector<std::string> granted = instance_->users().rolesOf(*user);
+    std::set<std::string> chosen;
+    for (const auto& role : stmt.roles) {
+        if (std::find(granted.begin(), granted.end(), role) == granted.end())
+            throw ExecutionError("Role '" + role + "' '" + *user + "' ko diya hi nahi gaya");
+        chosen.insert(role);
+    }
+    activeRoles = std::move(chosen);
+    return messageResult("Ab role " + joinStrs(stmt.roles, ", ") + " active hai");
 }
 
 // ============================================================================
@@ -501,10 +877,13 @@ Result Engine::execRevoke(const ast::Revoke& stmt) {
 
 Result Engine::execCreateTrigger(const ast::CreateTrigger& stmt) {
     Catalog& cat = catalog();
-    if (cat.hasTrigger(stmt.name)) throw ExecutionError("Trigger '" + stmt.name + "' pehle se hai");
+    if (cat.hasTrigger(stmt.name)) {
+        if (stmt.ifNotExists) return messageResult("Trigger '" + stmt.name + "' pehle se hai -- kuch nahi badla (IF NOT EXISTS)");
+        throw ExecutionError("Trigger '" + stmt.name + "' pehle se hai");
+    }
     if (cat.find(stmt.table) == nullptr)
         throw ExecutionError("Table '" + stmt.table + "' exist nahi karta -- trigger sirf ek REAL table par lag sakta hai");
-    parseScript(stmt.bodyText);  // sanity check: the body must parse cleanly
+    checkBodyAllowed(parseProcBody(stmt.bodyText), "TRIGGER", stmt.timing, stmt.event);  // sanity check: the body must parse cleanly
     cat.addTrigger(stmt.name, stmt.timing, stmt.event, stmt.table, stmt.bodyText);
     return messageResult("Trigger '" + stmt.name + "' ban gaya (" + stmt.timing + " " + stmt.event + " PAR " +
                          stmt.table + ")");
@@ -512,7 +891,10 @@ Result Engine::execCreateTrigger(const ast::CreateTrigger& stmt) {
 
 Result Engine::execDropTrigger(const ast::DropTrigger& stmt) {
     Catalog& cat = catalog();
-    if (!cat.hasTrigger(stmt.name)) throw ExecutionError("Trigger '" + stmt.name + "' exist nahi karta");
+    if (!cat.hasTrigger(stmt.name)) {
+        if (stmt.ifExists) return messageResult("Trigger '" + stmt.name + "' exist nahi karta -- kuch nahi hatana (IF EXISTS)");
+        throw ExecutionError("Trigger '" + stmt.name + "' exist nahi karta");
+    }
     cat.removeTrigger(stmt.name);
     return messageResult("Trigger '" + stmt.name + "' hata diya");
 }
@@ -523,45 +905,41 @@ Row Engine::rowDict(const TableSchema& schema, const std::vector<Value>& values)
     return row;
 }
 
-void Engine::runBody(const std::string& bodyText, const RefReplacer& replace, std::vector<Result>* results) {
-    struct DepthGuard {  // local class: same access rights as the enclosing member function
-        Engine& engine;
-        explicit DepthGuard(Engine& e) : engine(e) {
-            if (engine.bodyDepth_ >= kMaxBodyDepth)
-                throw ExecutionError(
-                    "Trigger/procedure bahut gehra chal raha hai (limit " + std::to_string(kMaxBodyDepth) +
-                    ") -- shayad koi trigger khud ko baar-baar chala raha hai");
-            ++engine.bodyDepth_;
-        }
-        ~DepthGuard() { --engine.bodyDepth_; }
-    } guard(*this);
-    requireStack();
-
-    auto statements = parseScript(bodyText);  // fresh parse every time, like Python
-    for (auto& stmt : statements) {
-        substituteStatementInPlace(*stmt, replace);
-        Result r = executeStatement(*stmt);
-        if (results) results->push_back(std::move(r));
-    }
-}
-
+// A trigger body is run by the procedural interpreter (procedural.cpp): NAYA / PURANA are the frame's rows.
 void Engine::fireTriggers(const std::string& timing, const std::string& event, const std::string& table,
                           const Row* newRow, const Row* oldRow) {
+    fireTriggersImpl(timing, event, table, newRow, nullptr, oldRow,
+                     timing == "PEHLE" ? "is statement (REPLACE / TAKRAAV PAR BADLO) mein NAYA badalna supported nahi hai"
+                                       : "NAYA sirf PEHLE DAALO / PEHLE BADLO trigger mein badla ja sakta hai");
+}
+
+bool Engine::fireBeforeTriggers(const std::string& event, const std::string& table, Row& newRow, const Row* oldRow) {
+    return fireTriggersImpl("PEHLE", event, table, &newRow, &newRow, oldRow, "");
+}
+
+bool Engine::fireTriggersImpl(const std::string& timing, const std::string& event, const std::string& table,
+                              const Row* newView, Row* newWritable, const Row* oldRow, const std::string& cannotWrite) {
+    bool changed = false;
     // Copies (Catalog::triggersFor): a body may run DDL that changes the catalog.
     for (const auto& trigger : catalog().triggersFor(timing, event, table)) {
-        RefReplacer replace = [newRow, oldRow](const ast::ColumnRef& ref) -> std::optional<Value> {
-            if (ref.table && *ref.table == "naya" && newRow) {
-                auto it = newRow->find(ref.name);
-                if (it != newRow->end()) return it->second;
-            }
-            if (ref.table && *ref.table == "purana" && oldRow) {
-                auto it = oldRow->find(ref.name);
-                if (it != oldRow->end()) return it->second;
-            }
-            return std::nullopt;
-        };
-        runBody(trigger.bodyText, replace, nullptr);
+        ProcFrame frame;
+        frame.newView = newView;
+        frame.newRow = newWritable;
+        frame.oldRow = oldRow;
+        frame.newError = cannotWrite;
+        runBodyTree(trigger.bodyText, frame);
+        if (frame.newChanged) changed = true;
     }
+    return changed;
+}
+
+std::vector<Value> Engine::rowFromDict(const TableSchema& schema, const Row& dict) const {
+    std::vector<Value> values;
+    for (const auto& col : schema.columns) {
+        auto it = dict.find(col.name);
+        values.push_back(it == dict.end() ? Value() : it->second);
+    }
+    return values;
 }
 
 // ============================================================================
@@ -575,58 +953,39 @@ Result Engine::execCreateProcedure(const ast::CreateProcedure& stmt) {
     for (const auto& p : stmt.params) names.insert(p.name);
     if (names.size() != stmt.params.size())
         throw ExecutionError("Procedure '" + stmt.name + "': ek parameter naam do baar diya hai");
-    parseScript(stmt.bodyText);  // sanity check: the body must parse cleanly
+    checkBodyAllowed(parseProcBody(stmt.bodyText), "PROCEDURE", "", "");  // sanity check: the body must parse cleanly
     std::vector<std::pair<std::string, std::string>> params;
-    for (const auto& p : stmt.params) params.emplace_back(p.name, p.typeName);
-    cat.addProcedure(stmt.name, params, stmt.bodyText);
+    std::vector<std::string> modes;
+    for (const auto& p : stmt.params) {
+        params.emplace_back(p.name, p.typeName);
+        modes.push_back(p.mode);
+    }
+    cat.addProcedure(stmt.name, params, stmt.bodyText, nowText(), modes);
     return messageResult("Procedure '" + stmt.name + "' ban gaya (" + std::to_string(stmt.params.size()) +
                          " parameter(s))");
 }
 
+std::string Engine::nowText() {
+    std::time_t t = std::time(nullptr);
+    char buffer[32] = "";
+    if (const std::tm* local = std::localtime(&t)) std::strftime(buffer, sizeof buffer, "%Y-%m-%d %H:%M:%S", local);
+    return buffer;
+}
+
 Result Engine::execDropProcedure(const ast::DropProcedure& stmt) {
     Catalog& cat = catalog();
-    if (!cat.hasProcedure(stmt.name)) throw ExecutionError("Procedure '" + stmt.name + "' exist nahi karta");
+    if (!cat.hasProcedure(stmt.name)) {
+        if (stmt.ifExists) return messageResult("Procedure '" + stmt.name + "' exist nahi karta -- kuch nahi hatana (IF EXISTS)");
+        throw ExecutionError("Procedure '" + stmt.name + "' exist nahi karta");
+    }
     cat.removeProcedure(stmt.name);
     return messageResult("Procedure '" + stmt.name + "' hata diya");
 }
 
 Result Engine::execCallProcedure(const ast::CallProcedure& stmt) {
-    auto proc = catalog().findProcedure(stmt.name);
-    if (!proc) throw ExecutionError("Procedure '" + stmt.name + "' exist nahi karta");
-    if (stmt.args.size() != proc->params.size())
-        throw ExecutionError("Procedure '" + stmt.name + "' ko " + std::to_string(proc->params.size()) +
-                             " argument(s) chahiye, " + std::to_string(stmt.args.size()) + " mile");
-
-    // Arguments are evaluated as CONSTANT expressions (no outer row at a bare CHALAO),
-    // left to right, each coerced to its parameter's type.
-    std::unordered_map<std::string, Value> values;
-    for (size_t i = 0; i < proc->params.size(); ++i) {
-        const auto& pname = proc->params[i].first;
-        const auto& ptype = proc->params[i].second;
-        Value raw = evaluate(*stmt.args[i], Row{});
-        Value coerced = coerce(raw, ptype, pname);
-        values[pname] = std::move(coerced);
-    }
-
-    // Only a BARE (unqualified) reference matching a parameter name is substituted.
-    RefReplacer replace = [&values](const ast::ColumnRef& ref) -> std::optional<Value> {
-        if (!ref.table) {
-            auto it = values.find(ref.name);
-            if (it != values.end()) return it->second;
-        }
-        return std::nullopt;
-    };
-
-    std::vector<Result> results;
-    runBody(proc->bodyText, replace, &results);
-    std::string summary;
-    for (const auto& r : results) {
-        if (r.message.empty()) continue;
-        if (!summary.empty()) summary += "; ";
-        summary += r.message;
-    }
-    return messageResult("Procedure '" + stmt.name + "' chal gaya (" + std::to_string(results.size()) +
-                         " statement(s)): " + summary);
+    std::vector<const ast::Expr*> args;
+    for (const auto& a : stmt.args) args.push_back(a.get());
+    return callProcedure(stmt.name, args, nullptr);
 }
 
 void Engine::noTransaction(const std::string& command) const {
@@ -693,14 +1052,30 @@ Result Engine::execDescribe(const ast::Describe& stmt) {
     r.columns = {"column", "type", "constraints"};
     for (const auto& c : schema.columns) {
         std::string typeDisplay = c.maxLength.has_value() ? c.typeName + "(" + std::to_string(*c.maxLength) + ")" : c.typeName;
+        if (!c.enumValues.empty()) {
+            typeDisplay = "ENUM(";
+            for (size_t i = 0; i < c.enumValues.size(); ++i) typeDisplay += (i ? "," : "") + pyRepr(c.enumValues[i]);
+            typeDisplay += ")";
+        }
         std::vector<std::string> flags;
         if (c.primaryKey) flags.push_back("MUKHYA KUNJI");
         if (c.notNull) flags.push_back("ZAROORI");
         if (c.unique) flags.push_back("ANOKHA");
+        if (c.autoIncrement) flags.push_back("AUTO_INCREMENT");
         if (c.defaultValue.has_value() && !c.defaultValue->isNull())
             flags.push_back("WARNA " + exprLabel(ast::Literal(*c.defaultValue)));
-        if (nonEmpty(c.refTable))
-            flags.push_back("SANDARBH " + *c.refTable + "(" + c.refColumn.value_or("") + ")");
+        if (nonEmpty(c.refTable)) {
+            std::string fk = "SANDARBH " + *c.refTable + "(" + c.refColumn.value_or("") + ")";
+            // only a chosen name is shown: automatic <table>_ibfk_<n> names (which stay as they are when the table is
+            // renamed) are left out, so BATAO stays identical to the Python engine
+            size_t ibfk = c.fkName.rfind("_ibfk_");
+            bool autoName = ibfk != std::string::npos && ibfk + 6 < c.fkName.size() &&
+                            c.fkName.find_first_not_of("0123456789", ibfk + 6) == std::string::npos;
+            if (!c.fkName.empty() && !autoName) fk += " [" + c.fkName + "]";
+            if (!c.onDelete.empty()) fk += " ON DELETE " + c.onDelete;
+            if (!c.onUpdate.empty()) fk += " ON UPDATE " + c.onUpdate;
+            flags.push_back(fk);
+        }
         if (nonEmpty(c.check)) flags.push_back("SHART (" + *c.check + ")");
         r.rows.push_back({textValue(c.name), textValue(typeDisplay), textValue(joinStrs(flags, " "))});
     }
@@ -716,14 +1091,41 @@ Result Engine::execDescribe(const ast::Describe& stmt) {
 // transactions
 // ============================================================================
 
-Result Engine::execBegin(const ast::Begin&) {
-    if (inTransaction()) throw ExecutionError("Transaction pehle se chal raha hai (PAKKA ya WAPAS karo)");
+void Engine::beginTransaction() {
     instance_->takeSnapshot(currentDb);
     // Take the lock ONE EXTRA time and keep it until PAKKA/WAPAS: other
     // sessions now wait, so nobody sees our half-finished changes.
     instance_->lock.lock();
     txnThread_ = std::this_thread::get_id();
     txnDb = currentDb;
+    implicitTxn_ = false;
+}
+
+// PAKKA / WAPAS: every savepoint copy goes with the transaction.
+void Engine::finishTransaction(bool commit) {
+    clearSavepoints();
+    if (commit) instance_->discardSnapshot(*txnDb);
+    else instance_->restoreSnapshot(*txnDb);
+    txnDb.reset();
+    implicitTxn_ = false;
+    instance_->lock.unlock();
+}
+
+void Engine::clearSavepoints() {
+    if (txnDb) {
+        for (const auto& sp : savepoints_) instance_->dropCopy(*txnDb, sp.tag);
+    }
+    savepoints_.clear();
+}
+
+Result Engine::execBegin(const ast::Begin&) {
+    if (inTransaction()) {
+        // an autocommit = 0 transaction is closed by SHURU (committed), like MySQL's START TRANSACTION
+        if (!implicitTxn_ || txnThread_ != std::this_thread::get_id())
+            throw ExecutionError("Transaction pehle se chal raha hai (PAKKA ya WAPAS karo)");
+        finishTransaction(true);
+    }
+    beginTransaction();
     return messageResult("Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.");
 }
 
@@ -731,9 +1133,7 @@ Result Engine::execCommit(const ast::Commit&) {
     if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
     if (txnThread_ != std::this_thread::get_id())
         throw ExecutionError("Transaction jis thread ne SHURU kiya, PAKKA bhi wahi kar sakta hai");
-    instance_->discardSnapshot(*txnDb);
-    txnDb.reset();
-    instance_->lock.unlock();
+    finishTransaction(true);
     return messageResult("Transaction PAKKA -- saare changes save ho gaye");
 }
 
@@ -741,10 +1141,112 @@ Result Engine::execRollback(const ast::Rollback&) {
     if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
     if (txnThread_ != std::this_thread::get_id())
         throw ExecutionError("Transaction jis thread ne SHURU kiya, WAPAS bhi wahi kar sakta hai");
-    instance_->restoreSnapshot(*txnDb);
-    txnDb.reset();
-    instance_->lock.unlock();
+    finishTransaction(false);
     return messageResult("Transaction WAPAS -- saare changes undo ho gaye");
+}
+
+// SET autocommit = 1 commits whatever transaction is open (as in MySQL).
+void Engine::setAutocommit(bool on) {
+    if (on == autocommit_) return;
+    autocommit_ = on;
+    if (on && inTransaction()) {
+        if (txnThread_ != std::this_thread::get_id())
+            throw ExecutionError("Transaction jis thread ne SHURU kiya, PAKKA bhi wahi kar sakta hai");
+        finishTransaction(true);
+    }
+}
+
+// The statements that open a transaction under autocommit = 0: everything that writes (data, schema, procedures).
+// Reads, SHOW, SET, transaction control and the database-level commands (which refuse to run inside a transaction) do not.
+bool Engine::startsTransaction(const ast::Statement& stmt) {
+    using namespace ast;
+    return dynamic_cast<const Insert*>(&stmt) || dynamic_cast<const Update*>(&stmt) || dynamic_cast<const Delete*>(&stmt) ||
+           dynamic_cast<const CreateTable*>(&stmt) || dynamic_cast<const DropTable*>(&stmt) ||
+           dynamic_cast<const TruncateTable*>(&stmt) || dynamic_cast<const CompactTable*>(&stmt) ||
+           dynamic_cast<const AlterAddComposite*>(&stmt) || dynamic_cast<const AlterAddColumn*>(&stmt) ||
+           dynamic_cast<const AlterModifyColumn*>(&stmt) || dynamic_cast<const AlterAddForeignKey*>(&stmt) ||
+           dynamic_cast<const AlterDropForeignKey*>(&stmt) || dynamic_cast<const AlterDropColumn*>(&stmt) ||
+           dynamic_cast<const RenameTable*>(&stmt) || dynamic_cast<const RenameColumn*>(&stmt) ||
+           dynamic_cast<const CreateView*>(&stmt) || dynamic_cast<const DropView*>(&stmt) ||
+           dynamic_cast<const CreateTrigger*>(&stmt) || dynamic_cast<const DropTrigger*>(&stmt) ||
+           dynamic_cast<const CreateProcedure*>(&stmt) || dynamic_cast<const DropProcedure*>(&stmt) ||
+           dynamic_cast<const CreateFunction*>(&stmt) || dynamic_cast<const DropFunction*>(&stmt) ||
+           dynamic_cast<const CallProcedure*>(&stmt) || dynamic_cast<const ExecutePrepared*>(&stmt) ||
+           dynamic_cast<const Savepoint*>(&stmt);
+}
+
+bool Engine::isReadOnlyStatement(const ast::Statement& stmt) {
+    using namespace ast;
+    return dynamic_cast<const Select*>(&stmt) || dynamic_cast<const SetOp*>(&stmt) || dynamic_cast<const Explain*>(&stmt) ||
+           dynamic_cast<const ShowTables*>(&stmt) || dynamic_cast<const Describe*>(&stmt) ||
+           dynamic_cast<const ShowViews*>(&stmt) || dynamic_cast<const ShowDatabases*>(&stmt) ||
+           dynamic_cast<const ShowTriggers*>(&stmt) || dynamic_cast<const ShowProcedures*>(&stmt) ||
+           dynamic_cast<const ShowFunctions*>(&stmt) || dynamic_cast<const ShowGrants*>(&stmt) ||
+           dynamic_cast<const ShowCreateTable*>(&stmt) || dynamic_cast<const ShowCreateView*>(&stmt) ||
+           dynamic_cast<const ShowVariables*>(&stmt);
+}
+
+// ---- savepoints: copies of the database folder, taken inside the open transaction
+Result Engine::execSavepoint(const ast::Savepoint& stmt) {
+    if (!inTransaction()) throw ExecutionError("SAVEPOINT ke liye transaction chahiye -- pehle SHURU karo (ya SET autocommit = 0)");
+    for (auto it = savepoints_.begin(); it != savepoints_.end(); ++it) {
+        if (it->name == stmt.name) {  // the same name again replaces the old savepoint (it moves to the end)
+            instance_->dropCopy(*txnDb, it->tag);
+            savepoints_.erase(it);
+            break;
+        }
+    }
+    std::string tag = "sv" + std::to_string(++savepointSeq_);
+    instance_->takeCopy(*txnDb, tag);
+    savepoints_.push_back({stmt.name, tag});
+    return messageResult("Savepoint '" + stmt.name + "' set ho gaya");
+}
+
+Result Engine::execRollbackToSavepoint(const ast::RollbackToSavepoint& stmt) {
+    if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
+    size_t index = savepoints_.size();
+    for (size_t i = 0; i < savepoints_.size(); ++i)
+        if (savepoints_[i].name == stmt.name) index = i;
+    if (index == savepoints_.size()) throw ExecutionError("Savepoint '" + stmt.name + "' exist nahi karta");
+    for (size_t i = index + 1; i < savepoints_.size(); ++i) instance_->dropCopy(*txnDb, savepoints_[i].tag);
+    savepoints_.resize(index + 1);  // later savepoints are gone; this one stays
+    instance_->restoreCopy(*txnDb, savepoints_[index].tag);
+    return messageResult("Savepoint '" + stmt.name + "' tak WAPAS -- uske baad ke changes undo ho gaye (transaction abhi khula hai)");
+}
+
+Result Engine::execReleaseSavepoint(const ast::ReleaseSavepoint& stmt) {
+    if (!inTransaction()) throw ExecutionError("Koi transaction nahi chal raha (SHURU se shuru karo)");
+    size_t index = savepoints_.size();
+    for (size_t i = 0; i < savepoints_.size(); ++i)
+        if (savepoints_[i].name == stmt.name) index = i;
+    if (index == savepoints_.size()) throw ExecutionError("Savepoint '" + stmt.name + "' exist nahi karta");
+    for (size_t i = index; i < savepoints_.size(); ++i) instance_->dropCopy(*txnDb, savepoints_[i].tag);
+    savepoints_.resize(index);  // the savepoint and every one set after it
+    return messageResult("Savepoint '" + stmt.name + "' hata diya (changes jaise ke taise rahe)");
+}
+
+// A trigger's SIGNAL undoes the whole DAALO / BADLO / MITAO that fired it: the statement runs between two copies of the
+// database folder, and a SignalError puts the copy back. Only the outermost statement does this (a nested one would
+// pull the files out from under the statements around it), and only when the database has triggers at all.
+Result Engine::guardSignal(const std::function<Result()>& run) {
+    if (bodyDepth_ > 0 || functionDepth_ > 0 || catalog().triggers.empty()) return run();
+    const std::string db = currentDb;
+    instance_->takeCopy(db, "stmt");
+    try {
+        Result r = run();
+        instance_->dropCopy(db, "stmt");
+        return r;
+    } catch (const SignalError&) {
+        try {
+            instance_->restoreCopy(db, "stmt");
+        } catch (const std::exception&) {
+        }
+        instance_->dropCopy(db, "stmt");
+        throw;
+    } catch (...) {
+        instance_->dropCopy(db, "stmt");
+        throw;
+    }
 }
 
 // ============================================================================
@@ -769,13 +1271,47 @@ Column Engine::makeColumn(const ast::ColumnDef& def) const {
     column.refTable = def.refTable;
     column.refColumn = def.refColumn;
     column.check = def.check;
+    column.autoIncrement = def.autoIncrement;
+    column.enumValues = def.enumValues;
+    column.onDelete = def.onDelete;
+    column.onUpdate = def.onUpdate;
+    if (column.autoIncrement) {
+        if (column.typeName != "INT")
+            throw ExecutionError("Column '" + column.name + "': AUTO_INCREMENT sirf INT column par ho sakta hai");
+        column.notNull = true;  // a generated number is never KHALI
+    }
     // check the WARNA value fits the column type (and VARCHAR(n) length) now, not at the first INSERT
     if (def.defaultValue.has_value() && !def.defaultValue->isNull()) {
+        if (column.autoIncrement)
+            throw ExecutionError("Column '" + column.name + "': AUTO_INCREMENT ke saath WARNA nahi chalta");
         Value coerced = coerce(*def.defaultValue, column.typeName, column.name);
         checkLength(column, coerced);
+        checkEnum(column, coerced);
         column.defaultValue = coerced;
     }
     return column;
+}
+
+// One AUTO_INCREMENT per table; ON DELETE / ON UPDATE SET NULL needs a column that may be KHALI.
+void Engine::checkSchemaExtras(const TableSchema& schema) const {
+    int autos = 0;
+    for (const auto& c : schema.columns) {
+        if (c.autoIncrement) ++autos;
+        if ((c.onDelete == "SET NULL" || c.onUpdate == "SET NULL") && c.isRequired())
+            throw ExecutionError("Column '" + c.name +
+                                 "': SET NULL ke liye column KHALI ho sakna chahiye (ZAROORI / MUKHYA KUNJI nahi)");
+    }
+    if (autos > 1) throw ExecutionError("Ek table mein sirf ek AUTO_INCREMENT column ho sakta hai");
+}
+
+// Constraint names are unique across the whole database (MySQL's rule).
+void Engine::checkFkNameFree(const std::string& name, const std::string& exceptTable) {
+    for (const auto& [tableName, other] : catalog().tables) {
+        if (tableName == exceptTable) continue;
+        for (const auto& c : other.columns)
+            if (c.fkName == name)
+                throw ExecutionError("Constraint naam '" + name + "' table '" + tableName + "' mein pehle se hai");
+    }
 }
 
 // SANDARBH parent(column): the parent table must exist (or be the table being
@@ -826,6 +1362,8 @@ Result Engine::execCreateTable(const ast::CreateTable& stmt) {
     if (cat.find(stmt.name)) throw ExecutionError("Table '" + stmt.name + "' pehle se hai");
     if (cat.views.count(stmt.name))
         throw ExecutionError("'" + stmt.name + "' ek VIEW hai -- table usi naam se nahi ban sakti");
+    if (!stmt.likeTable.empty()) return execCreateTableLike(stmt);
+    if (stmt.asQuery) return execCreateTableAs(stmt);
     std::vector<std::string> names;
     for (const auto& c : stmt.columns) names.push_back(c.name);
     std::set<std::string> dupes;
@@ -858,13 +1396,171 @@ Result Engine::execCreateTable(const ast::CreateTable& stmt) {
     }
     schema.compositeUnique = stmt.compositeUnique;
     if (hasCompositePk) schema.compositePk = *stmt.compositePk;
+    // table-level [CONSTRAINT name] FOREIGN KEY (col) SANDARBH parent(col): set on the column, like the inline form
+    for (const auto& fk : stmt.foreignKeys) {
+        Column& col = schema.columns.at(schema.indexOf(fk.column));
+        if (nonEmpty(col.refTable)) throw ExecutionError("Column '" + col.name + "' par pehle se SANDARBH hai");
+        col.refTable = fk.refTable;
+        col.refColumn = fk.refColumn;
+        col.onDelete = fk.onDelete;
+        col.onUpdate = fk.onUpdate;
+        col.fkName = fk.name;
+    }
+    std::set<std::string> fkNames;
+    for (const auto& col : schema.columns)
+        if (!col.fkName.empty()) {
+            if (!fkNames.insert(col.fkName).second)
+                throw ExecutionError("Constraint naam '" + col.fkName + "' do baar diya hai");
+            checkFkNameFree(col.fkName, stmt.name);
+        }
     for (const auto& col : schema.columns) {
         if (nonEmpty(col.refTable)) checkFkTarget(col, schema);
         if (nonEmpty(col.check)) checkShartExpr(col, schema);
     }
+    checkSchemaExtras(schema);
+    schema.assignFkNames();
     HeapFile(cat.tablePath(stmt.name)).create();
     cat.add(schema);
     return messageResult("Table '" + stmt.name + "' ban gaya (" + std::to_string(schema.columns.size()) + " columns)");
+}
+
+// Everything the planner decided about one DIKHAO (also what SAMJHAO prints).
+struct Engine::SelectPlan {
+    struct JoinStep {
+        const ast::Join* join;
+        std::unique_ptr<ast::Expr> on;                                   // bound PAR
+        std::optional<std::pair<std::string, std::string>> hashKeys;     // (left key, right key) or nullopt
+    };
+    std::vector<std::unique_ptr<Table>> tables;
+    std::unique_ptr<Scope> scope;
+    std::vector<std::string> labels;
+    std::vector<std::unique_ptr<ast::Expr>> outputs;
+    std::unique_ptr<ast::Expr> where;
+    std::vector<std::unique_ptr<ast::Expr>> groupBy;
+    std::unique_ptr<ast::Expr> having;
+    std::vector<std::pair<std::unique_ptr<ast::Expr>, bool>> orderBy;  // (bound expr, descending)
+    std::vector<const ast::FuncCall*> aggregates;
+    bool grouped = false;
+    std::optional<IndexLookup> access;
+    std::vector<JoinStep> joins;
+};
+
+// BANAO TABLE t2 LIKE t1: the same columns and constraints (PK / ANOKHA / ZAROORI / WARNA / SHART / ENUM /
+// AUTO_INCREMENT / SANDARBH as written), no rows.
+Result Engine::execCreateTableLike(const ast::CreateTable& stmt) {
+    Catalog& cat = catalog();
+    const TableSchema* source = cat.find(stmt.likeTable);
+    if (source == nullptr) {
+        if (cat.views.count(stmt.likeTable))
+            throw ExecutionError("'" + stmt.likeTable + "' ek VIEW hai -- LIKE sirf table ke saath chalta hai");
+        throw ExecutionError("Table '" + stmt.likeTable + "' exist nahi karta");
+    }
+    TableSchema schema = *source;
+    schema.name = stmt.name;
+    for (auto& col : schema.columns) col.fkName.clear();  // constraint names are per database: the copy gets its own
+    schema.assignFkNames();
+    HeapFile(cat.tablePath(stmt.name)).create();
+    cat.add(schema);
+    return messageResult("Table '" + stmt.name + "' ban gaya ('" + stmt.likeTable + "' jaisa, " +
+                         std::to_string(schema.columns.size()) + " columns, 0 rows)");
+}
+
+namespace {
+
+bool isPlainIdentifier(const std::string& s) {
+    if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) return false;
+    for (char c : s)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+    return true;
+}
+
+// The column type for one output column of a query: a plain column keeps its table's type, NOW() is a DATETIME,
+// CAST(..) its target; anything else is read off the values (all numbers -> INT, or FLOAT if any has a fraction).
+std::string outputColumnType(const ast::Expr* expr, const Scope* scope, const std::vector<std::vector<Value>>& rows,
+                             size_t position, const std::string& label) {
+    if (auto* ref = dynamic_cast<const ast::ColumnRef*>(expr); ref && ref->bound && ref->table && scope) {
+        for (const auto& [alias, schema] : scope->sources())
+            if (alias == *ref->table)
+                for (const auto& c : schema.columns)
+                    if (c.name == ref->name) return c.typeName;
+    }
+    if (auto* fn = dynamic_cast<const ast::ScalarFunc*>(expr)) {
+        if (fn->name == "NOW") return "DATETIME";
+        if (fn->name == "CAST") return fn->castType;
+    }
+    bool hasInt = false, hasDouble = false, hasBool = false, hasText = false, hasDate = false;
+    for (const auto& row : rows) {
+        const Value& v = row[position];
+        if (v.isNull()) continue;
+        if (isBoolValue(v)) hasBool = true;
+        else if (isIntValue(v)) hasInt = true;
+        else if (isDoubleValue(v)) hasDouble = true;
+        else if (isDateValue(v)) hasDate = true;
+        else hasText = true;
+    }
+    int kinds = (hasInt || hasDouble ? 1 : 0) + (hasBool ? 1 : 0) + (hasText ? 1 : 0) + (hasDate ? 1 : 0);
+    if (kinds > 1)
+        throw ExecutionError("Column '" + label + "' mein alag-alag types ki values hain -- CAST se ek type karo");
+    if (hasBool) return "BOOL";
+    if (hasDouble) return "FLOAT";
+    if (hasInt) return "INT";
+    if (hasDate) return "DATE";
+    return "TEXT";
+}
+
+}  // namespace
+
+// BANAO TABLE t KAHO DIKHAO ...: columns named and typed after the query's output, then its rows; no constraints.
+Result Engine::execCreateTableAs(const ast::CreateTable& stmt) {
+    Catalog& cat = catalog();
+    std::unique_ptr<SelectPlan> plan;
+    Result query;
+    if (auto* select = dynamic_cast<const ast::Select*>(stmt.asQuery.get())) {
+        plan = planSelect(*select);
+        query = execSelect(*select);
+    } else if (auto* setOp = dynamic_cast<const ast::SetOp*>(stmt.asQuery.get())) {
+        query = execSetOp(*setOp);
+    } else {
+        throw ExecutionError("BANAO TABLE ... KAHO ke baad sirf DIKHAO query aa sakti hai");
+    }
+
+    TableSchema schema;
+    schema.name = stmt.name;
+    std::set<std::string> seen;
+    for (size_t i = 0; i < query.columns.size(); ++i) {
+        std::string label = query.columns[i];
+        auto dot = label.find('.');  // `s.naam` -> naam
+        if (dot != std::string::npos && isPlainIdentifier(label.substr(0, dot)) && isPlainIdentifier(label.substr(dot + 1)))
+            label = label.substr(dot + 1);
+        if (!isPlainIdentifier(label))
+            throw ExecutionError("Query ke column '" + query.columns[i] +
+                                 "' ko table ka column naam nahi bana sakte -- KAHO se alias do (jaise ... KAHO total)");
+        if (!seen.insert(label).second)
+            throw ExecutionError("Query mein column '" + label + "' do baar hai -- KAHO se alag naam do");
+        Column c;
+        c.name = label;
+        const ast::Expr* expr = plan && i < plan->outputs.size() ? plan->outputs[i].get() : nullptr;
+        c.typeName = outputColumnType(expr, plan ? plan->scope.get() : nullptr, query.rows, i, label);
+        schema.columns.push_back(std::move(c));
+    }
+    // convert every value up front, so a failure leaves nothing behind
+    std::vector<std::vector<Value>> rows;
+    for (const auto& row : query.rows) {
+        std::vector<Value> out;
+        for (size_t i = 0; i < row.size(); ++i) out.push_back(coerce(row[i], schema.columns[i].typeName, schema.columns[i].name));
+        rows.push_back(std::move(out));
+    }
+    HeapFile(cat.tablePath(stmt.name)).create();
+    try {
+        Table created(schema, cat.tablePath(stmt.name), instance_->indexCache(currentDb, stmt.name));
+        created.insertMany(rows);
+    } catch (...) {
+        HeapFile(cat.tablePath(stmt.name)).destroy();
+        throw;
+    }
+    cat.add(schema);
+    return messageResult("Table '" + stmt.name + "' ban gaya (" + std::to_string(schema.columns.size()) + " columns, " +
+                         std::to_string(rows.size()) + " row(s) daali)");
 }
 
 Result Engine::execDropTable(const ast::DropTable& stmt) {
@@ -943,10 +1639,17 @@ Result Engine::execAlterAddColumn(const ast::AlterAddColumn& stmt) {
     }
     bool hasDefault = newCol.defaultValue.has_value() && !newCol.defaultValue->isNull();
     Value defaultValue = hasDefault ? *newCol.defaultValue : Value();
+    // where the column goes: last (default), FIRST, or AFTER another column
+    size_t position = schema.columns.size();
+    if (stmt.position == "FIRST") position = 0;
+    else if (stmt.position == "AFTER") position = schema.indexOf(stmt.afterColumn) + 1;
+    if (newCol.autoIncrement &&
+        std::any_of(schema.columns.begin(), schema.columns.end(), [](const Column& c) { return c.autoIncrement; }))
+        throw ExecutionError("Ek table mein sirf ek AUTO_INCREMENT column ho sakta hai");
     if (oldRows.size() > 1 && newCol.isUnique() && hasDefault)
         // every existing row would get the same WARNA value -> duplicates
         throw ExecutionError("Naya ANOKHA column '" + newCol.name + "' sab rows mein ek hi WARNA value nahi le sakta");
-    if (!oldRows.empty() && newCol.isRequired() && !hasDefault)
+    if (!oldRows.empty() && newCol.isRequired() && !hasDefault && !newCol.autoIncrement)
         // every existing row would get KHALI in the new column, breaking ZAROORI
         throw ExecutionError("Table khali nahi hai; naya ZAROORI column '" + newCol.name + "' ko WARNA value chahiye");
 
@@ -969,19 +1672,29 @@ Result Engine::execAlterAddColumn(const ast::AlterAddColumn& stmt) {
         }
     }
 
-    // NOTE (mirrors Python): the new schema is built from the name and columns
-    // only, so table-level composite constraints are not carried over.
+    // table-level composite constraints are carried over (they name columns, not positions)
     TableSchema newSchema;
     newSchema.name = schema.name;
     newSchema.columns = schema.columns;
-    newSchema.columns.push_back(newCol);
+    newSchema.compositeUnique = schema.compositeUnique;
+    newSchema.compositePk = schema.compositePk;
+    newSchema.columns.insert(newSchema.columns.begin() + static_cast<std::ptrdiff_t>(position), newCol);
+    checkSchemaExtras(newSchema);
+    if (!newCol.fkName.empty()) checkFkNameFree(newCol.fkName, schema.name);
+    newSchema.assignFkNames();
+    // existing rows get the WARNA value (or KHALI if there is none); an AUTO_INCREMENT column numbers them 1, 2, 3...
+    auto withNew = [&](std::vector<Value> v, size_t rowNumber) {
+        v.insert(v.begin() + static_cast<std::ptrdiff_t>(position), newCol.autoIncrement ? Value(static_cast<int64_t>(rowNumber + 1)) : defaultValue);
+        return v;
+    };
     if (nonEmpty(newCol.check)) {
         checkShartExpr(newCol, newSchema);
         auto expr = parseExpression(*newCol.check);
         auto newNames = newSchema.columnNames();
-        for (const auto& v : oldRows) {
+        for (size_t r = 0; r < oldRows.size(); ++r) {
+            auto v = withNew(oldRows[r], r);
             Row row;
-            for (size_t i = 0; i < newNames.size(); ++i) row[newNames[i]] = i < v.size() ? v[i] : defaultValue;
+            for (size_t i = 0; i < newNames.size(); ++i) row[newNames[i]] = v[i];
             Value result = evaluate(*expr, row);
             if (isBoolValue(result) && !std::get<bool>(result.data))
                 throw ExecutionError("SHART toot gayi: (" + *newCol.check + ") -- column '" + newCol.name +
@@ -989,13 +1702,9 @@ Result Engine::execAlterAddColumn(const ast::AlterAddColumn& stmt) {
         }
     }
 
-    // existing rows get the WARNA value (or KHALI if there is none)
     auto types = newSchema.types();
     std::vector<std::vector<uint8_t>> payloads;
-    for (auto v : oldRows) {
-        v.push_back(defaultValue);
-        payloads.push_back(encodeRow(v, types));
-    }
+    for (size_t r = 0; r < oldRows.size(); ++r) payloads.push_back(encodeRow(withNew(oldRows[r], r), types));
     t->heap().rewrite(payloads);
     t->invalidateIndexes();
     catalog().add(newSchema);
@@ -1094,6 +1803,189 @@ Result Engine::execAlterDropColumn(const ast::AlterDropColumn& stmt) {
     return messageResult("Column '" + stmt.column + "' '" + schema.name + "' se hata diya");
 }
 
+// SUDHARO TABLE t CHANGE old new type ...  |  MODIFY col type ...
+// The new definition replaces the column's type, ZAROORI, WARNA, length, ENUM and AUTO_INCREMENT. MUKHYA KUNJI, ANOKHA,
+// SANDARBH and SHART are kept unless the new definition gives its own (SANDARBH / SHART). Existing values are converted
+// to the new type (like CAST) and the whole table is re-checked against the new column; any failure changes nothing.
+Result Engine::execAlterModifyColumn(const ast::AlterModifyColumn& stmt) {
+    auto t = table(stmt.table);
+    Catalog& cat = catalog();
+    const TableSchema schema = t->schema();
+    size_t idx = schema.indexOf(stmt.oldName);
+    const Column old = schema.columns[idx];
+    Column col = makeColumn(stmt.column);
+    bool renamed = col.name != old.name;
+    auto names = schema.columnNames();
+    if (renamed && std::find(names.begin(), names.end(), col.name) != names.end())
+        throw ExecutionError("Column '" + col.name + "' pehle se hai");
+    if (renamed)
+        for (const auto& other : schema.columns) {
+            if (!nonEmpty(other.check)) continue;
+            auto refs = columnRefKeys(parseExpression(*other.check).get());
+            if (std::find(refs.begin(), refs.end(), old.name) != refs.end())
+                throw ExecutionError("Column '" + old.name + "' ka naam badal nahi sakte -- column '" + other.name +
+                                     "' ka SHART '(" + *other.check + ")' ise use karta hai. Pehle wo SHART hatao");
+        }
+
+    // what the new definition does not say stays as it was
+    if (col.primaryKey && !old.primaryKey &&
+        (schema.compositePk.has_value() ||
+         std::any_of(schema.columns.begin(), schema.columns.end(), [](const Column& c) { return c.primaryKey; })))
+        throw ExecutionError("Table mein pehle se MUKHYA KUNJI hai");
+    col.primaryKey = col.primaryKey || old.primaryKey;
+    col.unique = col.unique || old.unique;
+    if (!nonEmpty(col.refTable)) {
+        col.refTable = old.refTable;
+        col.refColumn = old.refColumn;
+        col.fkName = old.fkName;
+        col.onDelete = old.onDelete;
+        col.onUpdate = old.onUpdate;
+    }
+    if (!nonEmpty(col.check)) col.check = old.check;
+    if (schema.compositePk.has_value() &&
+        std::find(schema.compositePk->begin(), schema.compositePk->end(), old.name) != schema.compositePk->end())
+        col.notNull = true;
+
+    TableSchema newSchema = schema;
+    newSchema.columns[idx] = col;
+    if (renamed) {  // composite ANOKHA / MUKHYA KUNJI groups name columns, so they follow the rename
+        for (auto& group : newSchema.compositeUnique)
+            for (auto& n : group)
+                if (n == old.name) n = col.name;
+        if (newSchema.compositePk)
+            for (auto& n : *newSchema.compositePk)
+                if (n == old.name) n = col.name;
+    }
+    bool typeChanged = col.typeName != old.typeName;
+    if (typeChanged) {  // a column other columns point at must keep its type
+        for (const auto& [otherName, other] : cat.tables)
+            for (const auto& c : (otherName == schema.name ? newSchema : other).columns)
+                if (c.refTable.has_value() && *c.refTable == schema.name && c.refColumn.has_value() && *c.refColumn == old.name)
+                    throw ExecutionError("Column '" + old.name + "' ka type nahi badal sakte -- " + otherName + "." + c.name +
+                                         " (SANDARBH) ise use karta hai");
+    }
+    if (!col.fkName.empty() && col.fkName != old.fkName) checkFkNameFree(col.fkName, schema.name);
+    newSchema.assignFkNames();
+    col = newSchema.columns[idx];
+    if (nonEmpty(col.refTable)) checkFkTarget(col, newSchema);
+    if (nonEmpty(col.check)) checkShartExpr(col, newSchema);
+    checkSchemaExtras(newSchema);
+
+    // convert and re-check every existing row against the new schema
+    std::vector<std::vector<Value>> rows;
+    for (auto& [id, values] : t->rows()) {
+        (void)id;
+        Value& cell = values[idx];
+        if (typeChanged && !cell.isNull()) {
+            try {
+                cell = castValue(cell, col.typeName);
+            } catch (const ExecutionError& e) {
+                throw ExecutionError("Column '" + old.name + "' ki value " + pyRepr(formatValue(cell)) + " ko " +
+                                     col.typeName + " mein badal nahi sakte (" + e.message() + ")");
+            }
+        }
+        try {
+            rows.push_back(validateRow(newSchema, values));
+        } catch (const ExecutionError& e) {
+            throw ExecutionError(std::string("Maujooda data naye column ke liye theek nahi: ") + e.message());
+        }
+    }
+    std::vector<std::vector<size_t>> groups;
+    for (size_t i = 0; i < newSchema.columns.size(); ++i)
+        if (newSchema.columns[i].isUnique()) groups.push_back({i});
+    for (const auto& g : newSchema.compositeUnique) {
+        groups.emplace_back();
+        for (const auto& n : g) groups.back().push_back(newSchema.indexOf(n));
+    }
+    if (newSchema.compositePk) {
+        groups.emplace_back();
+        for (const auto& n : *newSchema.compositePk) groups.back().push_back(newSchema.indexOf(n));
+    }
+    for (const auto& g : groups) {
+        std::unordered_set<std::vector<Value>, ValueVecHash, ValueVecEq> seen;
+        for (const auto& values : rows) {
+            std::vector<Value> key;
+            bool hasNull = false;
+            for (size_t p : g) {
+                key.push_back(values[p]);
+                hasNull = hasNull || values[p].isNull();
+            }
+            if (hasNull) continue;
+            if (!seen.insert(key).second)
+                throw ExecutionError("Duplicate value " + pyReprTuple(key) + " column '" + newSchema.columns[g[0]].name +
+                                     "' mein -- naye column definition ke baad ye ANOKHA/MUKHYA KUNJI toot jaati hai");
+        }
+    }
+
+    auto types = newSchema.types();
+    std::vector<std::vector<uint8_t>> payloads;
+    for (const auto& values : rows) payloads.push_back(encodeRow(values, types));
+    t->heap().rewrite(payloads);
+    t->invalidateIndexes();
+    if (renamed) {  // every SANDARBH pointing at the old name follows it (a self-reference included)
+        for (auto& entry : cat.tables)
+            for (auto& c : (entry.first == schema.name ? newSchema : entry.second).columns)
+                if (c.refTable.has_value() && *c.refTable == schema.name && c.refColumn.has_value() && *c.refColumn == old.name)
+                    c.refColumn = col.name;
+    }
+    cat.add(newSchema);
+    return messageResult("Column '" + old.name + "' ab " + (renamed ? "'" + col.name + "' " : std::string()) +
+                         (col.enumValues.empty() ? col.typeName : "ENUM") + " hai (" + std::to_string(rows.size()) +
+                         " row(s) check ki)");
+}
+
+// SUDHARO TABLE t JODO [CONSTRAINT name] FOREIGN KEY (col) SANDARBH parent(col) [ON DELETE ..] [ON UPDATE ..]
+Result Engine::execAlterAddForeignKey(const ast::AlterAddForeignKey& stmt) {
+    auto t = table(stmt.table);
+    Catalog& cat = catalog();
+    TableSchema schema = t->schema();
+    const ast::ForeignKeyDef& fk = stmt.foreignKey;
+    size_t pos = schema.indexOf(fk.column);
+    Column& col = schema.columns[pos];
+    if (nonEmpty(col.refTable))
+        throw ExecutionError("Column '" + col.name + "' par pehle se SANDARBH hai (" + col.fkName + ") -- pehle use hatao");
+    col.refTable = fk.refTable;
+    col.refColumn = fk.refColumn;
+    col.onDelete = fk.onDelete;
+    col.onUpdate = fk.onUpdate;
+    col.fkName = fk.name;
+    if (!fk.name.empty()) checkFkNameFree(fk.name, schema.name);
+    for (size_t i = 0; i < schema.columns.size() && !fk.name.empty(); ++i)
+        if (i != pos && schema.columns[i].fkName == fk.name)
+            throw ExecutionError("Constraint naam '" + fk.name + "' is table mein pehle se hai");
+    checkFkTarget(col, schema);
+    checkSchemaExtras(schema);
+    schema.assignFkNames();
+    // every existing value must already be in the parent
+    Table withFk(schema, cat.tablePath(stmt.table), instance_->indexCache(currentDb, stmt.table));
+    std::vector<std::vector<Value>> rows;
+    for (auto& [id, values] : t->rows()) {
+        (void)id;
+        rows.push_back(std::move(values));
+    }
+    checkFk(withFk, rows);
+    cat.add(schema);
+    return messageResult("Table '" + stmt.table + "' mein FOREIGN KEY '" + schema.columns[pos].fkName + "' (" + fk.column +
+                         " -> " + fk.refTable + "." + fk.refColumn + ") jod di");
+}
+
+// SUDHARO TABLE t HATAO FOREIGN KEY name  |  HATAO CONSTRAINT name
+Result Engine::execAlterDropForeignKey(const ast::AlterDropForeignKey& stmt) {
+    Catalog& cat = catalog();
+    TableSchema schema = cat.get(stmt.table);
+    for (auto& col : schema.columns) {
+        if (col.fkName != stmt.name || !nonEmpty(col.refTable)) continue;
+        col.refTable.reset();
+        col.refColumn.reset();
+        col.fkName.clear();
+        col.onDelete.clear();
+        col.onUpdate.clear();
+        cat.add(schema);
+        return messageResult("Table '" + stmt.table + "' ka FOREIGN KEY '" + stmt.name + "' hata diya");
+    }
+    throw ExecutionError("Table '" + stmt.table + "' mein FOREIGN KEY '" + stmt.name + "' nahi hai");
+}
+
 Result Engine::execRenameTable(const ast::RenameTable& stmt) {
     Catalog& cat = catalog();
     TableSchema schema = cat.get(stmt.table);  // raises if it doesn't exist
@@ -1139,6 +2031,12 @@ Result Engine::execRenameColumn(const ast::RenameColumn& stmt) {
     }
 
     schema.columns[idx].name = stmt.newName;
+    for (auto& group : schema.compositeUnique)  // table-level ANOKHA / MUKHYA KUNJI groups name columns too
+        for (auto& n : group)
+            if (n == stmt.column) n = stmt.newName;
+    if (schema.compositePk)
+        for (auto& n : *schema.compositePk)
+            if (n == stmt.column) n = stmt.newName;
     // every SANDARBH (FK) pointing at this column must follow it
     for (auto& entry : cat.tables)
         for (auto& col : entry.second.columns)
@@ -1197,6 +2095,7 @@ std::vector<Value> Engine::validateRow(const TableSchema& schema, const std::vec
         if (value.isNull() && col.isRequired())
             throw ExecutionError("Column '" + col.name + "' ZAROORI hai, KHALI nahi ho sakta");
         checkLength(col, value);
+        checkEnum(col, value);
         out.push_back(std::move(value));
     }
     checkShart(schema, out);
@@ -1269,40 +2168,183 @@ void Engine::checkFk(Table& table, const std::vector<std::vector<Value>>& newRow
     }
 }
 
-// SANDARBH, parent side: RESTRICT. Refuse a DELETE/UPDATE on `schema` if any
-// child row still points at a value that is disappearing from it.
-//   changedByColumn: {parent column position -> values going away}
-//   exemptRowIds (DELETE): rows of `schema` that are themselves being removed
-//   overrides (UPDATE): {row id -> new values} for rows this statement also updates
-void Engine::checkNoChildren(const TableSchema& schema, const std::unordered_map<size_t, ValueSet>& changedByColumn,
-                             const std::set<int64_t>& exemptRowIds,
-                             const std::unordered_map<int64_t, std::vector<Value>>* overrides) {
+// SANDARBH, parent side. A DELETE / UPDATE of rows in one table may hit rows in others that point at them; each
+// foreign key says what happens (ON DELETE / ON UPDATE): RESTRICT (the default; refuse), CASCADE (delete / follow the
+// new value) or SET NULL. The knock-on rows are collected in memory in FkWork -- recursively, so a cascade can cascade
+// again -- and nothing is written until every check has passed (fkApply). Triggers do not fire for knock-on rows.
+struct Engine::FkWork {
+    struct Entry {
+        std::unique_ptr<Table> owned;
+        Table* table = nullptr;
+        std::map<int64_t, std::vector<Value>> original;                  // row id -> values, as on disk
+        bool loaded = false;                                             // `original` holds every row
+        std::map<int64_t, std::optional<std::vector<Value>>> changes;    // row id -> new values; nullopt = deleted
+        std::set<int64_t> cascaded;                                      // rows changed by a cascade (need re-validating)
+    };
+    std::map<std::string, Entry> tables;
+    int depth = 0;
+    FkWork(Table* primary, const std::string& name) { tables[name].table = primary; }
+};
+
+
+void Engine::fkDelete(FkWork& work, const std::string& tableName, const std::vector<StoredRow>& rows) {
+    requireStack();
+    using FkEntry = FkWork::Entry;
+    if (++work.depth > kMaxFkDepth)
+        throw ExecutionError("SANDARBH CASCADE bahut gehra chal raha hai (limit " + std::to_string(kMaxFkDepth) + ")");
+    const TableSchema parent = catalog().get(tableName);
+    auto entryFor = [&](const std::string& name) -> FkEntry& {
+        FkEntry& e = work.tables[name];
+        if (e.table == nullptr) {
+            e.owned = table(name);
+            e.table = e.owned.get();
+        }
+        return e;
+    };
+    FkEntry& pe = entryFor(tableName);
+    for (const auto& [id, values] : rows) {
+        pe.original.emplace(id, values);
+        pe.changes[id] = std::nullopt;
+    }
     std::vector<std::string> otherNames;
     for (const auto& entry : catalog().tables) otherNames.push_back(entry.first);
     for (const auto& otherName : otherNames) {
         const TableSchema other = catalog().get(otherName);
         for (const auto& childCol : other.columns) {
-            if (!childCol.refTable.has_value() || *childCol.refTable != schema.name) continue;
-            size_t parentPos = schema.indexOf(childCol.refColumn.value_or(""));
-            auto removedIt = changedByColumn.find(parentPos);
-            if (removedIt == changedByColumn.end() || removedIt->second.empty()) continue;
-            const ValueSet& removed = removedIt->second;
-            bool isSelf = otherName == schema.name;
+            if (!childCol.refTable.has_value() || *childCol.refTable != tableName) continue;
+            size_t parentPos = parent.indexOf(childCol.refColumn.value_or(""));
             size_t childPos = other.indexOf(childCol.name);
-            for (const auto& [rowId, values] : table(otherName)->rows()) {
-                if (isSelf && exemptRowIds.count(rowId)) continue;
-                const std::vector<Value>* current = &values;
-                if (isSelf && overrides) {
-                    auto ov = overrides->find(rowId);
-                    if (ov != overrides->end()) current = &ov->second;
+            ValueSet removed;
+            for (const auto& [id, values] : rows) {
+                (void)id;
+                if (!values[parentPos].isNull()) removed.insert(values[parentPos]);
+            }
+            if (removed.empty()) continue;
+            FkEntry& ce = entryFor(otherName);
+            if (!ce.loaded) {
+                for (auto& [id, values] : ce.table->rows()) ce.original.emplace(id, std::move(values));
+                ce.loaded = true;
+            }
+            std::vector<StoredRow> hits;
+            for (const auto& [id, values] : ce.original) {
+                auto change = ce.changes.find(id);
+                if (change != ce.changes.end() && !change->second) continue;  // already going away
+                const std::vector<Value>& current = change != ce.changes.end() ? *change->second : values;
+                if (!current[childPos].isNull() && removed.count(current[childPos])) hits.emplace_back(id, current);
+            }
+            if (hits.empty()) continue;
+            if (childCol.onDelete == "CASCADE") {
+                fkDelete(work, otherName, hits);
+            } else if (childCol.onDelete == "SET NULL") {
+                std::vector<FkChange> changes;
+                for (const auto& [id, current] : hits) {
+                    auto next = current;
+                    next[childPos] = Value();
+                    changes.push_back({id, current, std::move(next)});
                 }
-                const Value& v = (*current)[childPos];
-                if (!v.isNull() && removed.count(v))
-                    throw ExecutionError("Table '" + schema.name + "' mein ye value(s) hata/badal nahi sakte -- table '" +
-                                         otherName + "' ka column '" + childCol.name + "' (SANDARBH " + schema.name +
-                                         "." + childCol.refColumn.value_or("") + ") abhi bhi inhe use karta hai");
+                fkUpdate(work, otherName, changes, true);
+            } else {  // RESTRICT / NO ACTION / default
+                throw ExecutionError("Table '" + tableName + "' mein ye value(s) hata/badal nahi sakte -- table '" +
+                                     otherName + "' ka column '" + childCol.name + "' (SANDARBH " + tableName + "." +
+                                     childCol.refColumn.value_or("") + ") abhi bhi inhe use karta hai");
             }
         }
+    }
+    --work.depth;
+}
+
+void Engine::fkUpdate(FkWork& work, const std::string& tableName, const std::vector<FkChange>& changes, bool cascaded) {
+    requireStack();
+    using FkEntry = FkWork::Entry;
+    if (++work.depth > kMaxFkDepth)
+        throw ExecutionError("SANDARBH CASCADE bahut gehra chal raha hai (limit " + std::to_string(kMaxFkDepth) + ")");
+    const TableSchema parent = catalog().get(tableName);
+    auto entryFor = [&](const std::string& name) -> FkEntry& {
+        FkEntry& e = work.tables[name];
+        if (e.table == nullptr) {
+            e.owned = table(name);
+            e.table = e.owned.get();
+        }
+        return e;
+    };
+    FkEntry& pe = entryFor(tableName);
+    for (const auto& change : changes) {
+        pe.original.emplace(change.rowId, change.oldValues);
+        pe.changes[change.rowId] = change.newValues;
+        if (cascaded) pe.cascaded.insert(change.rowId);
+    }
+    std::vector<std::string> otherNames;
+    for (const auto& entry : catalog().tables) otherNames.push_back(entry.first);
+    for (const auto& otherName : otherNames) {
+        const TableSchema other = catalog().get(otherName);
+        for (const auto& childCol : other.columns) {
+            if (!childCol.refTable.has_value() || *childCol.refTable != tableName) continue;
+            size_t parentPos = parent.indexOf(childCol.refColumn.value_or(""));
+            size_t childPos = other.indexOf(childCol.name);
+            std::unordered_map<Value, Value, PyValueHash, PyValueEq> moved;  // old parent value -> new one
+            for (const auto& change : changes) {
+                const Value& before = change.oldValues[parentPos];
+                if (!before.isNull() && !pyEquals(before, change.newValues[parentPos])) moved[before] = change.newValues[parentPos];
+            }
+            if (moved.empty()) continue;
+            FkEntry& ce = entryFor(otherName);
+            if (!ce.loaded) {
+                for (auto& [id, values] : ce.table->rows()) ce.original.emplace(id, std::move(values));
+                ce.loaded = true;
+            }
+            std::vector<FkChange> next;
+            for (const auto& [id, values] : ce.original) {
+                auto change = ce.changes.find(id);
+                if (change != ce.changes.end() && !change->second) continue;  // already going away
+                const std::vector<Value>& current = change != ce.changes.end() ? *change->second : values;
+                if (current[childPos].isNull()) continue;
+                auto hit = moved.find(current[childPos]);
+                if (hit == moved.end()) continue;
+                if (childCol.onUpdate != "CASCADE" && childCol.onUpdate != "SET NULL")  // RESTRICT / NO ACTION / default
+                    throw ExecutionError("Table '" + tableName + "' mein ye value(s) hata/badal nahi sakte -- table '" +
+                                         otherName + "' ka column '" + childCol.name + "' (SANDARBH " + tableName + "." +
+                                         childCol.refColumn.value_or("") + ") abhi bhi inhe use karta hai");
+                auto updated = current;
+                updated[childPos] = childCol.onUpdate == "CASCADE" ? hit->second : Value();
+                next.push_back({id, current, std::move(updated)});
+            }
+            if (!next.empty()) fkUpdate(work, otherName, next, true);
+        }
+    }
+    --work.depth;
+}
+
+// Rows changed by a cascade / SET NULL must still satisfy their own table's rules (types, SHART, ANOKHA).
+void Engine::fkValidate(FkWork& work) {
+    for (auto& [name, entry] : work.tables) {
+        (void)name;
+        if (entry.cascaded.empty()) continue;
+        std::vector<std::vector<Value>> rows;
+        for (int64_t id : entry.cascaded) {
+            auto change = entry.changes.find(id);
+            if (change != entry.changes.end() && change->second) rows.push_back(validateRow(entry.table->schema(), *change->second));
+        }
+        std::set<int64_t> ignore;
+        for (const auto& [id, change] : entry.changes) {
+            (void)change;
+            ignore.insert(id);
+        }
+        checkUnique(*entry.table, rows, ignore);
+    }
+}
+
+void Engine::fkApply(FkWork& work) {
+    for (auto& [name, entry] : work.tables) {
+        (void)name;
+        std::vector<StoredRow> removals;
+        std::vector<std::vector<Value>> additions;
+        for (const auto& [id, change] : entry.changes) {
+            removals.emplace_back(id, entry.original.at(id));
+            if (change) additions.push_back(*change);
+        }
+        if (removals.empty()) continue;
+        entry.table->deleteMany(removals);  // all deletes first, so an index entry that moves between rows survives
+        if (!additions.empty()) entry.table->insertMany(additions);
     }
 }
 
@@ -1328,7 +2370,8 @@ std::vector<StoredRow> Engine::candidates(Table& table, const std::optional<Inde
 // DML
 // ============================================================================
 
-Result Engine::execInsert(const ast::Insert& stmt) {
+Result Engine::execInsert(const ast::Insert& stmt, const RowCheck* check) {
+    if (catalog().find(stmt.table) == nullptr && catalog().views.count(stmt.table)) return execInsertViaView(stmt);
     auto t = table(stmt.table);
     const TableSchema schema = t->schema();
     std::vector<std::string> targetCols =
@@ -1343,6 +2386,37 @@ Result Engine::execInsert(const ast::Insert& stmt) {
         return values;
     };
 
+    // AUTO_INCREMENT: a KHALI (or omitted) value becomes max + 1; an explicit value moves the counter up to it
+    std::optional<size_t> autoPos;
+    for (size_t i = 0; i < schema.columns.size(); ++i)
+        if (schema.columns[i].autoIncrement) autoPos = i;
+    int64_t autoNext = 0;
+    bool autoReady = false;
+    auto fillAuto = [&](std::vector<Value>& values) {
+        if (!autoPos) return;
+        if (!autoReady) {
+            if (schema.columns[*autoPos].isUnique()) {  // the hash index already holds every value
+                for (const auto& [key, rowId] : t->indexes().at(std::vector<size_t>{*autoPos})) {
+                    (void)rowId;
+                    if (isIntValue(key[0])) autoNext = std::max(autoNext, std::get<int64_t>(key[0].data));
+                }
+            } else {
+                for (const auto& [id, rowValues] : t->rows()) {
+                    (void)id;
+                    if (isIntValue(rowValues[*autoPos])) autoNext = std::max(autoNext, std::get<int64_t>(rowValues[*autoPos].data));
+                }
+            }
+            autoReady = true;
+        }
+        Value& v = values[*autoPos];
+        if (v.isNull()) {
+            if (autoNext == INT_MAX_VALUE) throw ExecutionError("Column '" + schema.columns[*autoPos].name + "': AUTO_INCREMENT ki limit poori ho gayi");
+            v = Value(++autoNext);
+        } else if (isIntValue(v)) {
+            autoNext = std::max(autoNext, std::get<int64_t>(v.data));
+        }
+    };
+
     // Validate EVERY row before writing ANY -- so a bad 3rd row doesn't leave
     // rows 1 and 2 half-inserted.
     std::vector<std::vector<Value>> newRows;
@@ -1354,6 +2428,7 @@ Result Engine::execInsert(const ast::Insert& stmt) {
         for (const auto& row : selectResult.rows) {
             auto values = defaults();
             for (size_t i = 0; i < targetCols.size(); ++i) values[schema.indexOf(targetCols[i])] = row[i];
+            fillAuto(values);
             newRows.push_back(validateRow(schema, values));
         }
     } else {
@@ -1363,16 +2438,28 @@ Result Engine::execInsert(const ast::Insert& stmt) {
                                      std::to_string(tuple.size()) + " mili");
             auto values = defaults();
             for (size_t i = 0; i < targetCols.size(); ++i) values[schema.indexOf(targetCols[i])] = evaluate(*tuple[i], Row{});
+            fillAuto(values);
             newRows.push_back(validateRow(schema, values));
         }
     }
+
+    if (check != nullptr && !stmt.onConflictUpdate.has_value()) (*check)(schema, newRows);  // WITH CHECK OPTION
+    if (stmt.replace) return execReplace(*t, stmt, std::move(newRows));
 
     if (!stmt.onConflictUpdate.has_value()) {
         checkUnique(*t, newRows);
         checkFk(*t, newRows);
         std::vector<Row> newDicts;
         for (const auto& r : newRows) newDicts.push_back(rowDict(schema, r));
-        for (const auto& nr : newDicts) fireTriggers("PEHLE", "DAALO", stmt.table, &nr, nullptr);
+        bool changedByTrigger = false;
+        for (auto& nr : newDicts) changedByTrigger |= fireBeforeTriggers("DAALO", stmt.table, nr, nullptr);
+        if (changedByTrigger) {  // RAKHO NAYA.col = ...: the rows are checked again before they are written
+            for (size_t i = 0; i < newRows.size(); ++i) newRows[i] = validateRow(schema, rowFromDict(schema, newDicts[i]));
+            checkUnique(*t, newRows);
+            checkFk(*t, newRows);
+            newDicts.clear();
+            for (const auto& r : newRows) newDicts.push_back(rowDict(schema, r));
+        }
         t->insertMany(newRows);
         for (const auto& nr : newDicts) fireTriggers("BAAD", "DAALO", stmt.table, &nr, nullptr);
         return messageResult(std::to_string(newRows.size()) + " row(s) daal di");
@@ -1389,6 +2476,7 @@ Result Engine::execInsert(const ast::Insert& stmt) {
         if (!existing) toInsert.push_back(row);
         else toUpdate.emplace_back(*existing, row);
     }
+    if (check != nullptr) (*check)(schema, toInsert);
     checkUnique(*t, toInsert);
     checkFk(*t, toInsert);
     std::vector<Row> insertDicts;
@@ -1411,6 +2499,7 @@ Result Engine::execInsert(const ast::Insert& stmt) {
         updatedTargets.emplace_back(rowId, *oldValues);
         updatedNewRows.push_back(validateRow(schema, newValues));
     }
+    if (check != nullptr) (*check)(schema, updatedNewRows);
     if (!updatedNewRows.empty()) {
         std::set<int64_t> ignore;
         for (const auto& [rowId, oldValues] : updatedTargets) {
@@ -1437,7 +2526,80 @@ Result Engine::execInsert(const ast::Insert& stmt) {
                          " row(s) TAKRAAV par badli");
 }
 
-Result Engine::execUpdate(const ast::Update& stmt) {
+// REPLACE INTO / BADAL DAALO MEIN: every new row first removes the existing row(s) it collides with on MUKHYA KUNJI /
+// ANOKHA (single or composite) -- through the SANDARBH rules, so a child row can block it or follow it -- then goes in.
+// Within one statement a later row replaces an earlier one with the same key. Like MySQL, a replaced row counts twice.
+Result Engine::execReplace(Table& t, const ast::Insert& stmt, std::vector<std::vector<Value>> newRows) {
+    const TableSchema schema = t.schema();
+    IndexMap& indexes = t.indexes();
+    using KeyMap = std::unordered_map<std::vector<Value>, size_t, ValueVecHash, ValueVecEq>;
+
+    std::vector<bool> dropped(newRows.size(), false);  // replaced by a later row of this same statement
+    size_t droppedCount = 0;
+    std::vector<KeyMap> batchKeys(indexes.size());
+    for (size_t i = 0; i < newRows.size(); ++i) {
+        size_t k = 0;
+        for (auto& [positions, index] : indexes) {
+            (void)index;
+            KeyMap& seen = batchKeys[k++];
+            auto key = indexKey(positions, newRows[i]);
+            if (!key) continue;
+            auto it = seen.find(*key);
+            if (it != seen.end() && !dropped[it->second]) {
+                dropped[it->second] = true;
+                ++droppedCount;
+            }
+            seen[*key] = i;
+        }
+    }
+    std::vector<std::vector<Value>> kept;
+    for (size_t i = 0; i < newRows.size(); ++i)
+        if (!dropped[i]) kept.push_back(std::move(newRows[i]));
+
+    // the existing rows in the way, found through every unique / composite index
+    std::set<int64_t> doomedIds;
+    for (const auto& row : kept)
+        for (auto& [positions, index] : indexes) {
+            auto key = indexKey(positions, row);
+            if (!key) continue;
+            auto it = index.find(*key);
+            if (it != index.end()) doomedIds.insert(it->second);
+        }
+    std::vector<StoredRow> doomed;
+    for (int64_t id : doomedIds) {
+        auto values = t.get(id);
+        if (!values) throw ExecutionError("Row #" + std::to_string(id) + " nahi mili");
+        doomed.emplace_back(id, std::move(*values));
+    }
+
+    FkWork work(&t, schema.name);
+    if (!doomed.empty()) fkDelete(work, schema.name, doomed);
+    fkValidate(work);
+    std::set<int64_t> ignore;
+    for (const auto& [id, change] : work.tables.at(schema.name).changes) {
+        (void)change;
+        ignore.insert(id);
+    }
+    checkUnique(t, kept, ignore);
+    checkFk(t, kept);
+
+    std::vector<Row> oldDicts, newDicts;
+    for (const auto& d : doomed) oldDicts.push_back(rowDict(schema, d.second));
+    for (const auto& r : kept) newDicts.push_back(rowDict(schema, r));
+    for (const auto& od : oldDicts) fireTriggers("PEHLE", "MITAO", stmt.table, nullptr, &od);
+    for (const auto& nr : newDicts) fireTriggers("PEHLE", "DAALO", stmt.table, &nr, nullptr);
+    fkApply(work);
+    t.insertMany(kept);
+    for (const auto& od : oldDicts) fireTriggers("BAAD", "MITAO", stmt.table, nullptr, &od);
+    for (const auto& nr : newDicts) fireTriggers("BAAD", "DAALO", stmt.table, &nr, nullptr);
+
+    size_t inserted = kept.size() + droppedCount, removed = doomed.size() + droppedCount;
+    return messageResult(std::to_string(inserted + removed) + " row(s) affected (" + std::to_string(inserted) +
+                         " daali, " + std::to_string(removed) + " purani row(s) replace hui)");
+}
+
+Result Engine::execUpdate(const ast::Update& stmt, const RowCheck* check) {
+    if (catalog().find(stmt.table) == nullptr && catalog().views.count(stmt.table)) return execUpdateViaView(stmt);
     auto t = table(stmt.table);
     const TableSchema schema = t->schema();
     Scope scope({{stmt.table, schema}});
@@ -1472,25 +2634,24 @@ Result Engine::execUpdate(const ast::Update& stmt) {
         for (const auto& [position, expr] : assignments) newValues[position] = evaluate(*expr, oldRows[i], setSubq.at(i));
         newRows.push_back(validateRow(schema, newValues));
     }
+    if (check != nullptr) (*check)(schema, newRows);  // WITH CHECK OPTION
 
     std::set<int64_t> ignore;
     for (const auto& target : targets) ignore.insert(target.first);
     checkUnique(*t, newRows, ignore);
     checkFk(*t, newRows);  // child side: new FK values must exist in the parent
 
-    // parent side (RESTRICT): if a referenced column's value is CHANGING, no
-    // child row may still be pointing at the value that is disappearing
-    std::unordered_map<size_t, ValueSet> changedByColumn;
-    for (size_t i = 0; i < targets.size(); ++i)
-        for (size_t pos = 0; pos < schema.columns.size(); ++pos) {
-            const Value& oldValue = targets[i].second[pos];
-            if (!oldValue.isNull() && !pyEquals(oldValue, newRows[i][pos])) changedByColumn[pos].insert(oldValue);
-        }
-    if (!changedByColumn.empty()) {
-        std::unordered_map<int64_t, std::vector<Value>> overrides;
-        for (size_t i = 0; i < targets.size(); ++i) overrides[targets[i].first] = newRows[i];
-        checkNoChildren(schema, changedByColumn, {}, &overrides);
-    }
+    // parent side: if a referenced column's value is CHANGING, child rows still pointing at the old value are
+    // refused (RESTRICT, the default), follow it (ON UPDATE CASCADE) or are set to KHALI (SET NULL)
+    auto buildFkWork = [&]() {
+        auto w = std::make_unique<FkWork>(t.get(), stmt.table);
+        std::vector<FkChange> fkChanges;
+        for (size_t i = 0; i < targets.size(); ++i) fkChanges.push_back({targets[i].first, targets[i].second, newRows[i]});
+        fkUpdate(*w, stmt.table, fkChanges, false);
+        fkValidate(*w);
+        return w;
+    };
+    auto work = buildFkWork();
 
     // An update = delete old versions + insert new versions. All deletes happen
     // first, so an index entry moved from one row to another (e.g. swapping two
@@ -1500,14 +2661,24 @@ Result Engine::execUpdate(const ast::Update& stmt) {
     std::vector<Row> oldDicts, newDicts;
     for (const auto& target : targets) oldDicts.push_back(rowDict(schema, target.second));
     for (const auto& nr : newRows) newDicts.push_back(rowDict(schema, nr));
-    for (size_t i = 0; i < oldDicts.size(); ++i) fireTriggers("PEHLE", "BADLO", stmt.table, &newDicts[i], &oldDicts[i]);
-    t->deleteMany(targets);
-    t->insertMany(newRows);
+    bool changedByTrigger = false;
+    for (size_t i = 0; i < oldDicts.size(); ++i)
+        changedByTrigger |= fireBeforeTriggers("BADLO", stmt.table, newDicts[i], &oldDicts[i]);
+    if (changedByTrigger) {  // RAKHO NAYA.col = ...: the rows and their SANDARBH effects are checked again
+        for (size_t i = 0; i < newRows.size(); ++i) newRows[i] = validateRow(schema, rowFromDict(schema, newDicts[i]));
+        checkUnique(*t, newRows, ignore);
+        checkFk(*t, newRows);
+        work = buildFkWork();
+        newDicts.clear();
+        for (const auto& nr : newRows) newDicts.push_back(rowDict(schema, nr));
+    }
+    fkApply(*work);
     for (size_t i = 0; i < oldDicts.size(); ++i) fireTriggers("BAAD", "BADLO", stmt.table, &newDicts[i], &oldDicts[i]);
     return messageResult(std::to_string(newRows.size()) + " row(s) badal di");
 }
 
 Result Engine::execDelete(const ast::Delete& stmt) {
+    if (catalog().find(stmt.table) == nullptr && catalog().views.count(stmt.table)) return execDeleteViaView(stmt);
     auto t = table(stmt.table);
     const TableSchema schema = t->schema();
     Scope scope({{stmt.table, schema}});
@@ -1525,20 +2696,16 @@ Result Engine::execDelete(const ast::Delete& stmt) {
         doomed = cands;
     }
 
-    // RESTRICT: refuse if any child row still references a value about to be deleted
-    std::unordered_map<size_t, ValueSet> deletedByColumn;
-    std::set<int64_t> exempt;
-    for (const auto& [rowId, values] : doomed) {
-        exempt.insert(rowId);
-        for (size_t pos = 0; pos < schema.columns.size(); ++pos)
-            if (!values[pos].isNull()) deletedByColumn[pos].insert(values[pos]);
-    }
-    if (!deletedByColumn.empty()) checkNoChildren(schema, deletedByColumn, exempt);
+    // child rows still referencing a value about to be deleted: refused (RESTRICT, the default), deleted too
+    // (ON DELETE CASCADE) or set to KHALI (SET NULL)
+    FkWork work(t.get(), stmt.table);
+    fkDelete(work, stmt.table, doomed);
+    fkValidate(work);
 
     std::vector<Row> oldDicts;
     for (const auto& d : doomed) oldDicts.push_back(rowDict(schema, d.second));
     for (const auto& od : oldDicts) fireTriggers("PEHLE", "MITAO", stmt.table, nullptr, &od);
-    t->deleteMany(doomed);
+    fkApply(work);
     for (const auto& od : oldDicts) fireTriggers("BAAD", "MITAO", stmt.table, nullptr, &od);
     return messageResult(std::to_string(doomed.size()) + " row(s) mita di");
 }
@@ -1547,26 +2714,6 @@ Result Engine::execDelete(const ast::Delete& stmt) {
 // SELECT
 // ============================================================================
 
-// Everything the planner decided about one DIKHAO (also what SAMJHAO prints).
-struct Engine::SelectPlan {
-    struct JoinStep {
-        const ast::Join* join;
-        std::unique_ptr<ast::Expr> on;                                   // bound PAR
-        std::optional<std::pair<std::string, std::string>> hashKeys;     // (left key, right key) or nullopt
-    };
-    std::vector<std::unique_ptr<Table>> tables;
-    std::unique_ptr<Scope> scope;
-    std::vector<std::string> labels;
-    std::vector<std::unique_ptr<ast::Expr>> outputs;
-    std::unique_ptr<ast::Expr> where;
-    std::vector<std::unique_ptr<ast::Expr>> groupBy;
-    std::unique_ptr<ast::Expr> having;
-    std::vector<std::pair<std::unique_ptr<ast::Expr>, bool>> orderBy;  // (bound expr, descending)
-    std::vector<const ast::FuncCall*> aggregates;
-    bool grouped = false;
-    std::optional<IndexLookup> access;
-    std::vector<JoinStep> joins;
-};
 
 namespace {
 
@@ -1738,6 +2885,14 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
         for (const auto& a : co->args) out->args.push_back(rec(a.get()));
         return out;
     }
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        auto out = std::make_unique<ScalarFunc>();
+        out->name = sf->name;
+        out->castType = sf->castType;
+        out->user = sf->user;
+        for (const auto& a : sf->args) out->args.push_back(rec(a.get()));
+        return out;
+    }
     if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
         auto out = std::make_unique<CaseWhen>();
         for (const auto& [cond, value] : cw->branches) {
@@ -1756,6 +2911,11 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
 // Scalar context (Subquery): exactly 1 column, 0 or 1 row. List context
 // (InSubquery): exactly 1 column, any number of rows.
 SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result) {
+    if (auto* in = dynamic_cast<const ast::InSubquery*>(&node); in && in->kind == "EXISTS") {
+        SubqueryResult exists;  // any number of columns: only "is there a row" matters
+        exists.scalar = Value(!result.rows.empty());
+        return exists;
+    }
     if (result.columns.size() != 1) throw ExecutionError("Subquery sirf 1 column return kar sakti hai is jagah");
     SubqueryResult out;
     if (dynamic_cast<const ast::Subquery*>(&node)) {
@@ -1791,28 +2951,57 @@ std::unique_ptr<Table> Engine::resolveSource(const std::string& name) {
         auto parsed = parseScript(cat.views.at(name));
         auto* viewStmt = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
         if (viewStmt == nullptr) throw ExecutionError("View '" + name + "' ki definition DIKHAO nahi hai");
-        Result result = execSelect(*viewStmt);
-        TableSchema schema;
-        schema.name = name;
-        for (size_t i = 0; i < result.columns.size(); ++i) {
-            Column c;
-            c.name = result.columns[i];
-            c.typeName = inferColumnType(result.rows, i);
-            schema.columns.push_back(c);
-        }
-        return std::make_unique<MaterializedTable>(schema, result.rows);
+        return materialize(name, execSelect(*viewStmt));
     }
     throw ExecutionError("Table '" + name + "' exist nahi karta");
 }
 
+// A query result as a read-only table named `name` (a VIEW's rows, or a derived table's).
+std::unique_ptr<Table> Engine::materialize(const std::string& name, const Result& result) {
+    TableSchema schema;
+    schema.name = name;
+    for (size_t i = 0; i < result.columns.size(); ++i) {
+        Column c;
+        c.name = result.columns[i];
+        c.typeName = inferColumnType(result.rows, i);
+        schema.columns.push_back(c);
+    }
+    return std::make_unique<MaterializedTable>(schema, result.rows);
+}
+
 Scope Engine::selectSourcesScope(const ast::Select& stmt, std::vector<std::unique_ptr<Table>>* tablesOut) {
-    std::vector<std::pair<std::string, std::string>> sources;  // (alias, table)
-    sources.emplace_back(stmt.alias.has_value() && !stmt.alias->empty() ? *stmt.alias : stmt.table, stmt.table);
-    for (const auto& j : stmt.joins) sources.emplace_back(j.alias, j.table);
+    struct Source {
+        std::string alias, table;
+        const ast::Select* derived;  // a (DIKHAO ...) alias source, else nullptr
+    };
+    std::vector<Source> sources;
+    // DIKHAO 1 + 1 (no SE): a one-row, no-column stand-in table called `dual`
+    const bool noFrom = stmt.table.empty() && !stmt.derived;
+    sources.push_back({stmt.alias.has_value() && !stmt.alias->empty() ? *stmt.alias : noFrom ? "dual" : stmt.table, stmt.table, stmt.derived.get()});
+    for (const auto& j : stmt.joins) sources.push_back({j.alias, j.table, j.derived.get()});
     std::vector<std::unique_ptr<Table>> tables;
-    for (const auto& s : sources) tables.push_back(resolveSource(s.second));
+    for (const auto& s : sources) {
+        if (s.derived == nullptr && s.table.empty()) {
+            TableSchema dual;
+            dual.name = "dual";
+            tables.push_back(std::make_unique<MaterializedTable>(dual, std::vector<RowValues>{RowValues{}}));
+            continue;
+        }
+        if (s.derived == nullptr) {
+            tables.push_back(resolveSource(s.table));
+            continue;
+        }
+        // a derived table runs its query first; its output names are its columns
+        Result inner = execSelect(*s.derived);
+        std::set<std::string> seen;
+        for (const auto& column : inner.columns)
+            if (!seen.insert(column).second)
+                throw ExecutionError("Derived table '" + s.alias + "' mein column '" + column +
+                                     "' do baar hai -- KAHO se alag naam do");
+        tables.push_back(materialize(s.alias, inner));
+    }
     std::vector<std::pair<std::string, TableSchema>> withSchemas;
-    for (size_t i = 0; i < sources.size(); ++i) withSchemas.emplace_back(sources[i].first, tables[i]->schema());
+    for (size_t i = 0; i < sources.size(); ++i) withSchemas.emplace_back(sources[i].alias, tables[i]->schema());
     Scope scope(std::move(withSchemas));
     if (tablesOut) *tablesOut = std::move(tables);
     return scope;
@@ -1820,6 +3009,17 @@ Scope Engine::selectSourcesScope(const ast::Select& stmt, std::vector<std::uniqu
 
 std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) {
     auto plan = std::make_unique<SelectPlan>();
+    if (stmt.table.empty() && !stmt.derived) {  // DIKHAO without SE: there is no table to read a column from
+        std::vector<const ast::ColumnRef*> refs;
+        for (const auto& c : stmt.columns) columnRefNodes(*c, refs);
+        for (const ast::Expr* e : {stmt.where.get(), stmt.having.get()})
+            if (e) columnRefNodes(*e, refs);
+        for (const auto& g : stmt.groupBy) columnRefNodes(*g, refs);
+        for (const auto& o : stmt.orderBy) columnRefNodes(*o.expr, refs);
+        if (!refs.empty())
+            throw ExecutionError("Column '" + refs[0]->name + "' ke liye table chahiye -- SE table likho (bina SE ke DIKHAO sirf "
+                                 "fixed values / functions ke liye hai, jaise DIKHAO NOW(), 1 + 1)");
+    }
     plan->scope = std::make_unique<Scope>(selectSourcesScope(stmt, &plan->tables));
     const Scope& scope = *plan->scope;
 
@@ -1828,12 +3028,36 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
     // before the output list exists). We collect {alias: unbound expr} here so
     // KRAM can be rewritten to that expr BEFORE binding.
     std::unordered_map<std::string, const ast::Expr*> aliasExprs;
+
+    // MILAO ... USING (c): an unqualified c means the shared column (see Scope::declareUsing), and an unqualified
+    // star shows it ONCE -- the first table's copy (for a RIGHT / FULL join: whichever side has a value). The
+    // later copies are hidden; t.* still shows its own.
+    std::set<std::string> usingHidden;  // later copies, "alias.col"
+    for (size_t i = 0; i < stmt.joins.size(); ++i) {
+        if (stmt.joins[i].usingColumns.empty()) continue;
+        bool merge = stmt.joins[i].kind == "RIGHT" || stmt.joins[i].kind == "FULL";
+        for (const auto& [leftKey, rightKey] : usingColumnPairs(*plan->scope, i + 1, stmt.joins[i].usingColumns)) {
+            plan->scope->declareUsing(leftKey.substr(leftKey.find('.') + 1), leftKey, rightKey, merge);
+            usingHidden.insert(rightKey);
+        }
+    }
+
     for (size_t i = 0; i < stmt.columns.size(); ++i) {
         const ast::Expr& e = *stmt.columns[i];
         std::optional<std::string> alias = i < stmt.aliases.size() ? stmt.aliases[i] : std::nullopt;
         bool hasAlias = alias.has_value() && !alias->empty();
         if (auto* star = dynamic_cast<const ast::Star*>(&e)) {
             for (const auto& [label, ref] : scope.expandStar(*star)) {
+                std::string key = *ref.table + "." + ref.name;
+                if (!star->table.has_value()) {
+                    if (usingHidden.count(key)) continue;
+                    const Scope::UsingColumn* shared = scope.usingColumn(ref.name);
+                    if (shared && key == shared->keys.front()) {
+                        plan->labels.push_back(ref.name);  // the merged copy: a bare label even if both tables have it
+                        plan->outputs.push_back(bind(ast::ColumnRef(ref.name), scope));  // bare => merged if RIGHT / FULL
+                        continue;
+                    }
+                }
                 plan->labels.push_back(label);
                 plan->outputs.push_back(bind(ref, scope));
             }
@@ -1907,6 +3131,8 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
             // no PAR written by the user -- synthesise `earlier.col = new.col`
             // for every column name shared with an already-joined table
             step.on = naturalJoinCondition(scope, sourceIndex);
+        } else if (!join.usingColumns.empty()) {
+            step.on = usingJoinCondition(scope, sourceIndex, join.usingColumns);
         } else {
             step.on = bind(join.on.get(), scope);
         }
@@ -1959,12 +3185,15 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
     for (const auto& c : stmt.columns) out->columns.push_back(corr(c.get()));
     out->table = stmt.table;
     out->alias = stmt.alias;
+    if (stmt.derived) out->derived = cloneSelect(*stmt.derived);  // a derived table is not correlated
     for (const auto& j : stmt.joins) {
         ast::Join nj;
         nj.table = j.table;
         nj.alias = j.alias;
         nj.on = corr(j.on.get());
         nj.kind = j.kind;
+        nj.usingColumns = j.usingColumns;
+        if (j.derived) nj.derived = cloneSelect(*j.derived);
         out->joins.push_back(std::move(nj));
     }
     out->where = corr(stmt.where.get());
@@ -1977,6 +3206,7 @@ std::unique_ptr<ast::Select> Engine::correlateSelect(const ast::Select& stmt, co
         out->orderBy.push_back(std::move(item));
     }
     out->limit = stmt.limit;
+    out->offset = stmt.offset;
     out->distinct = stmt.distinct;
     out->aliases = stmt.aliases;
     return out;
@@ -2132,7 +3362,12 @@ Result Engine::execSelect(const ast::Select& stmt) {
         outRows = std::move(unique);
     }
 
-    // 8. LIMIT (SIRF)  (Python's `rows[:n]`)
+    // 8. OFFSET (skip the first m rows), then LIMIT (SIRF)  (Python's `rows[:n]`)
+    if (stmt.offset.has_value()) {
+        size_t skip = static_cast<size_t>(std::max(0, *stmt.offset));
+        if (skip >= outRows.size()) outRows.clear();
+        else outRows.erase(outRows.begin(), outRows.begin() + static_cast<std::ptrdiff_t>(skip));
+    }
     if (stmt.limit.has_value()) {
         int64_t n = *stmt.limit;
         int64_t size = static_cast<int64_t>(outRows.size());
@@ -2183,6 +3418,154 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
 // views
 // ============================================================================
 
+// ---- SHOW family ----
+
+Result Engine::execShowDatabases(const ast::ShowDatabases&) {
+    Result r;
+    r.columns = {"database"};
+    auto names = instance_->databases();
+    for (auto& n : names) r.rows.push_back({textValue(n)});
+    r.message = std::to_string(names.size()) + " database(s)";
+    return r;
+}
+
+Result Engine::execShowTriggers(const ast::ShowTriggers&) {
+    Result r;
+    r.columns = {"trigger", "timing", "event", "table", "body"};
+    for (auto it = catalog().triggers.begin(); it != catalog().triggers.end(); ++it) {
+        const auto& t = it.value();
+        r.rows.push_back({textValue(it.key()), textValue(t.value("timing", "")), textValue(t.value("event", "")),
+                          textValue(t.value("table", "")), textValue(t.value("body_text", ""))});
+    }
+    r.message = std::to_string(r.rows.size()) + " trigger(s) in '" + currentDb + "'";
+    return r;
+}
+
+// every database's procedures: name, database, created
+Result Engine::execShowProcedures(const ast::ShowProcedures&) {
+    Result r;
+    r.columns = {"name", "database", "created"};
+    for (const auto& db : instance_->databases()) {
+        Catalog& cat = instance_->catalog(db);
+        for (auto it = cat.procedures.begin(); it != cat.procedures.end(); ++it) {
+            auto info = cat.findProcedure(it.key());
+            std::string created = info ? info->created : std::string();
+            r.rows.push_back({textValue(it.key()), textValue(db), created.empty() ? Value() : textValue(created)});
+        }
+    }
+    r.message = std::to_string(r.rows.size()) + " procedure(s)";
+    return r;
+}
+
+Result Engine::execShowGrants(const ast::ShowGrants& stmt) {
+    Result r;
+    if (!stmt.user.has_value() && !user) {
+        r.columns = {"Grants for superuser"};
+        r.rows.push_back({textValue("GRANT ALL PRIVILEGES ON *.* TO superuser  -- bina username ka session")});
+        r.message = "1 grant(s)";
+        return r;
+    }
+    const std::string who = stmt.user.has_value() ? *stmt.user : *user;
+    auto lines = instance_->users().grantLines(who);
+    r.columns = {"Grants for " + who};
+    for (auto& line : lines) r.rows.push_back({textValue(line)});
+    r.message = std::to_string(lines.size()) + " grant(s)";
+    return r;
+}
+
+namespace {
+std::string sqlQuote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else out += c;
+    }
+    return out + "'";
+}
+
+// A stored value as a MeraDB literal (for WARNA)
+std::string sqlLiteral(const Value& v) {
+    if (v.isNull()) return "KHALI";
+    if (isBoolValue(v)) return std::get<bool>(v.data) ? "SACH" : "JHOOTH";
+    if (isIntValue(v)) return std::to_string(std::get<int64_t>(v.data));
+    if (isDateValue(v)) return sqlQuote(std::get<Date>(v.data).isoFormat());
+    if (isTextValue(v)) return sqlQuote(std::get<std::string>(v.data));
+    return formatValue(v);
+}
+
+bool isAutoFkName(const std::string& name) {  // <table>_ibfk_<n>
+    size_t at = name.rfind("_ibfk_");
+    return at != std::string::npos && at + 6 < name.size() && name.find_first_not_of("0123456789", at + 6) == std::string::npos;
+}
+}  // namespace
+
+// A BANAO TABLE statement that rebuilds the table's structure (no rows)
+Result Engine::execShowCreateTable(const ast::ShowCreateTable& stmt) {
+    Catalog& cat = catalog();
+    if (cat.find(stmt.name) == nullptr && cat.views.count(stmt.name))
+        throw ExecutionError("'" + stmt.name + "' ek VIEW hai -- SHOW CREATE VIEW " + stmt.name + " use karo");
+    const TableSchema& schema = cat.get(stmt.name);
+    std::set<std::string> inCompositePk;
+    if (schema.compositePk.has_value()) inCompositePk.insert(schema.compositePk->begin(), schema.compositePk->end());
+    std::vector<std::string> items, constraints;
+    for (const auto& c : schema.columns) {
+        std::string line = c.name + " ";
+        if (!c.enumValues.empty()) {
+            line += "ENUM(";
+            for (size_t i = 0; i < c.enumValues.size(); ++i) line += (i ? ", " : "") + sqlQuote(c.enumValues[i]);
+            line += ")";
+        } else {
+            line += c.typeName;
+            if (c.maxLength.has_value()) line += "(" + std::to_string(*c.maxLength) + ")";
+        }
+        if (c.autoIncrement) line += " AUTO_INCREMENT";
+        if (c.primaryKey) line += " MUKHYA KUNJI";
+        else if (c.notNull && !c.autoIncrement && !inCompositePk.count(c.name)) line += " ZAROORI";
+        if (c.unique && !c.primaryKey) line += " ANOKHA";
+        if (c.defaultValue.has_value() && !c.defaultValue->isNull()) line += " WARNA " + sqlLiteral(*c.defaultValue);
+        if (nonEmpty(c.refTable)) {
+            std::string fk = "SANDARBH " + *c.refTable + "(" + c.refColumn.value_or("") + ")";
+            if (!c.onDelete.empty()) fk += " ON DELETE " + c.onDelete;
+            if (!c.onUpdate.empty()) fk += " ON UPDATE " + c.onUpdate;
+            if (c.fkName.empty() || isAutoFkName(c.fkName)) line += " " + fk;
+            else constraints.push_back("CONSTRAINT " + c.fkName + " FOREIGN KEY (" + c.name + ") " + fk);
+        }
+        if (nonEmpty(c.check)) line += " SHART (" + *c.check + ")";
+        items.push_back(line);
+    }
+    for (const auto& group : schema.compositeUnique) items.push_back("ANOKHA (" + joinStrs(group, ", ") + ")");
+    if (schema.compositePk.has_value() && !schema.compositePk->empty())
+        items.push_back("MUKHYA KUNJI (" + joinStrs(*schema.compositePk, ", ") + ")");
+    for (auto& c : constraints) items.push_back(std::move(c));
+
+    std::string text = "BANAO TABLE " + schema.name + " (\n";
+    for (size_t i = 0; i < items.size(); ++i) text += "    " + items[i] + (i + 1 < items.size() ? ",\n" : "\n");
+    text += ");";
+    Result r;
+    r.columns = {"table", "create_table"};
+    r.rows.push_back({textValue(schema.name), textValue(text)});
+    r.message = "Table '" + schema.name + "'";
+    return r;
+}
+
+Result Engine::execShowCreateView(const ast::ShowCreateView& stmt) {
+    Catalog& cat = catalog();
+    auto it = cat.views.find(stmt.name);
+    if (it == cat.views.end()) {
+        if (cat.find(stmt.name) != nullptr)
+            throw ExecutionError("'" + stmt.name + "' ek table hai, VIEW nahi -- SHOW CREATE TABLE " + stmt.name + " use karo");
+        throw ExecutionError("View '" + stmt.name + "' exist nahi karta");
+    }
+    std::string text = "BANAO VIEW " + stmt.name + " KAHO " + it->second;
+    if (cat.viewCheckOption.count(stmt.name)) text += " WITH CHECK OPTION";
+    text += ";";
+    Result r;
+    r.columns = {"view", "create_view"};
+    r.rows.push_back({textValue(stmt.name), textValue(text)});
+    r.message = "VIEW '" + stmt.name + "'";
+    return r;
+}
+
 Result Engine::execShowViews(const ast::ShowViews&) {
     std::vector<std::string> names;
     for (const auto& entry : catalog().views) names.push_back(entry.first);
@@ -2198,13 +3581,215 @@ Result Engine::execCreateView(const ast::CreateView& stmt) {
     Catalog& cat = catalog();
     if (cat.find(stmt.name) != nullptr)
         throw ExecutionError("Table '" + stmt.name + "' pehle se hai -- VIEW usi naam se nahi ban sakti");
-    if (cat.views.count(stmt.name)) throw ExecutionError("View '" + stmt.name + "' pehle se hai");
+    const bool exists = cat.views.count(stmt.name) > 0;
+    if (stmt.alter && !exists)
+        throw ExecutionError("View '" + stmt.name + "' exist nahi karta -- pehle BANAO VIEW se banao");
+    if (exists && !stmt.alter && !stmt.orReplace) throw ExecutionError("View '" + stmt.name + "' pehle se hai");
     auto parsed = parseScript(stmt.queryText);
     auto* select = parsed.empty() ? nullptr : dynamic_cast<const ast::Select*>(parsed[0].get());
     if (select == nullptr) throw ExecutionError("BANAO VIEW ke baad sirf ek DIKHAO query aa sakti hai");
+    for (const auto& t : tablesRead(*select))
+        if (t == stmt.name) throw ExecutionError("View '" + stmt.name + "' apne aap ko refer nahi kar sakti");
     execSelect(*select);  // sanity check: must run cleanly against the CURRENT schema
-    cat.addView(stmt.name, stmt.queryText);
+    if (stmt.checkOption) {
+        std::string reason;
+        if (!viewTargetOf(stmt.name, stmt.queryText, reason))
+            throw ExecutionError("WITH CHECK OPTION sirf simple view par lag sakta hai (ek table, seedhe columns): " + reason);
+    }
+    cat.addView(stmt.name, stmt.queryText, stmt.checkOption);
+    if (exists) return messageResult("View '" + stmt.name + "' badal diya");
     return messageResult("View '" + stmt.name + "' ban gaya");
+}
+
+// ---- updatable views -----------------------------------------------------------------------------------------------
+// A view over ONE real table whose select list is plain columns (or `*`), with no DISTINCT / SAMOOH / JINKA / SIRF,
+// accepts DAALO / BADLO / MITAO: the statement is rewritten onto the base table (the view's JAHAN is ANDed into BADLO and
+// MITAO; view column names and aliases are mapped back to base columns). WITH CHECK OPTION refuses a row that the view
+// would not show afterwards.
+
+struct Engine::ViewTarget {
+    std::string name, baseTable;
+    std::vector<std::string> names;     // the view's columns, in order (aliases applied)
+    std::vector<std::string> baseCols;  // the base-table column behind each
+    std::shared_ptr<ast::Expr> where;   // the view's JAHAN with table qualifiers removed (nullptr = none)
+    bool checkOption = false;
+
+    const std::string& baseCol(const std::string& viewCol) const {
+        for (size_t i = 0; i < names.size(); ++i)
+            if (names[i] == viewCol) return baseCols[i];
+        throw ExecutionError("Column '" + viewCol + "' view '" + name + "' mein nahi hai");
+    }
+};
+
+std::unique_ptr<Engine::ViewTarget> Engine::viewTargetOf(const std::string& name, const std::string& queryText,
+                                                         std::string& reason) {
+    auto parsed = parseScript(queryText);
+    auto* sel = parsed.empty() ? nullptr : dynamic_cast<ast::Select*>(parsed[0].get());
+    if (sel == nullptr) { reason = "definition DIKHAO nahi hai"; return nullptr; }
+    if (sel->derived || !sel->joins.empty()) { reason = "isme JOIN ya derived table hai"; return nullptr; }
+    if (sel->table.empty()) { reason = "isme koi table nahi hai"; return nullptr; }
+    if (sel->distinct || !sel->groupBy.empty() || sel->having || sel->limit.has_value() || sel->offset.has_value()) {
+        reason = "isme ALAG / SAMOOH / JINKA / SIRF hai";
+        return nullptr;
+    }
+    Catalog& cat = catalog();
+    const TableSchema* base = cat.find(sel->table);
+    if (base == nullptr) {
+        reason = cat.views.count(sel->table) ? "ye kisi doosri view par bani hai" : "base table nahi mili";
+        return nullptr;
+    }
+    auto target = std::make_unique<ViewTarget>();
+    target->name = name;
+    target->baseTable = sel->table;
+    const std::string alias = sel->alias.value_or(sel->table);
+    auto own = [&](const std::optional<std::string>& qualifier) { return !qualifier || *qualifier == alias || *qualifier == sel->table; };
+    auto add = [&](const std::string& viewName, const std::string& baseName) {
+        for (const auto& existing : target->names)
+            if (existing == viewName) {
+                reason = "column '" + viewName + "' do baar aaya hai";
+                return false;
+            }
+        target->names.push_back(viewName);
+        target->baseCols.push_back(baseName);
+        return true;
+    };
+    for (size_t i = 0; i < sel->columns.size(); ++i) {
+        const ast::Expr& item = *sel->columns[i];
+        if (auto* star = dynamic_cast<const ast::Star*>(&item)) {
+            if (!own(star->table)) { reason = "select list mein doosri table ka '*' hai"; return nullptr; }
+            for (const auto& c : base->columns)
+                if (!add(c.name, c.name)) return nullptr;
+            continue;
+        }
+        auto* ref = dynamic_cast<const ast::ColumnRef*>(&item);
+        if (ref == nullptr || !own(ref->table)) {
+            reason = "'" + exprLabel(item) + "' seedha column nahi hai (function / hisaab / aggregate)";
+            return nullptr;
+        }
+        try {
+            base->indexOf(ref->name);
+        } catch (const MeraDBError&) {
+            reason = "column '" + ref->name + "' base table mein nahi hai";
+            return nullptr;
+        }
+        std::optional<std::string> as = i < sel->aliases.size() ? sel->aliases[i] : std::nullopt;
+        if (!add(as.value_or(ref->name), ref->name)) return nullptr;
+    }
+    if (sel->where) {
+        std::unique_ptr<ast::Expr> copy = cloneExpr(*sel->where);
+        forEachRef(copy.get(), [](ast::ColumnRef& ref) { ref.table.reset(); });
+        target->where = std::move(copy);
+    }
+    target->checkOption = cat.viewCheckOption.count(name) > 0;
+    return target;
+}
+
+// The target for DAALO / BADLO / MITAO on `name`; the classic "ek VIEW hai" error when the view is not simple enough.
+std::unique_ptr<Engine::ViewTarget> Engine::updatableView(const std::string& name) {
+    std::string reason;
+    auto target = viewTargetOf(name, catalog().views.at(name), reason);
+    if (!target)
+        throw ExecutionError("'" + name + "' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte");
+    return target;
+}
+
+Engine::RowCheck Engine::viewCheck(const ViewTarget& target) {
+    std::shared_ptr<ast::Expr> where = target.where;
+    std::string viewName = target.name;
+    return [this, where, viewName](const TableSchema& schema, const std::vector<std::vector<Value>>& rows) {
+        if (!where) return;
+        Scope scope({{schema.name, schema}});
+        auto bound = bind(*where, scope);
+        std::vector<Row> dicts;
+        for (const auto& r : rows) dicts.push_back(scope.row(0, r));
+        auto subq = precomputeSubqueries({bound.get()}, dicts, scope.allKeys());
+        for (size_t i = 0; i < dicts.size(); ++i)
+            if (!isTrue(evaluate(*bound, dicts[i], subq.at(i))))
+                throw ExecutionError("View '" + viewName +
+                                     "' ki WITH CHECK OPTION ke karan row reject: ye row view ki JAHAN shart poori nahi karti");
+    };
+}
+
+namespace {
+// The user's expression is written in the view's column names: turn them into the base table's.
+void renameToBase(ast::Expr& e, const std::function<const std::string&(const std::string&)>& baseCol) {
+    forEachRef(&e, [&](ast::ColumnRef& ref) {
+        ref.table.reset();
+        ref.name = baseCol(ref.name);
+    });
+}
+
+std::unique_ptr<ast::Expr> andExpr(std::unique_ptr<ast::Expr> a, std::unique_ptr<ast::Expr> b) {
+    if (!a) return b;
+    if (!b) return a;
+    return std::make_unique<ast::BinaryOp>("AUR", std::move(a), std::move(b));
+}
+}  // namespace
+
+Result Engine::execInsertViaView(const ast::Insert& stmt) {
+    auto vt = updatableView(stmt.table);
+    auto baseCol = [&](const std::string& c) -> const std::string& { return vt->baseCol(c); };
+    ast::Insert base;
+    base.table = vt->baseTable;
+    base.replace = stmt.replace;
+    if (stmt.columns.has_value() && !stmt.columns->empty()) {
+        std::vector<std::string> cols;
+        for (const auto& c : *stmt.columns) cols.push_back(vt->baseCol(c));
+        base.columns = std::move(cols);
+    } else {
+        base.columns = vt->baseCols;  // all of the view's columns; the others get their defaults
+    }
+    for (const auto& tuple : stmt.rows) {
+        std::vector<std::unique_ptr<ast::Expr>> row;
+        for (const auto& e : tuple) row.push_back(cloneExpr(*e));
+        base.rows.push_back(std::move(row));
+    }
+    if (stmt.select) base.select = cloneSelect(*stmt.select);
+    if (stmt.onConflictUpdate.has_value()) {
+        std::vector<std::pair<std::string, std::unique_ptr<ast::Expr>>> list;
+        for (const auto& [col, expr] : *stmt.onConflictUpdate) {
+            auto copy = cloneExpr(*expr);
+            renameToBase(*copy, baseCol);
+            list.emplace_back(vt->baseCol(col), std::move(copy));
+        }
+        base.onConflictUpdate = std::move(list);
+    }
+    RowCheck check = vt->checkOption ? viewCheck(*vt) : RowCheck();
+    return execInsert(base, check ? &check : nullptr);
+}
+
+Result Engine::execUpdateViaView(const ast::Update& stmt) {
+    auto vt = updatableView(stmt.table);
+    auto baseCol = [&](const std::string& c) -> const std::string& { return vt->baseCol(c); };
+    ast::Update base;
+    base.table = vt->baseTable;
+    for (const auto& [col, expr] : stmt.assignments) {
+        auto copy = cloneExpr(*expr);
+        renameToBase(*copy, baseCol);
+        base.assignments.emplace_back(vt->baseCol(col), std::move(copy));
+    }
+    std::unique_ptr<ast::Expr> own;
+    if (stmt.where) {
+        own = cloneExpr(*stmt.where);
+        renameToBase(*own, baseCol);
+    }
+    base.where = andExpr(vt->where ? cloneExpr(*vt->where) : nullptr, std::move(own));
+    RowCheck check = vt->checkOption ? viewCheck(*vt) : RowCheck();
+    return execUpdate(base, check ? &check : nullptr);
+}
+
+Result Engine::execDeleteViaView(const ast::Delete& stmt) {
+    auto vt = updatableView(stmt.table);
+    auto baseCol = [&](const std::string& c) -> const std::string& { return vt->baseCol(c); };
+    ast::Delete base;
+    base.table = vt->baseTable;
+    std::unique_ptr<ast::Expr> own;
+    if (stmt.where) {
+        own = cloneExpr(*stmt.where);
+        renameToBase(*own, baseCol);
+    }
+    base.where = andExpr(vt->where ? cloneExpr(*vt->where) : nullptr, std::move(own));
+    return execDelete(base);
 }
 
 Result Engine::execDropView(const ast::DropView& stmt) {
@@ -2278,10 +3863,12 @@ std::vector<std::string> Engine::explainSelect(const ast::Select& stmt, const Se
     };
     std::vector<std::string> lines;
     std::string alias = stmt.alias.has_value() && !stmt.alias->empty() ? " " + *stmt.alias : "";
-    lines.push_back(plan.access ? plan.access->describe(*plan.tables[0]) : "FULL SCAN " + stmt.table + alias);
+    lines.push_back(plan.access ? plan.access->describe(*plan.tables[0]) : "FULL SCAN " + (stmt.derived ? "DERIVED TABLE" : stmt.table.empty() ? "(no table: one constant row)" : stmt.table) + alias);
     for (const auto& step : plan.joins) {
         std::string kind = joinLabel(step.join->kind) + (step.hashKeys ? "HASH JOIN" : "NESTED LOOP JOIN");
-        std::string name = step.join->alias == step.join->table ? step.join->table : step.join->table + " " + step.join->alias;
+        std::string name = step.join->derived ? "DERIVED TABLE " + step.join->alias
+                           : step.join->alias == step.join->table ? step.join->table
+                                                                    : step.join->table + " " + step.join->alias;
         lines.push_back(kind + " " + name + " PAR " + exprLabel(*step.on));
     }
     auto append = [&](const std::vector<std::string>& more) { lines.insert(lines.end(), more.begin(), more.end()); };
@@ -2313,7 +3900,9 @@ std::vector<std::string> Engine::explainSelect(const ast::Select& stmt, const Se
     for (const auto& o : plan.outputs) outputs.push_back(o.get());
     append(explainSubqueries(outputs, *plan.scope));
     if (stmt.distinct) lines.push_back("DISTINCT  ALAG");
-    if (stmt.limit.has_value()) lines.push_back("LIMIT  SIRF " + std::to_string(*stmt.limit));
+    if (stmt.limit.has_value())
+        lines.push_back("LIMIT  SIRF " + std::to_string(*stmt.limit) +
+                        (stmt.offset.has_value() ? " OFFSET " + std::to_string(*stmt.offset) : std::string()));
     return lines;
 }
 

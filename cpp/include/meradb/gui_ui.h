@@ -38,12 +38,18 @@ class GuiUi {
 public:
     GuiUi(wb::Session& session, const FontSet& fonts, ThemeMode mode);
 
+    // The start screen: cards of the databases to choose from. Opening a card runs ISTEMAL and shows the workspace.
+    bool homeShown() const { return home_; }
+    void showHome();
+    void hideHome() { home_ = false; }
+    ImVec2 homeCardCentre(std::size_t index) const { return index < homeCards_.size() ? homeCards_[index] : ImVec2(-1, -1); }
+
     ThemeMode mode() const { return mode_; }
     void setMode(ThemeMode mode) { mode_ = mode; }     // takes effect at the next prepare()
     const Theme& theme() const { return themeFor(mode_); }
     float scale() const { return scale_; }
 
-    enum class Tab { Results, Log };
+    enum class Tab { Results, Queries, Log };
     Tab tab() const { return activeTab_; }
     void showTab(Tab tab) { requestTab_ = tab; }
     double lastRunMs() const { return lastMs_; }              // the time of the run that made the table; < 0 = unknown
@@ -99,6 +105,8 @@ private:
     void drawResults(const Rect& rect);
     void drawStatusBar(const Rect& rect);
     void drawLogTab();
+    void drawQueriesTab();
+    void drawHome(const ImVec2& display);
     void drawResultsTab();
     void drawTabBarExtras(float tabY, float rightX);
     void rebuildLogCache();
@@ -124,6 +132,14 @@ private:
     float schemaWidth_ = kSchemaWidth;
     float queryFraction_ = 0.42f;
     Tab activeTab_ = Tab::Results;
+    bool home_ = false;
+    bool homeCountsDirty_ = false;
+    bool newDbEditing_ = false;
+    bool newDbFocus_ = false;
+    std::string newDbName_;
+    std::string newDbError_;
+    std::vector<ImVec2> homeCards_;
+    std::vector<std::pair<std::string, std::size_t>> homeQueryCounts_;   // database -> saved queries, read when Home opens
     std::optional<Tab> requestTab_;
     double lastMs_ = -1.0;
     int seenVersion_ = 0;

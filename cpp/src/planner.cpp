@@ -1,5 +1,6 @@
 // cpp/src/planner.cpp -- mirrors meradb/planner.py
 #include "meradb/planner.h"
+#include "meradb/aggregates.h"
 #include "meradb/ast_util.h"
 #include "meradb/errors.h"
 #include "meradb/stack_guard.h"
@@ -75,6 +76,18 @@ std::string Scope::display(const std::string& key) const {
     return (sources_.size() == 1 && dot != std::string::npos) ? key.substr(dot + 1) : key;
 }
 
+void Scope::declareUsing(const std::string& name, const std::string& leftKey, const std::string& rightKey, bool merge) {
+    UsingColumn& entry = using_[name];
+    if (entry.keys.empty()) entry.keys.push_back(leftKey);
+    entry.keys.push_back(rightKey);
+    entry.merge = entry.merge || merge;
+}
+
+const Scope::UsingColumn* Scope::usingColumn(const std::string& name) const {
+    auto it = using_.find(name);
+    return it == using_.end() ? nullptr : &it->second;
+}
+
 std::string Scope::resolve(const ColumnRef& ref) const {
     if (ref.table.has_value()) {
         auto it = aliases_.find(*ref.table);
@@ -91,6 +104,7 @@ std::string Scope::resolve(const ColumnRef& ref) const {
     }
     const auto& keys = it->second;
     if (keys.size() > 1) {
+        if (const UsingColumn* shared = usingColumn(ref.name)) return shared->keys.front();
         std::string joined;
         for (size_t i = 0; i < keys.size(); ++i) joined += (i ? " ya " : "") + keys[i];
         throw ExecutionError("Column '" + ref.name + "' ek se zyada tables mein hai -- " + joined + " likho");
@@ -119,7 +133,23 @@ std::unique_ptr<Expr> bind(const Expr* expr, const Scope& scope) {
 std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
     requireStack();
     if (dynamic_cast<const Literal*>(&expr) || dynamic_cast<const Star*>(&expr)) return cloneExpr(expr);
-    if (auto* c = dynamic_cast<const ColumnRef*>(&expr)) return boundRef(scope.resolve(*c));
+    if (auto* c = dynamic_cast<const ColumnRef*>(&expr)) {
+        if (!c->table && !c->name.empty() && c->name[0] == '@') {  // @user_variable: its value right now
+            SessionHost* host = currentSessionHost();
+            return std::make_unique<Literal>(host ? host->userVariable(c->name) : Value());
+        }
+        std::string key = scope.resolve(*c);
+        if (!c->table.has_value()) {
+            // a bare USING column of a RIGHT / FULL join: the first copy can be KHALI, so use whichever has a value
+            const Scope::UsingColumn* shared = scope.usingColumn(c->name);
+            if (shared && shared->merge && key == shared->keys.front()) {
+                auto merged = std::make_unique<Coalesce>();
+                for (const auto& k : shared->keys) merged->args.push_back(boundRef(k));
+                return merged;
+            }
+        }
+        return boundRef(key);
+    }
     if (auto* b = dynamic_cast<const BinaryOp*>(&expr)) {
         // named locals: call arguments are evaluated in unspecified (GCC: right-to-left) order,
         // and the LEFT operand's error must win
@@ -150,6 +180,18 @@ std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
         for (auto& a : co->args) out->args.push_back(bind(*a, scope));
         return out;
     }
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        auto out = std::make_unique<ScalarFunc>();
+        out->name = sf->name;
+        out->castType = sf->castType;
+        out->user = sf->user;
+        if (sf->user) {  // fail early on an unknown function, like an unknown aggregate
+            SessionHost* host = currentSessionHost();
+            if (host == nullptr || !host->hasFunction(sf->name)) throw unknownFunctionError(sf->name);
+        }
+        for (auto& a : sf->args) out->args.push_back(bind(*a, scope));
+        return out;
+    }
     if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
         auto out = std::make_unique<CaseWhen>();
         for (auto& [cond, value] : cw->branches) {
@@ -167,7 +209,9 @@ std::unique_ptr<Expr> bind(const Expr& expr, const Scope& scope) {
     }
     if (auto* in = dynamic_cast<const InSubquery*>(&expr)) {
         auto out = std::make_unique<InSubquery>();
-        out->left = bind(*in->left, scope);
+        if (in->left) out->left = bind(*in->left, scope);
+        out->kind = in->kind;
+        out->op = in->op;
         if (in->subquery) {
             auto sub = std::make_unique<Subquery>();
             if (in->subquery->statement) sub->statement = cloneSelect(*in->subquery->statement);
@@ -220,6 +264,34 @@ std::unique_ptr<Expr> naturalJoinCondition(const Scope& scope, size_t rightIndex
     return result;
 }
 
+std::vector<std::pair<std::string, std::string>> usingColumnPairs(const Scope& scope, size_t rightIndex,
+                                                                  const std::vector<std::string>& columns) {
+    const auto& sources = scope.sources();
+    const auto& [rightAlias, rightSchema] = sources.at(rightIndex);
+    std::vector<std::pair<std::string, std::string>> pairs;
+    for (const auto& name : columns) {
+        bool inRight = false;
+        for (const auto& c : rightSchema.columns) inRight = inRight || c.name == name;
+        if (!inRight)
+            throw ExecutionError("USING mein '" + name + "' table '" + rightAlias + "' mein nahi hai");
+        std::string leftKey;
+        for (size_t j = 0; j < rightIndex && leftKey.empty(); ++j)
+            for (const auto& c : sources[j].second.columns)
+                if (c.name == name) { leftKey = sources[j].first + "." + name; break; }
+        if (leftKey.empty()) throw ExecutionError("USING mein '" + name + "' pehle ki kisi table mein nahi hai");
+        pairs.emplace_back(leftKey, rightAlias + "." + name);
+    }
+    return pairs;
+}
+
+std::unique_ptr<Expr> usingJoinCondition(const Scope& scope, size_t rightIndex, const std::vector<std::string>& columns) {
+    std::vector<std::unique_ptr<Expr>> conds;
+    for (const auto& [leftKey, rightKey] : usingColumnPairs(scope, rightIndex, columns))
+        conds.push_back(std::make_unique<BinaryOp>("=", boundRef(leftKey), boundRef(rightKey)));
+    if (conds.empty()) throw ExecutionError("USING () mein kam se kam ek column chahiye");
+    return balancedAnd(conds, 0, conds.size());
+}
+
 std::vector<const Expr*> conjuncts(const Expr* expr) {
     if (expr == nullptr) return {};
     return conjuncts(*expr);
@@ -264,6 +336,7 @@ std::optional<IndexLookup> chooseAccess(const Table& table, const Scope& scope, 
             size_t position = schema.indexOf(ref->name);
             const Column& column = schema.columns[position];
             if (!column.isUnique()) continue;
+            if (column.typeName == "DATETIME") continue;  // compares as text (date-only literals mean midnight): scan
             Value value;
             try {
                 value = coerce(lit->value, column.typeName, ref->name);

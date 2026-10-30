@@ -223,7 +223,7 @@ TEST_CASE("wbe2e errors, several statements and the table that stays", "[wbe2e]"
     CHECK(has(lines, "Results -- 2 row(s)"));
     CHECK(has(lines, "1 row(s) daal di"));
     // A statement that fails to parse shows its error and also leaves the table alone.
-    rig.run("DIKHAO FROM;");
+    rig.run("DIKHAO * SE;");
     lines = rig.screen();
     CHECK(has(lines, "[Parser Galti]"));
     CHECK(has(lines, "Results -- 2 row(s)"));
@@ -270,6 +270,7 @@ TEST_CASE("wbe2e history with Ctrl+Up and Ctrl+Down", "[wbe2e]") {
     rig.run("DIKHAO * SE t;");
     CHECK(rig.s().history().size() == 3);
 
+    const std::string draft = rig.s().editor().text();   // local mode: Ctrl+Down past the end brings this back
     rig.ui->setFocus(Panel::Log);
     CHECK(rig.press(Event::ArrowUpCtrl));
     CHECK(rig.s().editor().text() == "DIKHAO * SE t;");
@@ -283,10 +284,10 @@ TEST_CASE("wbe2e history with Ctrl+Up and Ctrl+Down", "[wbe2e]") {
     CHECK(rig.press(Event::ArrowDownCtrl));
     CHECK(rig.press(Event::ArrowDownCtrl));
     CHECK(rig.s().editor().text() == "DIKHAO * SE t;");
-    CHECK(rig.press(Event::ArrowDownCtrl));   // past the end: empty
-    CHECK(rig.s().editor().text().empty());
+    CHECK(rig.press(Event::ArrowDownCtrl));   // past the end: the text from before the walk
+    CHECK(rig.s().editor().text() == draft);
     CHECK(rig.press(Event::ArrowDownCtrl));
-    CHECK(rig.s().editor().text().empty());
+    CHECK(rig.s().editor().text() == draft);
     // The cursor goes to the end of the recalled text.
     CHECK(rig.press(Event::ArrowUpCtrl));
     rig.type(" --x");

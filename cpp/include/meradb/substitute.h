@@ -15,11 +15,12 @@ namespace meradb {
 using RefReplacer = std::function<std::optional<Value>(const ast::ColumnRef&)>;
 
 // Replaces matching ColumnRefs in the tree by Literals. A null slot is fine.
-// Subquery / InSubquery nodes are deliberately not entered.
-void substituteInPlace(std::unique_ptr<ast::Expr>& expr, const RefReplacer& replace);
+// Subquery / InSubquery nodes are not entered, unless `intoSubqueries` is set (the procedural bodies set it:
+// a variable is visible inside a sub-select there).
+void substituteInPlace(std::unique_ptr<ast::Expr>& expr, const RefReplacer& replace, bool intoSubqueries = false);
 
-// Rewrites the expressions of Insert / Update / Delete / Select / CallProcedure;
+// Rewrites the expressions of Insert / Update / Delete / Select / SetOp / CallProcedure / PREPARE / EXECUTE / SET;
 // any other statement kind is left untouched.
-void substituteStatementInPlace(ast::Statement& stmt, const RefReplacer& replace);
+void substituteStatementInPlace(ast::Statement& stmt, const RefReplacer& replace, bool intoSubqueries = false);
 
 }  // namespace meradb

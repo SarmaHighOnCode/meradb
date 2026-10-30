@@ -117,3 +117,10 @@ TEST_CASE("tokenize skips a UTF-8 BOM, counting it as one column", "[tokenizer]"
     REQUIRE(tokens[0].textValue == "DIKHAO");
     REQUIRE(tokens[0].col == 2);
 }
+
+TEST_CASE("tokenize reads || as one symbol and still rejects a lone |", "[tokenizer]") {
+    auto tokens = tokenize("a || b");
+    REQUIRE(tokens[1].type == TokenType::Symbol);
+    REQUIRE(tokens[1].textValue == "||");
+    REQUIRE_THROWS_AS(tokenize("a | b"), TokenizerError);
+}

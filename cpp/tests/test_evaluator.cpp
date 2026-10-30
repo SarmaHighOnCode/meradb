@@ -1,5 +1,6 @@
 // cpp/tests/test_evaluator.cpp
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include "meradb/errors.h"
 #include "meradb/evaluator.h"
 #include "meradb/parser.h"
@@ -65,35 +66,46 @@ TEST_CASE("evaluate computes arithmetic", "[evaluator]") {
     REQUIRE(S(ev("'Ra' + 'vi'")) == "Ravi");
 }
 
-TEST_CASE("integer division truncates and modulo follows Python", "[evaluator]") {
-    REQUIRE(I(ev("7 / 2")) == 3);
-    REQUIRE(I(ev("-7 / 2")) == -3);   // int(-3.5), not floor
+TEST_CASE("DIV truncates toward zero and modulo follows Python", "[evaluator]") {
+    REQUIRE(I(ev("7 DIV 2")) == 3);
+    REQUIRE(I(ev("-7 DIV 2")) == -3);   // truncated, not floored
+    REQUIRE(I(ev("7.9 DIV 2")) == 3);
     REQUIRE(I(ev("-7 % 2")) == 1);    // Python floor modulo
     REQUIRE(I(ev("7 % -2")) == -1);
     REQUIRE(D(ev("7.0 / 2")) == 3.5);
     REQUIRE(D(ev("-7.5 % 2")) == 0.5);
 }
 
-TEST_CASE("integer division is correctly rounded before truncating, like Python", "[evaluator]") {
-    // expected values printed by the reference Python: int(a / b)
-    struct Case { int64_t a, b, q; };
+TEST_CASE("slash is exact division: INT when it divides evenly, FLOAT otherwise (MySQL)", "[evaluator]") {
+    REQUIRE(I(ev("6 / 2")) == 6 / 2);
+    REQUIRE(I(ev("-6 / 3")) == -2);
+    REQUIRE(D(ev("7 / 2")) == 3.5);
+    REQUIRE(D(ev("-7 / 2")) == -3.5);
+    REQUIRE(D(ev("1 / 3")) == pyTrueDivide(1, 3));
+    REQUIRE(I(ev("0 / 5")) == 0);
+    REQUIRE_THROWS_WITH(ev("1 / 0"), Catch::Matchers::ContainsSubstring("Zero se divide"));
+    REQUIRE_THROWS_WITH(ev("1 DIV 0"), Catch::Matchers::ContainsSubstring("Zero se divide"));
+}
+
+TEST_CASE("DIV is exact integer division, even for values a double cannot hold", "[evaluator]") {
+    struct Case { int64_t a, b; };
     const Case cases[] = {
-        {9007199254740993, 3, 3002399751580331},
-        {-9007199254740993, 3, -3002399751580331},
-        {INT64_MAX, 3, 3074457345618258432},
-        {INT64_MIN, 7, -1317624576693539328},
-        {4611686018427400249, -9876543210987, -466933},
-        {123456789012345678, 1000000007, 123456788},
-        {36028797018963969, 18014398509481987, 1},
-        {1, 1152921504606846977, 0},
-        {-9007199254740993, -9007199254740994, 0},
-        {INT64_MAX, INT64_MAX - 1, 1},
+        {9007199254740993, 3},
+        {-9007199254740993, 3},
+        {INT64_MAX, 3},
+        {INT64_MIN, 7},
+        {4611686018427400249, -9876543210987},
+        {123456789012345678, 1000000007},
+        {36028797018963969, 18014398509481987},
+        {1, 1152921504606846977},
+        {-9007199254740993, -9007199254740994},
+        {INT64_MAX, INT64_MAX - 1},
     };
     for (const auto& c : cases) {
         Row row;
         row.emplace("s.a", Value(c.a));
         row.emplace("s.b", Value(c.b));
-        REQUIRE(I(ev("s.a / s.b", row)) == c.q);
+        REQUIRE(I(ev("s.a DIV s.b", row)) == c.a / c.b);
     }
 }
 

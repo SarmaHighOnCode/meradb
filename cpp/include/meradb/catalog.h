@@ -10,7 +10,9 @@
 #include "meradb/ordered_map.h"
 #include <nlohmann/json.hpp>
 #include <cstddef>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +30,11 @@ struct Column {
     std::optional<std::string> refTable;   // SANDARBH parent table
     std::optional<std::string> refColumn;  // SANDARBH parent column
     std::optional<std::string> check;      // SHART source text
+    // Added after the Python engine's Column; written to catalog.json ONLY when set, so older files are unchanged.
+    bool autoIncrement = false;             // AUTO_INCREMENT / AUTO_ANK (INT only)
+    std::vector<std::string> enumValues;    // ENUM('a','b'): typeName is TEXT, the members are listed here
+    std::string fkName;                     // name of this column's SANDARBH constraint ("" = none yet)
+    std::string onDelete, onUpdate;         // CASCADE | SET NULL | RESTRICT | NO ACTION; "" = RESTRICT
 
     bool isUnique() const { return primaryKey || unique; }
     bool isRequired() const { return primaryKey || notNull; }
@@ -50,6 +57,8 @@ struct TableSchema {
     std::vector<std::string> types() const;
     size_t indexOf(const std::string& column) const;  // throws ExecutionError if missing
     const Column& getColumn(const std::string& column) const;
+    // Gives every SANDARBH column without a constraint name one: <table>_ibfk_<n>, like MySQL.
+    void assignFkNames();
 
     nlohmann::ordered_json toJson() const;
     static TableSchema fromJson(const nlohmann::ordered_json& j);
@@ -63,10 +72,15 @@ public:
 
     InsertionOrderedMap<TableSchema> tables;
     InsertionOrderedMap<std::string> views;  // view name -> its DIKHAO source text
+    // Views defined WITH CHECK OPTION. Written to catalog.json ("view_check_options") only when not empty.
+    std::set<std::string> viewCheckOption;
     // Phase 2 objects: not interpreted in Phase 1, but carried through
     // load/save untouched so a catalog written by the Python engine keeps them.
     nlohmann::ordered_json triggers = nlohmann::ordered_json::object();
     nlohmann::ordered_json procedures = nlohmann::ordered_json::object();
+    // Stored functions (BANAO FUNCTION). Written to catalog.json ("functions") only when there is one, so catalogs
+    // without functions stay byte-for-byte as before.
+    nlohmann::ordered_json functions = nlohmann::ordered_json::object();
 
     void save();  // atomic: writes catalog.json.tmp, then renames it over catalog.json
     std::string tablePath(const std::string& table) const;
@@ -74,7 +88,7 @@ public:
     TableSchema* find(const std::string& table);  // nullptr if missing
     void add(const TableSchema& schema);          // sets + saves
     void remove(const std::string& table);
-    void addView(const std::string& name, const std::string& queryText);
+    void addView(const std::string& name, const std::string& queryText, bool checkOption = false);
     void removeView(const std::string& name);
 
     // ---- triggers & stored procedures (Phase 2). Stored exactly as catalog.py stores them ----
@@ -83,7 +97,9 @@ public:
     };
     struct ProcedureInfo {
         std::vector<std::pair<std::string, std::string>> params;  // (name, normalised type)
+        std::vector<std::string> modes;                           // IN | OUT | INOUT per parameter (parallel to params)
         std::string bodyText;
+        std::string created;  // 'YYYY-MM-DD HH:MM:SS' (local time); "" for procedures made before it was recorded
     };
     bool hasTrigger(const std::string& name) const { return triggers.contains(name); }
     void addTrigger(const std::string& name, const std::string& timing, const std::string& event,
@@ -94,10 +110,24 @@ public:
     std::vector<TriggerInfo> triggersFor(const std::string& timing, const std::string& event,
                                          const std::string& table) const;
     bool hasProcedure(const std::string& name) const { return procedures.contains(name); }
+    // `modes` (parallel to params, "IN" when absent) is written into catalog.json only for an OUT / INOUT parameter.
     void addProcedure(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
-                      const std::string& bodyText);
+                      const std::string& bodyText, const std::string& created = "",
+                      const std::vector<std::string>& modes = {});
     void removeProcedure(const std::string& name);
     std::optional<ProcedureInfo> findProcedure(const std::string& name) const;
+
+    struct FunctionInfo {
+        std::vector<std::pair<std::string, std::string>> params;  // (name, normalised type)
+        std::string returnType;
+        std::string bodyText;
+        std::string created;  // 'YYYY-MM-DD HH:MM:SS' (local time)
+    };
+    bool hasFunction(const std::string& name) const { return functions.contains(name); }
+    void addFunction(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
+                     const std::string& returnType, const std::string& bodyText, const std::string& created);
+    void removeFunction(const std::string& name);
+    std::optional<FunctionInfo> findFunction(const std::string& name) const;
 
     const std::string& dbDir() const { return dbDir_; }
     const std::string& path() const { return path_; }
@@ -106,6 +136,10 @@ private:
     std::string dbDir_;
     std::string path_;
     void load();
+    // Procedure creation times live beside catalog.json ("procedures.meta.json"), not in it, so catalog.json stays
+    // byte-identical to the Python engine's. Best-effort: a missing or unreadable sidecar just means "no time".
+    std::map<std::string, std::string> procedureCreated_;
+    void saveProcedureMeta() const;
 };
 
 }  // namespace meradb

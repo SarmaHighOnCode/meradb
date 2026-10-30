@@ -46,6 +46,13 @@ public:
     std::string stage() const override { return "Execution"; }
 };
 
+// SIGNAL 'text' raised inside a trigger / procedure / function body. Reported like any ExecutionError; a type of its own
+// so the DAALO / BADLO / MITAO that fired the trigger can be undone as a whole.
+class SignalError : public ExecutionError {
+public:
+    explicit SignalError(std::string message) : ExecutionError(std::move(message)) {}
+};
+
 class StorageError : public MeraDBError {
 public:
     explicit StorageError(std::string message) : MeraDBError(std::move(message)) { refreshFormatted(); }

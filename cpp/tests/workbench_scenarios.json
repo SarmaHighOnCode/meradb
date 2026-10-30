@@ -29,7 +29,7 @@
     {"set_text": "DAALO MEIN t MAAN (9);"},
     {"run": true},
     {"snapshot": "message_after_empty"},
-    {"set_text": "DIKHAO FROM;"},
+    {"set_text": "DIKHAO * SE;"},
     {"run": true},
     {"snapshot": "syntax_error"}
   ]},
@@ -62,7 +62,7 @@
     {"set_text": "   "},
     {"explain": true},
     {"snapshot": "explain_empty"},
-    {"set_text": "DIKHAO FROM"},
+    {"set_text": "DIKHAO * SE"},
     {"explain": true},
     {"snapshot": "explain_bad"},
     {"set_text": "   "},

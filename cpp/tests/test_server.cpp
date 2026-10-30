@@ -86,13 +86,13 @@ TEST_CASE("server hello can pick the database", "[server]") {
     CHECK(isClosed(missing));
 }
 
-TEST_CASE("server refuses a restricted user who asks for a database at hello", "[server]") {
+TEST_CASE("server lets a restricted user ask for a database at hello", "[server]") {
     RunningServer s;
     s.instance().users().create("ravi", "pw1");
     RawClient c(s.port());
-    Json reply = c.hello("pw1", "main", "ravi");  // ISTEMAL is superuser-only, exactly like Python
-    CHECK(reply["ok"] == false);
-    CHECK(reply["error"].get<std::string>().find("superuser nahi hai") != std::string::npos);
+    Json reply = c.hello("pw1", "main", "ravi");  // ISTEMAL is open to every user in the C++ engine (grants are per database)
+    CHECK(reply["ok"] == true);
+    CHECK(reply["database"] == "main");
 }
 
 TEST_CASE("server closes a connection whose first message is not a hello", "[server]") {

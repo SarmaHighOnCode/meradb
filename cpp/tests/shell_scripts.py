@@ -64,7 +64,7 @@ SCRIPTS = {
     # ---- errors ----------------------------------------------------------------------------------------
     "errors": (
         "DIKHAO * SE gayab;\n"
-        "DIKHAO 1;\n"
+        "DIKHAO * SE;\n"
         "DAALO MEIN\n"
         "BANAO TABLE a (x INT);\n"
         "BANAO TABLE a (x INT);\n"

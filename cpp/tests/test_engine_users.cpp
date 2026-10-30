@@ -99,7 +99,7 @@ TEST_CASE("engine_users everything else is superuser-only and names the Python c
     CHECK(runLast(f.ravi, "PAKKA;").error == notSuper("ravi", "Commit"));
     CHECK(runLast(f.ravi, "BANAO USER x GUPT 'y';").error == notSuper("ravi", "CreateUser"));
     CHECK(runLast(f.ravi, "ADHIKAR DO SAB PAR other KO ravi;").error == notSuper("ravi", "Grant"));
-    CHECK(runLast(f.ravi, "ISTEMAL main;").error == notSuper("ravi", "UseDatabase"));
+    CHECK(runLast(f.ravi, "ISTEMAL main;").error.empty());  // open to every user: grants are per database anyway
     CHECK(runLast(f.ravi, "nonsense;").error.find("Parser Galti") != std::string::npos);  // parse errors come first
 }
 

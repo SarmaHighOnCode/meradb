@@ -17,6 +17,7 @@
 // module only does the per-group math.
 #pragma once
 #include "meradb/ast.h"
+#include "meradb/errors.h"
 #include "meradb/evaluator.h"
 #include <string>
 #include <vector>
@@ -26,6 +27,9 @@ namespace meradb {
 // "COUNT" -> "GINO", "SUM" -> "KUL", ... Throws ExecutionError for an
 // unknown function or `X(*)` with anything but GINO/COUNT.
 std::string canonicalName(const ast::FuncCall& func);
+
+// The "Function 'X' nahi pata" error for a name that is neither built in nor a stored function (name in any case).
+ExecutionError unknownFunctionError(const std::string& name);
 
 // Compute one aggregate over the rows of one group.
 Value computeAggregate(const ast::FuncCall& func, const std::vector<Row>& groupRows);

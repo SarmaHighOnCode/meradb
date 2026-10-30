@@ -66,7 +66,8 @@ TEST_CASE("gui options: no arguments behave like `meradb workbench`", "[gui][cli
     CHECK(options.width == 1280);
     CHECK(options.height == 800);
     const CliArgs reference = parseCliArgs({"workbench"});
-    CHECK(options.cli.dataDir == reference.dataDir);
+    // the window opens the checkout's data folder when it runs from one, else the same default as the CLI
+    CHECK(options.cli.dataDir == (projectDataDir().empty() ? reference.dataDir : projectDataDir()));
 }
 
 TEST_CASE("gui options: the workbench options keep their meaning", "[gui][cli]") {

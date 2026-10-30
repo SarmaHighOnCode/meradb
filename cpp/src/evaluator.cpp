@@ -1,9 +1,12 @@
 // cpp/src/evaluator.cpp -- mirrors meradb/evaluator.py
 #include "meradb/evaluator.h"
+#include "meradb/aggregates.h"
 #include "meradb/errors.h"
 #include "meradb/stack_guard.h"
 #include "meradb/pyvalue.h"
+#include "meradb/scalar_funcs.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
@@ -11,6 +14,14 @@
 
 namespace meradb {
 using namespace ast;
+
+namespace {
+thread_local SessionHost* g_sessionHost = nullptr;
+}  // namespace
+
+SessionHost* currentSessionHost() { return g_sessionHost; }
+ScopedSessionHost::ScopedSessionHost(SessionHost* host) : previous_(g_sessionHost) { g_sessionHost = host; }
+ScopedSessionHost::~ScopedSessionHost() { g_sessionHost = previous_; }
 
 namespace {
 
@@ -85,6 +96,18 @@ Value compare(const std::string& op, Value left, Value right) {
         right = Value(parseDate(std::get<std::string>(right.data)));
     else if (std::holds_alternative<Date>(right.data) && isText(left))
         left = Value(parseDate(std::get<std::string>(left.data)));
+    // DATETIME values are 'YYYY-MM-DD HH:MM:SS' text; a date-only 'YYYY-MM-DD' next to one means midnight of that day
+    if (isText(left) && isText(right)) {
+        std::string& a = std::get<std::string>(left.data);
+        std::string& b = std::get<std::string>(right.data);
+        auto datePart = [](const std::string& s) {
+            return s.size() == 10 && s[4] == '-' && s[7] == '-' && isdigit(static_cast<unsigned char>(s[0])) &&
+                   isdigit(static_cast<unsigned char>(s[9]));
+        };
+        auto timePart = [](const std::string& s) { return s.size() == 19 && s[10] == ' ' && s[13] == ':' && s[16] == ':'; };
+        if (datePart(a) && timePart(b)) a += " 00:00:00";
+        else if (datePart(b) && timePart(a)) b += " 00:00:00";
+    }
 
     Kind kind = kindOf(left);
     if (kind != kindOf(right))
@@ -252,15 +275,32 @@ Value arithmetic(const std::string& op, const Value& left, const Value& right) {
         if (op == "-") return Value(x - y);
         return Value(x * y);
     }
-    if ((op == "/" || op == "%") && toDouble(right) == 0) throw ExecutionError("Zero se divide nahi kar sakte");
+    if ((op == "/" || op == "%" || op == "DIV") && toDouble(right) == 0) throw ExecutionError("Zero se divide nahi kar sakte");
     if (op == "/") {
         if (bothInt) {
-            // Python: int(left / right) -- true division, then truncate, like SQL
-            double q = std::trunc(pyTrueDivide(std::get<int64_t>(left.data), std::get<int64_t>(right.data)));
-            if (q >= TWO_POW_63 || q < -TWO_POW_63) intOverflow(op);
-            return Value(static_cast<int64_t>(q));
+            // MySQL: 6 / 2 = 3 (exact, stays INT), 7 / 2 = 3.5 (FLOAT). DIV is the truncating integer division.
+            int64_t x = std::get<int64_t>(left.data), y = std::get<int64_t>(right.data);
+            if (y == -1) {
+                if (x == I64_MIN) intOverflow(op);
+                return Value(-x);
+            }
+            if (x % y == 0) return Value(x / y);
+            return Value(pyTrueDivide(x, y));
         }
         return Value(toDouble(left) / toDouble(right));
+    }
+    if (op == "DIV") {
+        if (bothInt) {
+            int64_t x = std::get<int64_t>(left.data), y = std::get<int64_t>(right.data);
+            if (y == -1) {
+                if (x == I64_MIN) intOverflow(op);
+                return Value(-x);
+            }
+            return Value(x / y);  // C++ truncates toward zero, like MySQL's DIV
+        }
+        double q = std::trunc(toDouble(left) / toDouble(right));
+        if (!std::isfinite(q) || q >= TWO_POW_63 || q < -TWO_POW_63) intOverflow(op);
+        return Value(static_cast<int64_t>(q));
     }
     if (op == "%") {
         if (bothInt) {
@@ -301,13 +341,30 @@ Value evalOr(const BinaryOp& expr, const Row& row, const SubqueryResults* subque
     return Value(false);
 }
 
+// ------------------------------------------------------- ANY / ALL / EXISTS ----
+
+// x op ANY (values) / x op ALL (values), with SQL's three-valued logic: ANY is SACH on the first true
+// comparison, ALL is JHOOTH on the first false one; a KHALI comparison makes the answer KHALI unless decided.
+Value quantified(const InSubquery& in, const Value& left, const std::vector<Value>& values) {
+    bool isAny = in.kind == "ANY";
+    bool sawUnknown = false;
+    for (const auto& v : values) {
+        if (v.isNull()) { sawUnknown = true; continue; }
+        bool hit = std::get<bool>(compare(in.op, left, v).data);
+        if (isAny && hit) return Value(true);
+        if (!isAny && !hit) return Value(false);
+    }
+    if (sawUnknown) return Value();
+    return Value(!isAny);  // ANY over nothing is JHOOTH, ALL over nothing is SACH
+}
+
 // ---------------------------------------------------------------- walks ----
 
 void columnRefsImpl(const Expr* expr, std::vector<const ColumnRef*>& out, bool skipAggregates) {
     if (expr == nullptr) return;
     requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(expr)) {
-        out.push_back(ref);
+        if (ref->name.empty() || ref->name[0] != '@') out.push_back(ref);  // @x is a session variable, not a column
     } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
         columnRefsImpl(b->left.get(), out, skipAggregates);
         columnRefsImpl(b->right.get(), out, skipAggregates);
@@ -319,6 +376,8 @@ void columnRefsImpl(const Expr* expr, std::vector<const ColumnRef*>& out, bool s
         if (!skipAggregates) columnRefsImpl(f->arg.get(), out, skipAggregates);
     } else if (auto* co = dynamic_cast<const Coalesce*>(expr)) {
         for (auto& a : co->args) columnRefsImpl(a.get(), out, skipAggregates);
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(expr)) {
+        for (auto& a : sf->args) columnRefsImpl(a.get(), out, skipAggregates);
     } else if (auto* cw = dynamic_cast<const CaseWhen*>(expr)) {
         for (auto& [cond, value] : cw->branches) {
             columnRefsImpl(cond.get(), out, skipAggregates);
@@ -344,6 +403,8 @@ void columnRefNodesImpl(const Expr* expr, std::vector<const ColumnRef*>& out) {
         columnRefNodesImpl(isn->expr.get(), out);
     } else if (auto* f = dynamic_cast<const FuncCall*>(expr)) {
         columnRefNodesImpl(f->arg.get(), out);
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(expr)) {
+        for (auto& a : sf->args) columnRefNodesImpl(a.get(), out);
     }
 }
 
@@ -361,6 +422,8 @@ void findAggregatesImpl(const Expr* expr, std::vector<const FuncCall*>& out) {
         findAggregatesImpl(isn->expr.get(), out);
     } else if (auto* co = dynamic_cast<const Coalesce*>(expr)) {
         for (auto& a : co->args) findAggregatesImpl(a.get(), out);
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(expr)) {
+        for (auto& a : sf->args) findAggregatesImpl(a.get(), out);
     } else if (auto* cw = dynamic_cast<const CaseWhen*>(expr)) {
         for (auto& [cond, value] : cw->branches) {
             findAggregatesImpl(cond.get(), out);
@@ -389,6 +452,8 @@ void findSubqueriesImpl(const Expr* expr, std::vector<const Expr*>& out) {
         findSubqueriesImpl(f->arg.get(), out);
     } else if (auto* co = dynamic_cast<const Coalesce*>(expr)) {
         for (auto& a : co->args) findSubqueriesImpl(a.get(), out);
+    } else if (auto* sf = dynamic_cast<const ScalarFunc*>(expr)) {
+        for (auto& a : sf->args) findSubqueriesImpl(a.get(), out);
     } else if (auto* cw = dynamic_cast<const CaseWhen*>(expr)) {
         for (auto& [cond, value] : cw->branches) {
             findSubqueriesImpl(cond.get(), out);
@@ -421,8 +486,14 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         if (result == nullptr) throw ExecutionError("Subquery ka result pehle se ready nahi tha (internal error)");
         auto* in = dynamic_cast<const InSubquery*>(&expr);
         if (in == nullptr) return result->scalar;  // already reduced to a scalar by the engine
+        if (in->kind == "EXISTS") return result->scalar;  // the engine stored SACH/JHOOTH
         Value left = evaluate(*in->left, row, subqueries);
-        if (left.isNull()) return Value();
+        if (left.isNull()) {
+            // KHALI op ANY/ALL (nothing) still has a definite answer; every other case is unknown
+            if ((in->kind == "ANY" || in->kind == "ALL") && result->values.empty()) return Value(in->kind == "ALL");
+            return Value();
+        }
+        if (in->kind == "ANY" || in->kind == "ALL") return quantified(*in, left, result->values);
         bool isMember = false;
         for (const auto& v : result->values)
             if (!v.isNull() && pyEquals(left, v)) { isMember = true; break; }
@@ -443,7 +514,37 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         return cw->elseExpr ? evaluate(*cw->elseExpr, row, subqueries) : Value();
     }
 
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        std::vector<Value> args;
+        args.reserve(sf->args.size());
+        for (auto& a : sf->args) args.push_back(evaluate(*a, row, subqueries));
+        if (sf->user) {
+            SessionHost* host = currentSessionHost();
+            if (host == nullptr || !host->hasFunction(sf->name)) throw unknownFunctionError(sf->name);
+            return host->callFunction(sf->name, args);
+        }
+        if (sf->name == "CAST") return castValue(args.at(0), sf->castType);
+        if (sf->name == "MOD") {
+            if (args[0].isNull() || args[1].isNull()) return Value();
+            // MySQL's MOD: the sign follows the dividend (MOD(-7, 3) = -1). The % operator keeps the engine's own rule
+            // (sign of the divisor), so this corrects its result when the two signs differ.
+            Value r = arithmetic("%", args[0], args[1]);
+            auto num = [](const Value& v) {
+                if (auto* i = std::get_if<int64_t>(&v.data)) return static_cast<double>(*i);
+                if (auto* d = std::get_if<double>(&v.data)) return *d;
+                return 0.0;
+            };
+            if (num(r) != 0.0 && (num(r) < 0.0) != (num(args[0]) < 0.0)) r = arithmetic("-", r, args[1]);
+            return r;
+        }
+        return callScalarFunc(sf->name, args);
+    }
+
     if (auto* ref = dynamic_cast<const ColumnRef*>(&expr)) {
+        if (!ref->table && !ref->name.empty() && ref->name[0] == '@') {  // @user_variable
+            SessionHost* host = currentSessionHost();
+            return host ? host->userVariable(ref->name) : Value();
+        }
         std::string key = refKey(*ref);  // bound: "alias.col"; unbound (even `t.col`): "col"
         auto it = row.find(key);
         if (it == row.end()) throw ExecutionError("Column '" + key + "' nahi mila");
@@ -485,6 +586,7 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
         if (op == "=" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=")
             return compare(op, std::move(left), std::move(right));
         if (op == "JAISA") return like(left, right);
+        if (op == "||") return Value(valueAsText(left) + valueAsText(right));  // string concatenation
         return arithmetic(op, left, right);
     }
 
@@ -553,9 +655,18 @@ std::string exprLabel(const Expr& expr) {
         return out + ")";
     }
     if (dynamic_cast<const CaseWhen*>(&expr)) return "AGAR ... KHATAM";
+    if (auto* sf = dynamic_cast<const ScalarFunc*>(&expr)) {
+        std::string out = sf->name + "(";
+        for (size_t i = 0; i < sf->args.size(); ++i) out += (i ? ", " : "") + exprLabel(*sf->args[i]);
+        if (sf->name == "CAST") out += " AS " + sf->castType;
+        return out + ")";
+    }
     if (dynamic_cast<const Subquery*>(&expr)) return "(DIKHAO ...)";
-    if (auto* in = dynamic_cast<const InSubquery*>(&expr))
+    if (auto* in = dynamic_cast<const InSubquery*>(&expr)) {
+        if (in->kind == "EXISTS") return "EXISTS (DIKHAO ...)";
+        if (in->kind == "ANY" || in->kind == "ALL") return exprLabel(*in->left) + " " + in->op + " " + in->kind + " (DIKHAO ...)";
         return exprLabel(*in->left) + " " + (in->negated ? "NAHI " : "") + "MEIN (DIKHAO ...)";
+    }
     return "?";
 }
 

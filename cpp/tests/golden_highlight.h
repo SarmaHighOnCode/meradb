@@ -71,7 +71,7 @@ inline const HighlightCase kHighlightCases[] = {
     {"    JAHAN s.cgpa > (DIKHAO AUSAT(s2.cgpa) SE students s2 JAHAN s2.shehar = s.shehar);  -- correlated", "4,9,keyword;17,18,operator;19,20,punctuation.bracket;20,26,keyword;27,32,function;32,33,punctuation.bracket;40,41,punctuation.bracket;42,44,keyword;57,62,keyword;73,74,operator;83,84,punctuation.bracket;87,100,comment"},
     {"SAMJHAO DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);", "0,7,keyword;8,14,keyword;20,22,keyword;32,37,keyword;43,44,operator;45,46,punctuation.bracket;46,52,keyword;53,58,function;58,59,punctuation.bracket;63,64,punctuation.bracket;65,67,keyword;76,77,punctuation.bracket"},
     {"-- ======================= VIEWS =======================", "0,56,comment"},
-    {"BANAO VIEW delhi_students KAHO DIKHAO naam, cgpa SE students JAHAN shehar = 'Delhi';", "0,5,keyword;6,10,keyword;26,30,keyword;31,37,keyword;49,51,keyword;61,66,keyword;74,75,operator;76,83,string"},
+    {"BANAO VIEW delhi_students KAHO DIKHAO ALAG naam, cgpa SE students JAHAN shehar = 'Delhi';", "0,5,keyword;6,10,keyword;26,30,keyword;31,37,keyword;38,42,keyword;54,56,keyword;66,71,keyword;79,80,operator;81,88,string"},
     {"DIKHAO * SE delhi_students KRAM naam;", "0,6,keyword;7,8,operator;9,11,keyword;27,31,keyword"},
     {"DIKHAO VIEWS;", "0,6,keyword;7,12,keyword"},
     {"BATAO delhi_students;", "0,5,keyword"},

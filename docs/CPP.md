@@ -296,6 +296,15 @@ Hinglish, with the same words as the terminal workbench.
 
 ![A GROUP BY result in the grid](images/desktop-results.png)
 
+**Start screen and saved queries.** Started without `-d`, the window first shows a *Database chuno* screen: one card per
+database (tables, saved queries). A click on a card runs `ISTEMAL` and opens the workspace on its **Queries** tab, the list of
+every statement run in that database so far (newest first; click one to load it into the editor, *Chalao* runs it again,
+*Queries saaf karo* empties the list). The list is kept in `<data folder>/.history/<database>.jsonl` (one `{"q","t"}` line per
+statement; local mode only), so it is still there at the next start. The *Home* button in the top bar returns to the cards. The writing area is kept per database too (`.history/<database>.script.mdb`, saved a moment after each change) and comes back when the database is opened from a card or at the next start.
+
+Without `-D` or `MERADB_DATA`, a `meradb_gui` that runs from `<checkout>/cpp/build` uses `<checkout>/data`, so a double-click always opens the
+same folder (the folder is git-ignored). Elsewhere it uses the usual default.
+
 ### Build and run
 
 It is built by default (`-DMERADB_GUI=ON`), next to `meradb_cli`, from the same CMake project. The first configure
@@ -351,7 +360,7 @@ Not in `--help`; they exist so the window can be tested and photographed without
 | `--editor TEXT` | put this text into the editor |
 | `--theme light\|dark`, `--size WxH` | theme and size of the screenshot (default 1280x800) |
 | `--expand-tables` | open every database in the schema tree |
-| `--open connect\|madad\|palette`, `--type TEXT` | show a dialog, and type into its first field |
+| `--open connect\|madad\|palette\|home\|queries`, `--type TEXT` | show a dialog, and type into its first field |
 
 The pictures in `docs/images/` were made like this (a temporary data folder with a small `college` database):
 

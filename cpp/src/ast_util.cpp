@@ -50,12 +50,22 @@ std::unique_ptr<Expr> cloneExpr(const Expr& e) {
     }
     if (const auto* insub = dynamic_cast<const InSubquery*>(&e)) {
         auto i = std::make_unique<InSubquery>();
-        i->left = cloneExpr(*insub->left);
+        if (insub->left) i->left = cloneExpr(*insub->left);
+        i->kind = insub->kind;
+        i->op = insub->op;
         auto subCopy = std::make_unique<Subquery>();
         subCopy->statement = cloneSelect(*insub->subquery->statement);
         i->subquery = std::move(subCopy);
         i->negated = insub->negated;
         return i;
+    }
+    if (const auto* sf = dynamic_cast<const ScalarFunc*>(&e)) {
+        auto s = std::make_unique<ScalarFunc>();
+        s->name = sf->name;
+        s->castType = sf->castType;
+        s->user = sf->user;
+        for (const auto& arg : sf->args) s->args.push_back(cloneExpr(*arg));
+        return s;
     }
     if (const auto* co = dynamic_cast<const Coalesce*>(&e)) {
         auto c = std::make_unique<Coalesce>();
@@ -79,12 +89,15 @@ std::unique_ptr<Select> cloneSelect(const Select& s) {
     for (const auto& c : s.columns) out->columns.push_back(cloneExpr(*c));
     out->table = s.table;
     out->alias = s.alias;
+    if (s.derived) out->derived = cloneSelect(*s.derived);
     for (const auto& j : s.joins) {
         Join jc;
         jc.table = j.table;
         jc.alias = j.alias;
         jc.on = j.on ? cloneExpr(*j.on) : nullptr;
         jc.kind = j.kind;
+        jc.usingColumns = j.usingColumns;
+        if (j.derived) jc.derived = cloneSelect(*j.derived);
         out->joins.push_back(std::move(jc));
     }
     out->where = s.where ? cloneExpr(*s.where) : nullptr;
@@ -97,6 +110,7 @@ std::unique_ptr<Select> cloneSelect(const Select& s) {
         out->orderBy.push_back(std::move(oi));
     }
     out->limit = s.limit;
+    out->offset = s.offset;
     out->distinct = s.distinct;
     out->aliases = s.aliases;
     return out;
@@ -108,6 +122,7 @@ std::string astClassName(const ast::Statement& stmt) {
     MERADB_CLASS_NAME(ShowTables) MERADB_CLASS_NAME(Describe) MERADB_CLASS_NAME(CreateView)
     MERADB_CLASS_NAME(DropView) MERADB_CLASS_NAME(ShowViews) MERADB_CLASS_NAME(CreateTable)
     MERADB_CLASS_NAME(AlterAddComposite) MERADB_CLASS_NAME(DropTable) MERADB_CLASS_NAME(AlterAddColumn)
+    MERADB_CLASS_NAME(AlterModifyColumn) MERADB_CLASS_NAME(AlterAddForeignKey) MERADB_CLASS_NAME(AlterDropForeignKey)
     MERADB_CLASS_NAME(AlterDropColumn) MERADB_CLASS_NAME(RenameTable) MERADB_CLASS_NAME(RenameColumn)
     MERADB_CLASS_NAME(TruncateTable) MERADB_CLASS_NAME(CompactTable) MERADB_CLASS_NAME(Begin)
     MERADB_CLASS_NAME(Commit) MERADB_CLASS_NAME(Rollback) MERADB_CLASS_NAME(Explain)
@@ -116,6 +131,10 @@ std::string astClassName(const ast::Statement& stmt) {
     MERADB_CLASS_NAME(DropUser) MERADB_CLASS_NAME(Grant) MERADB_CLASS_NAME(Revoke)
     MERADB_CLASS_NAME(CreateTrigger) MERADB_CLASS_NAME(DropTrigger) MERADB_CLASS_NAME(CreateProcedure)
     MERADB_CLASS_NAME(DropProcedure) MERADB_CLASS_NAME(CallProcedure)
+    MERADB_CLASS_NAME(ShowDatabases) MERADB_CLASS_NAME(ShowTriggers) MERADB_CLASS_NAME(ShowProcedures)
+    MERADB_CLASS_NAME(ShowGrants) MERADB_CLASS_NAME(ShowCreateTable) MERADB_CLASS_NAME(ShowCreateView)
+    MERADB_CLASS_NAME(CreateRole) MERADB_CLASS_NAME(DropRole) MERADB_CLASS_NAME(GrantRole)
+    MERADB_CLASS_NAME(RevokeRole) MERADB_CLASS_NAME(SetRole)
 #undef MERADB_CLASS_NAME
     return "Statement";
 }

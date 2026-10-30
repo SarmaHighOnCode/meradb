@@ -260,6 +260,7 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
             if (options.open) {
                 if (*options.open == "connect") session.openConnectDialog();
                 else if (*options.open == "madad") session.showHelp();
+                else if (*options.open == "home") ui.showHome();
                 else if (*options.open == "palette") ui.openPalette(options.typeText.value_or(""));
             }
             if (exitCode == 0) {
@@ -269,6 +270,10 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
                     exitCode = kExitNoDisplay;
                 } else {
                     for (int i = 0; i < 6; ++i) frame(false, &target);   // fonts and layout settle over a few frames
+                    if (options.open && *options.open == "queries") {   // after the run has shown its own tab
+                        ui.showTab(GuiUi::Tab::Queries);
+                        for (int i = 0; i < 3; ++i) frame(false, &target);
+                    }
                     std::vector<unsigned char> rgba;
                     std::string error;
                     if (!target.read(rgba) || !writePng(*options.screenshot, options.width, options.height, rgba.data(), error)) {
@@ -290,6 +295,7 @@ int runGui(std::unique_ptr<Backend> backend, const GuiOptions& options, const Re
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         } else {
+            if (!options.cli.database) ui.showHome();   // no -d: start by choosing the database
             while (!leave) {
                 const bool iconified = glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE;
                 const bool busy = session.busy() || session.quitting() || ui.wantsFastTick();

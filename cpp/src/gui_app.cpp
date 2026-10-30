@@ -2,6 +2,7 @@
 #include "meradb/gui_app.h"
 #include "meradb/errors.h"
 #include "meradb/protocol.h"
+#include "meradb/sys_compat.h"
 #include <iostream>
 #ifdef _WIN32
 #include <windows.h>
@@ -50,7 +51,7 @@ void Reporter::error(const std::string& text) const {
 int guiMain(std::vector<std::string> argv, const Reporter& reporter) {
     const GuiOptions options = parseGuiArgs(std::move(argv));
     if (options.showHelp) {
-        reporter.info(guiHelp(protocol::defaultDataDir()));
+        reporter.info(guiHelp(!sys::getEnv("MERADB_DATA") && !projectDataDir().empty() ? projectDataDir() : protocol::defaultDataDir()));
         return 0;
     }
     if (options.showVersion) {

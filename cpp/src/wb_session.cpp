@@ -6,6 +6,7 @@
 #include "meradb/protocol.h"
 #include "meradb/pytext.h"
 #include <chrono>
+#include <cctype>
 #include <climits>
 #include <cstdio>
 #include <stdexcept>
@@ -122,6 +123,15 @@ Session::Session(std::unique_ptr<Backend> backend, SessionOptions options, UiPos
     log_.addText(LogKind::Bold, "Namaste! Connected: " + header_.description);
     log_.addText(LogKind::Dim, "F1 dabao madad ke liye.");
     backend_ = std::move(backend);
+    if (options_.keepWork && header_.description.rfind("local", 0) == 0) {   // a server connection keeps no history here
+        store_ = QueryStore(options_.dataDir);
+        reloadSaved();
+        scriptDb_ = header_.db;
+        seedHistory();
+        lastScript_ = scriptDb_.empty() ? std::string() : store_.loadScript(scriptDb_);
+        if (!lastScript_.empty()) editor_.setText(lastScript_);
+        lastScript_ = editor_.text();
+    }
     ++pending_;
     worker_.post([this] {
         auto snapshot = std::make_shared<Snapshot>();
@@ -218,7 +228,19 @@ void Session::echoOnWorker(const std::string& text, bool addToHistory) {
     }
     postUi([this, text, db, addToHistory]() {
         if (addToHistory) history_.add(text);
-        log_.add(echoEntry(db ? *db : header_.db, text));
+        const std::string where = db ? *db : header_.db;
+        log_.add(echoEntry(where, text));
+        std::string head = pytext::strip(text).substr(0, 8);
+        for (char& ch : head) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        const bool isSwitch = head == "ISTEMAL " && text.find('\n') == std::string::npos;   // a database switch is no query
+        if (store_.enabled() && !where.empty() && !isSwitch) {
+            SavedQuery q{text, QueryStore::nowStamp()};
+            store_.append(where, q);
+            if (where == savedDb_) {
+                saved_.push_back(std::move(q));
+                ++savedVersion_;
+            }
+        }
     });
 }
 
@@ -252,6 +274,8 @@ void Session::runText(const std::string& raw) {
     const std::string text = pytext::strip(raw);
     if (text.empty()) return;
     history_.add(text);  // the echo line follows when the statement starts (echoOnWorker)
+    stepping_ = false;
+    switchScriptTo_.clear();   // a card's ISTEMAL that failed must not swap the writing area on a later typed ISTEMAL
     enqueueRun(text);
 }
 
@@ -263,11 +287,60 @@ void Session::showResult(Result result) {
     ++resultVersion_;
 }
 
+void Session::reloadSaved() {
+    savedDb_ = header_.db;
+    saved_ = savedDb_.empty() ? std::vector<SavedQuery>() : store_.load(savedDb_);
+
+    ++savedVersion_;
+}
+
+void Session::persistEditor(bool force) {
+    if (!store_.enabled() || scriptDb_.empty()) return;
+    const std::string text = editor_.text();
+    if (text == lastScript_) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - lastScriptWrite_ < std::chrono::milliseconds(700)) return;
+    store_.saveScript(scriptDb_, text);
+    lastScript_ = text;
+    lastScriptWrite_ = now;
+}
+
+void Session::openDatabase(const std::string& name) {
+    if (name.empty()) return;
+    if (name == header_.db) return;
+    persistEditor(true);
+    switchScriptTo_ = name;
+    if (quitting_) return;
+    enqueueRun("ISTEMAL " + name + ";");   // not added to the history: it is not a query to go back to
+}
+
+// Pichli / Agli walk through the queries saved for the database (from the constructor and when a card opens one).
+void Session::seedHistory() {
+    history_ = History();
+    for (const SavedQuery& q : saved_) history_.add(q.text);
+}
+
+void Session::clearSavedQueries() {
+    if (!store_.enabled() || savedDb_.empty()) return;
+    store_.clear(savedDb_);
+    saved_.clear();
+    ++savedVersion_;
+}
+
 void Session::applySnapshot(const Snapshot& s) {
     if (!s.keepHeader) {
         header_.description = s.description;
         header_.db = s.db;
         header_.inTransaction = s.inTransaction;
+        if (store_.enabled() && header_.db != savedDb_) reloadSaved();
+        if (store_.enabled() && !switchScriptTo_.empty() && switchScriptTo_ == header_.db) {   // opened from the Home cards
+            switchScriptTo_.clear();
+            persistEditor(true);   // the last edits of the database being left, inside the save delay
+            seedHistory();
+            scriptDb_ = header_.db;
+            editor_.setText(store_.loadScript(scriptDb_));
+            lastScript_ = editor_.text();
+        }
     }
     if (s.schemaError) {
         log_.addText(LogKind::Dim, "(schema refresh nahi hua: " + *s.schemaError + ")");
@@ -334,9 +407,20 @@ void Session::explainEditorText() {
     });
 }
 
+// Pichli / Agli. The text that was in the writing area before the walk is kept as a draft: Agli past the newest entry
+// puts it back instead of leaving the area empty (so a script is never lost by looking at an old query).
 void Session::historyStep(int delta) {
+    if (store_.enabled() && !stepping_ && delta < 0) {   // local mode: the writing area is a kept script
+        draft_ = editor_.text();
+        stepping_ = true;
+    }
     if (auto t = history_.step(delta)) {
-        editor_.setText(*t);
+        if (store_.enabled() && t->empty() && delta > 0) {   // past the newest entry
+            if (stepping_) editor_.setText(draft_);
+            stepping_ = false;
+        } else {
+            editor_.setText(*t);
+        }
         focusRequest_ = Panel::Editor;
     }
 }
@@ -417,6 +501,7 @@ void Session::activateTreeRow(int row) {
 void Session::requestQuit() {
     if (quitting_ || shutdown_) return;
     quitting_ = true;
+    persistEditor(true);
     pending_ -= static_cast<int>(worker_.cancelPending());  // those jobs will never post back
     worker_.post([this] {
         closeBackendOnWorker();
@@ -429,6 +514,7 @@ void Session::requestQuit() {
 void Session::shutdown() {
     if (shutdown_) return;
     shutdown_ = true;
+    persistEditor(true);
     if (!quitting_) {
         quitting_ = true;
         worker_.cancelPending();

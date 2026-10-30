@@ -320,7 +320,7 @@ inline const std::vector<Script>& scripts() {
             {R"MDB(DIKHAO KUL(product) SE sales;)MDB", R"MDB(C: R: M: E:[Execution Galti] KUL(sales.product): KUL sirf numbers ke saath chalta hai)MDB"},
             {R"MDB(DIKHAO NYUNTAM(product), ADHIKTAM(region) SE sales;)MDB", R"MDB(C:NYUNTAM(product),ADHIKTAM(region) R:a|S M:1 row(s) E:)MDB"},
             {R"MDB(DIKHAO KUL(*) SE sales;)MDB", R"MDB(C: R: M: E:[Execution Galti] KUL(*) nahi chalta -- '*' sirf GINO(*) mein)MDB"},
-            {R"MDB(DIKHAO FOO(qty) SE sales;)MDB", R"MDB(C: R: M: E:[Execution Galti] Function 'FOO' nahi pata. Ye chalte hain: GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM)MDB"},
+            {R"MDB(DIKHAO FOO(qty) SE sales;)MDB", R"MDB(C: R: M: E:[Execution Galti] Function 'FOO' nahi pata. Ye chalte hain: GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM, PEHLA, IFNULL, UPPER, LOWER, LENGTH, CHAR_LENGTH, TRIM, LTRIM, RTRIM, SUBSTRING, SUBSTR, CONCAT, REPLACE, LEFT, RIGHT, ROUND, FLOOR, CEIL, CEILING, ABS, MOD, POWER, POW, SQRT, NOW, CURDATE, CURRENT_DATE, YEAR, MONTH, DAY, DATEDIFF, DATE_FORMAT, NULLIF, CAST)MDB"},
             {R"MDB(DIKHAO GINO(*) SE sales JAHAN GINO(*) > 1;)MDB", R"MDB(C: R: M: E:[Execution Galti] GINO(*) yahan nahi chal sakta -- aggregates sirf DIKHAO list, JINKA aur KRAM mein chalte hain)MDB"},
             {R"MDB(DIKHAO region SE sales SAMOOH GINO(*);)MDB", R"MDB(C: R: M: E:[Execution Galti] Column 'region' SAMOOH mein nahi hai -- ise SAMOOH mein daalo ya kisi aggregate (GINO, KUL, AUSAT...) ke andar use karo)MDB"},
             {R"MDB(DIKHAO qty > 2, GINO(*) SE sales SAMOOH qty > 2 KRAM qty > 2;)MDB", R"MDB(C:qty > 2,GINO(*) R:KHALI|1;JHOOTH|2;SACH|3 M:3 row(s) E:)MDB"},
@@ -573,7 +573,7 @@ inline const std::vector<Script>& scripts() {
             {R"MDB(@ravi: SAMJHAO HATAO TABLE students)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'DropTable' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
             {R"MDB(@ravi: BANAO USER z GUPT 'z')MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'CreateUser' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
             {R"MDB(@ravi: ADHIKAR DO SAB PAR students KO ravi)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'Grant' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
-            {R"MDB(@ravi: ISTEMAL main)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'UseDatabase' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
+            {R"MDB(@ravi: ISTEMAL main)MDB", R"MDB(C: R: M:Ab database 'main' istemal ho raha hai E:)MDB"},  // C++ only: ISTEMAL is open to every user (grants are per database anyway)
             {R"MDB(@ravi: BANAO DATABASE d2)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'CreateDatabase' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
             {R"MDB(@ravi: BANAO VIEW v KAHO DIKHAO * SE students)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'CreateView' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
             {R"MDB(@ravi: HATAO USER ravi)MDB", R"MDB(C: R: M: E:[Execution Galti] 'ravi' superuser nahi hai -- 'DropUser' jaisa DDL/admin command sirf superuser (bina username connect kiya session) chala sakta hai)MDB"},
@@ -618,7 +618,7 @@ inline const std::vector<Script>& scripts() {
             {R"MDB(BANAO TABLE students (id INT MUKHYA KUNJI, naam TEXT, cgpa FLOAT, cid INT, joined DATE);)MDB", R"MDB(C: R: M:Table 'students' ban gaya (5 columns) E:)MDB"},
             {R"MDB(DAALO MEIN courses (id, title) MAAN (10, 'DBMS'), (20, 'OS');)MDB", R"MDB(C: R: M:2 row(s) daal di E:)MDB"},
             {R"MDB(DAALO MEIN students (id, naam, cgpa, cid, joined) MAAN (1, 'Ravi', 8.4, 10, '2023-07-01'), (2, 'Priya', 9.1, 10, KHALI), (3, 'Aman', 7.0, KHALI, '2024-01-20');)MDB", R"MDB(C: R: M:3 row(s) daal di E:)MDB"},
-            {R"MDB(BANAO VIEW topper KAHO DIKHAO naam, cgpa;)MDB", R"MDB(C: R: M: E:[Parser Galti] 'SE' expected tha, par ';' mila (line 1, col 41))MDB"},
+            {R"MDB(BANAO VIEW topper KAHO DIKHAO naam, cgpa;)MDB", R"MDB(C: R: M: E:[Execution Galti] Column 'naam' ke liye table chahiye -- SE table likho (bina SE ke DIKHAO sirf fixed values / functions ke liye hai, jaise DIKHAO NOW(), 1 + 1))MDB"},  // C++ only: DIKHAO without SE is valid now
             {R"MDB(BANAO VIEW topper KAHO DIKHAO naam, cgpa SE students JAHAN cgpa > 8;)MDB", R"MDB(C: R: M:View 'topper' ban gaya E:)MDB"},
             {R"MDB(BANAO VIEW topper KAHO DIKHAO naam, cgpa SE students JAHAN cgpa > 8;)MDB", R"MDB(C: R: M: E:[Execution Galti] View 'topper' pehle se hai)MDB"},
             {R"MDB(BANAO VIEW students KAHO DIKHAO id SE courses;)MDB", R"MDB(C: R: M: E:[Execution Galti] Table 'students' pehle se hai -- VIEW usi naam se nahi ban sakti)MDB"},
@@ -647,9 +647,9 @@ inline const std::vector<Script>& scripts() {
             {R"MDB(DIKHAO * SE nested;)MDB", R"MDB(C:naam R:Ravi;Priya M:2 row(s) E:)MDB"},
             {R"MDB(DIKHAO naam SE students JAHAN naam MEIN (DIKHAO naam SE topper) KRAM naam;)MDB", R"MDB(C:naam R:Priya;Ravi M:2 row(s) E:)MDB"},
             {R"MDB(DIKHAO ALAG cid SE students;)MDB", R"MDB(C:cid R:10;KHALI M:2 row(s) E:)MDB"},
-            {R"MDB(DAALO MEIN topper MAAN ('z', 1.0);)MDB", R"MDB(C: R: M: E:[Execution Galti] 'topper' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
-            {R"MDB(BADLO topper RAKHO naam = 'z';)MDB", R"MDB(C: R: M: E:[Execution Galti] 'topper' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
-            {R"MDB(MITAO SE topper;)MDB", R"MDB(C: R: M: E:[Execution Galti] 'topper' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
+            {R"MDB(DAALO MEIN joined_v MAAN ('z', 1.0);)MDB", R"MDB(C: R: M: E:[Execution Galti] 'joined_v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},  // C++ only: topper is a simple view now, so a JOIN view stands in for "not updatable"
+            {R"MDB(BADLO joined_v RAKHO who = 'z';)MDB", R"MDB(C: R: M: E:[Execution Galti] 'joined_v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
+            {R"MDB(MITAO SE joined_v;)MDB", R"MDB(C: R: M: E:[Execution Galti] 'joined_v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
             {R"MDB(HATAO TABLE topper;)MDB", R"MDB(C: R: M: E:[Execution Galti] 'topper' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
             {R"MDB(BADLO students RAKHO cgpa = 1.0 JAHAN id = 1;)MDB", R"MDB(C: R: M:1 row(s) badal di E:)MDB"},
             {R"MDB(DIKHAO * SE topper;)MDB", R"MDB(C:naam,cgpa R:Priya|9.1 M:1 row(s) E:)MDB"},
@@ -663,7 +663,7 @@ inline const std::vector<Script>& scripts() {
         {"view", "dml", {
             {R"MDB(BANAO TABLE p (id INT MUKHYA KUNJI, naam TEXT, score INT);)MDB", R"MDB(C: R: M:Table 'p' ban gaya (3 columns) E:)MDB"},
             {R"MDB(DAALO MEIN p MAAN (1, 'a', 10), (2, 'b', 20);)MDB", R"MDB(C: R: M:2 row(s) daal di E:)MDB"},
-            {R"MDB(BANAO VIEW vv KAHO DIKHAO * SE p;)MDB", R"MDB(C: R: M:View 'vv' ban gaya E:)MDB"},
+            {R"MDB(BANAO VIEW vv KAHO DIKHAO ALAG * SE p;)MDB", R"MDB(C: R: M:View 'vv' ban gaya E:)MDB"},  // C++ only: ALAG keeps it a non-updatable view (a plain SELECT * view accepts DAALO/BADLO/MITAO now)
             {R"MDB(DAALO MEIN vv MAAN (1, 'a', 2);)MDB", R"MDB(C: R: M: E:[Execution Galti] 'vv' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
             {R"MDB(BADLO vv RAKHO id = 1;)MDB", R"MDB(C: R: M: E:[Execution Galti] 'vv' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},
             {R"MDB(MITAO SE vv;)MDB", R"MDB(C: R: M: E:[Execution Galti] 'vv' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte)MDB"},

@@ -19,6 +19,7 @@ const std::unordered_map<std::string, std::string>& aliasTable() {
         {"VARCHAR2", "TEXT"}, {"CHAR", "TEXT"}, {"SHABD", "TEXT"},
         {"BOOL", "BOOL"}, {"BOOLEAN", "BOOL"}, {"HAAN_NA", "BOOL"},
         {"DATE", "DATE"}, {"TAREEKH", "DATE"},
+        {"DATETIME", "DATETIME"}, {"TIMESTAMP", "DATETIME"},
     };
     return table;
 }
@@ -170,6 +171,37 @@ Date parseDate(const std::string& text, const std::string& column) {
     return Date{static_cast<int32_t>(ordinal)};
 }
 
+std::string parseDateTime(const std::string& text, const std::string& column) {
+    auto bad = [&]() -> std::string {
+        std::string where = column.empty() ? "" : "Column '" + column + "': ";
+        throw ExecutionError(where + pyRepr(text) + " valid DATETIME nahi hai -- 'YYYY-MM-DD HH:MM:SS' format chahiye");
+    };
+    const size_t n = text.size();
+    if (n < 10 || !digitsAt(text, 0, 4) || text[4] != '-' || !digitsAt(text, 5, 2) || text[7] != '-' ||
+        !digitsAt(text, 8, 2))
+        return bad();
+    int64_t ordinal = 0;
+    if (!isoToOrdinal(text.substr(0, 10), ordinal)) return bad();
+    int hour = 0, minute = 0, second = 0;
+    if (n > 10) {
+        if ((text[10] != ' ' && text[10] != 'T') || n < 16 || !digitsAt(text, 11, 2) || text[13] != ':' ||
+            !digitsAt(text, 14, 2))
+            return bad();
+        hour = numberAt(text, 11, 2);
+        minute = numberAt(text, 14, 2);
+        if (n == 19) {
+            if (text[16] != ':' || !digitsAt(text, 17, 2)) return bad();
+            second = numberAt(text, 17, 2);
+        } else if (n != 16) {
+            return bad();
+        }
+        if (hour > 23 || minute > 59 || second > 59) return bad();
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), " %02d:%02d:%02d", hour, minute, second);
+    return text.substr(0, 10) + buf;
+}
+
 Value coerce(const Value& value, const std::string& typeName, const std::string& column) {
     if (value.isNull()) return value;
 
@@ -204,6 +236,10 @@ Value coerce(const Value& value, const std::string& typeName, const std::string&
         if (std::holds_alternative<Date>(value.data)) return value;
         if (std::holds_alternative<std::string>(value.data))
             return Value(parseDate(std::get<std::string>(value.data), column));
+    } else if (typeName == "DATETIME") {
+        if (std::holds_alternative<std::string>(value.data))
+            return Value(parseDateTime(std::get<std::string>(value.data), column));
+        if (std::holds_alternative<Date>(value.data)) return Value(std::get<Date>(value.data).isoFormat() + " 00:00:00");
     }
     throw ExecutionError(typeMismatch(column, typeName, value));
 }

@@ -3,6 +3,7 @@
 #include "meradb/protocol.h"
 #include "imgui_internal.h"
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -192,6 +193,10 @@ void GuiUi::handleShortcuts() {
     for (const KeyBinding& binding : keyBindings()) {
         if (!ImGui::IsKeyChordPressed(binding.chord)) continue;
         if (dialog && binding.action != Action::Quit && !(binding.action == Action::Madad && session_.modal() == wb::Modal::Help)) continue;
+        // the start screen covers the workspace: its keys (Chalao, Pichli, CSV...) must not act on the hidden editor
+        if (home_ && binding.action != Action::Quit && binding.action != Action::Madad && binding.action != Action::Connect &&
+            binding.action != Action::ToggleTheme)
+            continue;
         perform(binding.action);
         break;
     }
@@ -290,13 +295,14 @@ void GuiUi::draw() {
     ImGui::PushFont(fonts_.ui, kUiFontSize);
     handleShortcuts();
     followRuns();
+    session_.persistEditor();
     if (const std::optional<wb::Panel> focus = session_.takeFocusRequest()) {
         if (*focus == wb::Panel::Editor) {
             editor_.setFocused(true);
             tree_.setFocused(false);
         }
     }
-    if (overlayOpen()) {   // the keys belong to the overlay, not to the panels behind it
+    if (overlayOpen() || home_) {   // the keys belong to the overlay, not to the panels behind it
         editor_.setFocused(false);
         tree_.setFocused(false);
     }
@@ -306,6 +312,7 @@ void GuiUi::draw() {
     drawResults({ImVec2(schemaW, topH + queryH), ImVec2(rightW, bodyH - queryH)});
     drawStatusBar({ImVec2(0, display.y - statusH), ImVec2(display.x, statusH)});
     drawSplitters(topH, bodyH, schemaW, queryH, display);
+    drawHome(display);
     connectDialog_.draw(session_, theme(), fonts_, scale_);
     helpWindow_.draw(session_, theme(), fonts_, scale_);
     if (const std::optional<CommandItem> chosen = palette_.draw(theme(), fonts_, scale_)) {
@@ -423,9 +430,9 @@ void GuiUi::drawTopBar(const Rect& rect) {
         const float buttonY = origin.y + (height - buttonH) * 0.5f;
         float right = origin.x + width - px(16.0f);
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        const char* labels[2] = {"Madad", "Connect"};
-        float labelWidths[2];
-        for (int i = 0; i < 2; ++i) labelWidths[i] = ImGui::CalcTextSize(labels[i]).x + px(28.0f);
+        const char* labels[3] = {"Madad", "Connect", "Home"};
+        float labelWidths[3];
+        for (int i = 0; i < 3; ++i) labelWidths[i] = ImGui::CalcTextSize(labels[i]).x + px(28.0f);
         ImGui::PopFont();
 
         ImGui::SetCursorScreenPos(ImVec2(right - buttonH, buttonY));
@@ -441,9 +448,12 @@ void GuiUi::drawTopBar(const Rect& rect) {
         }
         right -= buttonH + px(8.0f);
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             ImGui::SetCursorScreenPos(ImVec2(right - labelWidths[i], buttonY));
-            if (ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH))) perform(i == 1 ? Action::Connect : Action::Madad);
+            if (ImGui::Button(labels[i], ImVec2(labelWidths[i], buttonH))) {
+                if (i == 2) showHome();
+                else perform(i == 1 ? Action::Connect : Action::Madad);
+            }
             right -= labelWidths[i] + px(8.0f);
         }
         ImGui::PopFont();
@@ -630,7 +640,13 @@ void GuiUi::drawTabBarExtras(float tabY, float rightX) {
     const float height = ImGui::GetFrameHeight();
     float right = rightX;
     ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-    if (activeTab_ == Tab::Log) {
+    if (activeTab_ == Tab::Queries) {
+        if (session_.savedQueriesEnabled() && !session_.savedQueries().empty()) {
+            const float w = ImGui::CalcTextSize("Queries saaf karo").x + px(20.0f);
+            ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
+            if (ImGui::Button("Queries saaf karo", ImVec2(w, height))) session_.clearSavedQueries();
+        }
+    } else if (activeTab_ == Tab::Log) {
         const float w = ImGui::CalcTextSize("Log saaf karo").x + px(20.0f);
         ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
         if (ImGui::Button("Log saaf karo", ImVec2(w, height))) perform(Action::ClearLog);
@@ -664,6 +680,11 @@ void GuiUi::drawResults(const Rect& rect) {
             if (ImGui::BeginTabItem("Results", nullptr, wanted == Tab::Results ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
                 activeTab_ = Tab::Results;
                 drawResultsTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Queries", nullptr, wanted == Tab::Queries ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+                activeTab_ = Tab::Queries;
+                drawQueriesTab();
                 ImGui::EndTabItem();
             }
             const bool logOpen = ImGui::BeginTabItem("Log", nullptr, wanted == Tab::Log ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None);
@@ -715,6 +736,223 @@ void GuiUi::rebuildLogCache() {
     }
     logRevision_ = log.revision();
     logGeneration_ = log.generation();
+}
+
+void GuiUi::showHome() {
+    home_ = true;
+    homeCountsDirty_ = true;   // read in drawHome, once the schema tree has loaded
+}
+
+// The queries run so far in the current database (newest first), kept on disk: click one to put it in the editor,
+// Chalao to run it again.
+void GuiUi::drawQueriesTab() {
+    const Theme& th = theme();
+    ImGui::Spacing();
+    const auto& queries = session_.savedQueries();
+    if (!session_.savedQueriesEnabled() || queries.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
+        ImGui::TextUnformatted(session_.savedQueriesEnabled() ? "Is database mein abhi koi query nahi chali. Chalao dabao, yahan dikhengi."
+                                                              : "Server se jude ho: queries ki list sirf local mode mein save hoti hai.");
+        ImGui::PopStyleColor();
+        return;
+    }
+    ImGui::BeginChild("##queries", ImVec2(0, 0), ImGuiChildFlags_None);
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const float runW = ImGui::CalcTextSize("Chalao").x + px(20.0f);
+    ImGui::PopFont();
+    const float rowH = px(34.0f);
+    for (int i = static_cast<int>(queries.size()) - 1; i >= 0; --i) {
+        const wb::SavedQuery& q = queries[static_cast<std::size_t>(i)];
+        ImGui::PushID(i);
+        std::string one = q.text;
+        const std::size_t eol = one.find_first_of("\r\n");
+        if (eol != std::string::npos) one = one.substr(0, eol) + "  ...";   // a script shows its first line (the title)
+        for (char& ch : one)
+            if (ch == '\t') ch = ' ';
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_None, ImVec2(avail - runW - px(8.0f), rowH))) {
+            // added below the script that is already there (one undo step), never in place of it
+            const std::string current = session_.editor().text();
+            const bool blank = current.find_first_not_of(" \t\n") == std::string::npos;
+            session_.editor().setText(blank ? q.text : current + (current.back() == '\n' ? "\n" : "\n\n") + q.text);
+            editor_.setFocused(true);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n\n(click: editor mein neeche jodo, Chalao: seedha chalao)", q.text.c_str());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float maxW = std::max(px(60.0f), avail - runW - px(170.0f));
+        ImGui::PushFont(fonts_.ui, 12.0f);
+        dl->AddText(ImVec2(at.x + px(4.0f), at.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.faint), q.when.c_str());
+        ImGui::PopFont();
+        ImGui::PushFont(fonts_.mono, kMonoFontSize);
+        const std::string shown = ellipsizeMiddle(one, maxW, [](const std::string& s) { return ImGui::CalcTextSize(s.c_str()).x; });
+        dl->AddText(ImVec2(at.x + px(150.0f), at.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.text), shown.c_str());
+        ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        if (ImGui::Button("Chalao", ImVec2(runW, rowH - px(4.0f)))) {
+            session_.runText(q.text);   // the writing area stays as it is
+        }
+        ImGui::PopFont();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+}
+
+// The start screen: one card per database. A click opens the database (ISTEMAL) and shows the workspace.
+void GuiUi::drawHome(const ImVec2& display) {
+    homeCards_.clear();
+    if (!home_) return;
+    const Theme& th = theme();
+    if (homeCountsDirty_) {
+        homeQueryCounts_.clear();
+        for (const wb::TreeRow& row : session_.tree().allNodes())
+            if (row.key.kind == wb::NodeKey::Kind::Database) homeQueryCounts_.emplace_back(row.key.db, session_.savedQueryCount(row.key.db));
+        homeCountsDirty_ = homeQueryCounts_.empty();   // the tree is still loading: try again next frame
+    }
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(display);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, toVec4(th.background));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(48.0f), px(40.0f)));
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_NoNav;
+    const bool open = ImGui::Begin("##home", nullptr, flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    if (open) {
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImGui::PushFont(fonts_.uiMedium, 26.0f);
+        ImGui::TextUnformatted("MeraDB Workbench");
+        ImGui::PopFont();
+        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.muted));
+        ImGui::TextUnformatted(connectionLabel(session_.description()).c_str());
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, px(20.0f)));
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        ImGui::TextUnformatted("Database chuno");
+        ImGui::PopFont();
+        ImGui::Dummy(ImVec2(0, px(6.0f)));
+
+        std::vector<std::string> names;
+        std::vector<int> tableCount;
+        for (const wb::TreeRow& row : session_.tree().allNodes()) {
+            if (row.key.kind == wb::NodeKey::Kind::Database) {
+                names.push_back(row.key.db);
+                tableCount.push_back(0);
+            } else if (row.key.kind == wb::NodeKey::Kind::Table && !tableCount.empty()) {
+                ++tableCount.back();
+            }
+        }
+        if (names.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
+            ImGui::TextUnformatted("Koi database nahi mila.");
+            ImGui::PopStyleColor();
+        }
+        const float cardW = px(240.0f), cardH = px(112.0f), gap = px(16.0f);
+        const float areaW = ImGui::GetContentRegionAvail().x;
+        const int perRow = std::max(1, static_cast<int>((areaW + gap) / (cardW + gap)));
+        std::string chosen;
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (i % static_cast<std::size_t>(perRow) != 0) ImGui::SameLine(0.0f, gap);
+            const std::string& name = names[i];
+            const bool current = name == session_.currentDb();
+            ImGui::PushID(static_cast<int>(i));
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const bool clicked = ImGui::InvisibleButton("##card", ImVec2(cardW, cardH));
+            const bool hovered = ImGui::IsItemHovered();
+            homeCards_.push_back(ImVec2(at.x + cardW * 0.5f, at.y + cardH * 0.5f));
+            dl->AddRectFilled(at, ImVec2(at.x + cardW, at.y + cardH), toU32(hovered ? th.hover : th.surface), px(8.0f));
+            dl->AddRect(at, ImVec2(at.x + cardW, at.y + cardH), toU32(current ? th.focus : th.border), px(8.0f), current ? 1.6f : 1.0f);
+            ImGui::PushFont(fonts_.uiMedium, kUiFontSize + 2.0f);
+            dl->AddText(ImVec2(at.x + px(16.0f), at.y + px(14.0f)), toU32(th.text), name.c_str());
+            ImGui::PopFont();
+            std::size_t queries = 0;
+            for (const auto& entry : homeQueryCounts_)
+                if (entry.first == name) queries = entry.second;
+            const std::string line1 = std::to_string(tableCount[i]) + (tableCount[i] == 1 ? " table" : " tables");
+            const std::string line2 = std::to_string(queries) + " queries save hain";
+            dl->AddText(ImVec2(at.x + px(16.0f), at.y + px(48.0f)), toU32(th.muted), line1.c_str());
+            dl->AddText(ImVec2(at.x + px(16.0f), at.y + px(68.0f)), toU32(th.muted), line2.c_str());
+            if (current) dl->AddText(ImVec2(at.x + px(16.0f), at.y + px(88.0f)), toU32(th.success), "abhi khula hai");
+            ImGui::PopID();
+            if (clicked) chosen = name;
+        }
+        // the last card: make a new database
+        {
+            if (!names.empty() && names.size() % static_cast<std::size_t>(perRow) != 0) ImGui::SameLine(0.0f, gap);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            if (!newDbEditing_) {
+                const bool clicked = ImGui::InvisibleButton("##newdb", ImVec2(cardW, cardH));
+                const bool hovered = ImGui::IsItemHovered();
+                homeCards_.push_back(ImVec2(at.x + cardW * 0.5f, at.y + cardH * 0.5f));
+                dl->AddRectFilled(at, ImVec2(at.x + cardW, at.y + cardH), toU32(hovered ? th.hover : th.background), px(8.0f));
+                dl->AddRect(at, ImVec2(at.x + cardW, at.y + cardH), toU32(th.faint), px(8.0f));
+                ImGui::PushFont(fonts_.uiMedium, kUiFontSize + 2.0f);
+                const char* label = "+ Naya database";
+                const ImVec2 ts = ImGui::CalcTextSize(label);
+                dl->AddText(ImVec2(at.x + (cardW - ts.x) * 0.5f, at.y + (cardH - ts.y) * 0.5f), toU32(th.muted), label);
+                ImGui::PopFont();
+                if (clicked) {
+                    newDbEditing_ = true;
+                    newDbFocus_ = true;
+                    newDbName_.clear();
+                    newDbError_.clear();
+                }
+            } else {
+                ImGui::BeginGroup();
+                ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+                ImGui::TextUnformatted("Naya database ka naam");
+                ImGui::PopFont();
+                char buf[64];
+                std::snprintf(buf, sizeof buf, "%s", newDbName_.c_str());
+                ImGui::SetNextItemWidth(cardW);
+                if (newDbFocus_) {
+                    ImGui::SetKeyboardFocusHere();
+                    newDbFocus_ = false;
+                }
+                const bool entered = ImGui::InputText("##newname", buf, sizeof buf, ImGuiInputTextFlags_EnterReturnsTrue);
+                newDbName_ = buf;
+                const bool make = ImGui::Button("Banao", ImVec2(px(90.0f), px(30.0f))) || entered;
+                ImGui::SameLine();
+                if (ImGui::Button("Rehne do", ImVec2(px(90.0f), px(30.0f)))) newDbEditing_ = false;
+                if (!newDbError_.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.error));
+                    ImGui::TextUnformatted(newDbError_.c_str());
+                    ImGui::PopStyleColor();
+                }
+                ImGui::EndGroup();
+                if (make) {
+                    bool valid = !newDbName_.empty() && !std::isdigit(static_cast<unsigned char>(newDbName_[0]));
+                    for (unsigned char ch : newDbName_) valid = valid && (std::isalnum(ch) || ch == '_');
+                    if (!valid) newDbError_ = "Naam mein sirf letters, digits aur _ (digit se shuru nahi).";
+                    else if (std::find(names.begin(), names.end(), newDbName_) != names.end()) newDbError_ = "Ye database pehle se hai.";
+                    else {
+                        session_.runText("BANAO DATABASE " + newDbName_ + ";");
+                        session_.openDatabase(newDbName_);
+                        newDbEditing_ = false;
+                        home_ = false;
+                        requestTab_ = Tab::Queries;
+                    }
+                }
+            }
+        }
+        ImGui::Dummy(ImVec2(0, px(24.0f)));
+        ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        if (ImGui::Button("Connect", ImVec2(px(110.0f), px(32.0f)))) perform(Action::Connect);
+        ImGui::SameLine();
+        if (ImGui::Button("Madad", ImVec2(px(90.0f), px(32.0f)))) perform(Action::Madad);
+        ImGui::SameLine();
+        if (ImGui::Button("Workspace par jao", ImVec2(px(170.0f), px(32.0f)))) home_ = false;
+        ImGui::PopFont();
+        if (!chosen.empty()) {
+            session_.openDatabase(chosen);
+            home_ = false;
+            requestTab_ = Tab::Queries;
+        }
+    }
+    ImGui::End();
 }
 
 void GuiUi::drawLogTab() {

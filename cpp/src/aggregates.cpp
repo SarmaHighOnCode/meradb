@@ -2,6 +2,7 @@
 #include "meradb/aggregates.h"
 #include "meradb/errors.h"
 #include "meradb/pyvalue.h"
+#include "meradb/scalar_funcs.h"
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -114,6 +115,14 @@ bool isAggregateName(const std::string& upperWord) {
     return false;
 }
 
+ExecutionError unknownFunctionError(const std::string& name) {
+    std::string upper = name;
+    for (auto& c : upper) c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+    return ExecutionError("Function '" + upper +
+                          "' nahi pata. Ye chalte hain: GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM, PEHLA, IFNULL, " +
+                          scalarFunctionList() + ", CAST");
+}
+
 std::string canonicalName(const FuncCall& func) {
     static const std::unordered_map<std::string, std::string> aliases = {
         {"GINO", "GINO"},       {"COUNT", "GINO"},   {"KUL", "KUL"},         {"SUM", "KUL"},
@@ -121,9 +130,7 @@ std::string canonicalName(const FuncCall& func) {
         {"ADHIKTAM", "ADHIKTAM"}, {"MAX", "ADHIKTAM"},
     };
     auto it = aliases.find(func.name);
-    if (it == aliases.end())
-        throw ExecutionError("Function '" + func.name +
-                             "' nahi pata. Ye chalte hain: GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM");
+    if (it == aliases.end()) throw unknownFunctionError(func.name);
     if (dynamic_cast<const Star*>(func.arg.get()) && it->second != "GINO")
         throw ExecutionError(func.name + "(*) nahi chalta -- '*' sirf GINO(*) mein");
     return it->second;

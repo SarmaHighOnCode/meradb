@@ -3,6 +3,7 @@
 #include "meradb/aggregates.h"
 #include "meradb/datatypes.h"
 #include "meradb/pytext.h"
+#include "meradb/scalar_funcs.h"
 #include "meradb/tokenizer.h"
 
 namespace meradb::highlight {
@@ -55,14 +56,38 @@ std::string upperAscii(std::string s) {
     return s;
 }
 
+// Words that are only keywords in one spot of one statement (so the tokenizer keeps them plain identifiers and a
+// column may still be called `first` or `limit`); the highlighter marks them wherever they appear, like OFFSET / USING.
+bool isSoftKeyword(const std::string& upper) {
+    static const char* const kWords[] = {
+        "AUTO_INCREMENT", "AUTO_ANK",                                   // column attributes
+        "LIMIT", "DIV",                                                 // English SIRF, integer division
+        "REPLACE", "INTO", "BADAL",                                     // REPLACE INTO / BADAL DAALO MEIN
+        "AS", "LIKE",                                                   // BANAO TABLE t AS DIKHAO ... / LIKE other
+        "FOREIGN", "KEY", "CONSTRAINT", "REFERENCES",                   // table-level foreign keys
+        "ON", "DELETE", "UPDATE", "CASCADE", "RESTRICT", "NO", "ACTION", "SET", "NULL",  // ON DELETE ... / ON UPDATE ...
+        "CHANGE", "MODIFY", "FIRST", "AFTER",                           // SUDHARO TABLE t CHANGE / MODIFY / JODO ... AFTER
+        "OR", "WITH", "CHECK", "OPTION", "LOCAL", "CASCADED",           // BANAO OR REPLACE VIEW ... WITH CHECK OPTION
+        "ROLE", "GRANT", "PRIVILEGES", "SELECT", "INSERT", "ALL", "NONE",  // roles, WITH GRANT OPTION, English privileges, SET ROLE
+        "SHOW", "GRANTS", "DATABASES", "TRIGGERS", "PROCEDURES", "STATUS",  // SHOW family / DIKHAO GRANTS ...
+        "COLUMNS", "FIELDS", "CREATE", "FOR", "FROM",                   // SHOW COLUMNS FROM, SHOW CREATE TABLE, SHOW GRANTS FOR
+        "SAVEPOINT", "RELEASE", "ROLLBACK", "TO", "TAK", "AUTOCOMMIT", "VARIABLES",  // SAVEPOINT / ROLLBACK TO / WAPAS TAK, SET autocommit
+        "PREPARE", "EXECUTE", "DEALLOCATE",                             // PREPARE s FROM '..?..' / EXECUTE s USING @a / DEALLOCATE PREPARE s
+        "FUNCTION", "RETURNS", "RETURN", "DETERMINISTIC", "IF", "NOT",  // BANAO FUNCTION f(..) RETURNS INT, HATAO .. IF EXISTS
+        "DECLARE", "DEFAULT", "THEN", "ELSEIF", "ELSE", "END",          // procedural bodies: DECLARE, IF .. THEN .. ELSEIF .. ELSE .. END IF
+        "WHILE", "JAB", "KARO", "LOOP", "REPEAT", "UNTIL", "LEAVE", "ITERATE",  // WHILE .. DO, JAB TAK .. KARO, LOOP, REPEAT .. UNTIL
+        "SIGNAL", "CURSOR", "OPEN", "FETCH", "CLOSE", "HANDLER", "CONTINUE", "FOUND",  // SIGNAL 'msg', cursors, DECLARE CONTINUE HANDLER FOR NOT FOUND
+        "IN", "OUT", "INOUT",                                           // procedure parameter modes
+    };
+    for (const char* w : kWords)
+        if (upper == w) return true;
+    return false;
+}
+
 bool classifyWord(const std::string& line, std::size_t start, std::size_t end, Kind& kind) {
     const std::string upper = upperAscii(line.substr(start, end - start));
-    if (upper == "SACH" || upper == "JHOOTH") kind = Kind::Boolean;
-    else if (upper == "KHALI") kind = Kind::ConstantBuiltin;
-    else if (isKeyword(upper)) kind = Kind::Keyword;
-    else if (normalizeType(upper).has_value()) kind = Kind::Type;
-    else if (isAggregateName(upper)) {
-        // line[end:].lstrip().startswith("("), without copying the rest of the line
+    // line[end:].lstrip().startswith("("), without copying the rest of the line
+    auto parenNext = [&]() {
         std::size_t at = end;
         while (at < line.size()) {
             char32_t cp = 0;
@@ -70,8 +95,20 @@ bool classifyWord(const std::string& line, std::size_t start, std::size_t end, K
             if (!pytext::isSpace(cp)) break;
             at += len;
         }
-        if (at >= line.size() || line[at] != '(') return false;
-        kind = Kind::Function;
+        return at < line.size() && line[at] == '(';
+    };
+    if (upper == "SACH" || upper == "JHOOTH") kind = Kind::Boolean;
+    else if (upper == "KHALI") kind = Kind::ConstantBuiltin;
+    else if (isKeyword(upper)) kind = Kind::Keyword;
+    else if (normalizeType(upper).has_value()) kind = Kind::Type;
+    else if (upper == "OFFSET" || upper == "USING") kind = Kind::Keyword;  // SIRF n OFFSET m, MILAO t USING (c)
+    else if (upper == "ENUM") kind = Kind::Type;                           // ENUM('a', 'b')
+    else if (isSoftKeyword(upper) && !(upper == "REPLACE" && parenNext())) kind = Kind::Keyword;  // REPLACE(..) is the function
+    else if (isAggregateName(upper) || findScalarFunc(upper) != nullptr || upper == "IFNULL" || upper == "CAST" ||
+             upper == "EXISTS" || upper == "ANY" || upper == "SOME" || upper == "ALL") {
+        if (!parenNext()) return false;
+        // EXISTS / ANY / SOME / ALL (...) read as keywords, the functions as functions
+        kind = (upper == "EXISTS" || upper == "ANY" || upper == "SOME" || upper == "ALL") ? Kind::Keyword : Kind::Function;
     } else return false;
     return true;
 }
@@ -143,7 +180,8 @@ std::vector<Span> spans(const std::string& s, std::size_t start, std::size_t fro
             i = j;
             continue;
         }
-        if (i + 1 < n && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) || ((c == '>' || c == '!') && s[i + 1] == '='))) {
+        if (i + 1 < n && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) || ((c == '>' || c == '!') && s[i + 1] == '=') ||
+                          (c == '|' && s[i + 1] == '|'))) {  // || is string concatenation
             if (i + 2 > from) out.push_back({i, i + 2, Kind::Operator});
             i += 2;
             continue;

@@ -151,6 +151,7 @@ int main(int argc, char** argv) {
         SessionOptions options;
         options.dataDir = dataDir;
         options.exportBaseDir = cwd;
+        options.keepWork = false;   // compared against tui.py, which keeps nothing between runs
         json snaps = json::object();
         {
             Session session(std::make_unique<LocalBackend>(dataDir), options, poster.poster());

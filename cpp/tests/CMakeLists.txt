@@ -49,6 +49,9 @@ add_executable(meradb_tests
   test_ws_text.cpp
   test_backend_closer.cpp
   test_highlight.cpp
+  test_sql_batch1.cpp
+  test_sql_batch2.cpp
+  test_sql_batch3.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)
@@ -65,6 +68,7 @@ if(TARGET meradb_workbench)
     test_wb_tree.cpp
     test_wb_worker.cpp
     test_wb_session.cpp
+    test_wb_querystore.cpp
     test_wb_help.cpp
     test_wb_panels.cpp
     test_wb_window.cpp

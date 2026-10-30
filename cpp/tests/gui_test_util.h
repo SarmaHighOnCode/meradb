@@ -36,7 +36,7 @@ public:
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;  // like the OpenGL3 backend
         io.DisplaySize = ImVec2(width, height);
         ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
         platform.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) { fakeClipboard() = text != nullptr ? text : ""; };

@@ -316,7 +316,7 @@ TEST_CASE("wbsession explain: empty text, comment only and bad syntax", "[wbsess
     REQUIRE(log.size() == 2);
     CHECK(log[0] == warn);
     CHECK(log[1] == warn);
-    s.editor().setText("DIKHAO FROM;");
+    s.editor().setText("DIKHAO * SE;");
     s.explainEditorText();
     REQUIRE(rig.poster.pumpIdle(s));
     log = logAfterStartup(s);

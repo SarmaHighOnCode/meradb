@@ -48,6 +48,16 @@ public:
     // `s.naam` -> `naam` when there is only one table (friendlier messages).
     std::string display(const std::string& key) const;
 
+    // ---- MILAO ... USING (c) ----
+    // The shared column `c` of a USING join: its copies' keys, first table first. An unqualified `c` is then
+    // not ambiguous: it means the first copy -- or, for a RIGHT / FULL join (`merge`), whichever copy has a value.
+    struct UsingColumn {
+        std::vector<std::string> keys;
+        bool merge = false;
+    };
+    void declareUsing(const std::string& name, const std::string& leftKey, const std::string& rightKey, bool merge);
+    const UsingColumn* usingColumn(const std::string& name) const;
+
     // ---- resolution ----
     // "alias.col" for a (qualified or bare) column reference. Throws
     // ExecutionError for an unknown alias/column or an ambiguous bare name.
@@ -60,6 +70,7 @@ private:
     std::vector<std::pair<std::string, TableSchema>> sources_;
     std::unordered_map<std::string, size_t> aliases_;                    // alias -> source position
     std::unordered_map<std::string, std::vector<std::string>> byColumn_;  // "naam" -> ["s.naam"]
+    std::unordered_map<std::string, UsingColumn> using_;
 };
 
 // A copy of `expr` where every ColumnRef is replaced by its bound form.
@@ -73,6 +84,14 @@ std::unique_ptr<ast::Expr> bind(const ast::Expr* expr, const Scope& scope);
 // name the right source shares with any source joined before it (the
 // leftmost earlier source wins). Throws if nothing is shared.
 std::unique_ptr<ast::Expr> naturalJoinCondition(const Scope& scope, size_t rightIndex);
+
+// MILAO ... USING (a, b): for every listed column, (key of the leftmost earlier source that has it, key in
+// the right source). Throws if the right source or every earlier source lacks the column.
+std::vector<std::pair<std::string, std::string>> usingColumnPairs(const Scope& scope, size_t rightIndex,
+                                                                  const std::vector<std::string>& columns);
+// Those pairs as `earlier.a = right.a AUR earlier.b = right.b` (bound).
+std::unique_ptr<ast::Expr> usingJoinCondition(const Scope& scope, size_t rightIndex,
+                                              const std::vector<std::string>& columns);
 
 // Split `a AUR b AUR c` into [a, b, c]. nullptr -> [].
 std::vector<const ast::Expr*> conjuncts(const ast::Expr& expr);

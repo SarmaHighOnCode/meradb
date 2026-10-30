@@ -1,9 +1,26 @@
 // cpp/src/gui_options.cpp -- see gui_options.h.
 #include "meradb/gui_options.h"
+#include "meradb/protocol.h"
+#include "meradb/sys_compat.h"
 #include <cctype>
+#include <filesystem>
 #include <utility>
 
 namespace meradb::gui {
+
+std::string projectDataDir() {
+    namespace fs = std::filesystem;
+    try {
+        std::error_code ec;
+        fs::path dir = fs::u8path(sys::executablePath()).parent_path();   // UTF-8, like cli.cpp
+        for (int i = 0; i < 5 && !dir.empty(); ++i, dir = dir.parent_path()) {   // cpp/build[/Release] -> repo root
+            if (fs::exists(dir / "cpp" / "CMakeLists.txt", ec) && fs::exists(dir / "docs", ec)) return (dir / "data").u8string();
+            if (dir == dir.parent_path()) break;
+        }
+    } catch (...) {
+    }
+    return "";
+}
 
 std::string guiUsage() {
     return "usage: meradb_gui [-h] [-D DATA] [-H HOST] [-p PORT] [-d DATABASE] [-W] [-U USER]\n"
@@ -104,8 +121,8 @@ GuiOptions parseGuiArgs(std::vector<std::string> argv) {
         } else if (name == "--type") {
             options.typeText = value;
         } else if (name == "--open") {
-            if (value != "connect" && value != "madad" && value != "palette")
-                options.error = "argument --open: invalid choice: '" + value + "' (choose from 'connect', 'madad', 'palette')";
+            if (value != "connect" && value != "home" && value != "queries" && value != "madad" && value != "palette")
+                options.error = "argument --open: invalid choice: '" + value + "' (choose from 'connect', 'home', 'queries', 'madad', 'palette')";
             else options.open = value;
         } else if (name == "--theme") {
             const std::optional<ThemeMode> mode = parseThemeName(value);
@@ -125,6 +142,12 @@ GuiOptions parseGuiArgs(std::vector<std::string> argv) {
     cliArgv.push_back("workbench");
     cliArgv.insert(cliArgv.end(), rest.begin(), rest.end());
     options.cli = parseCliArgs(std::move(cliArgv));
+    // No -D and no MERADB_DATA: a program inside a checkout keeps its databases in <checkout>/data, so the window opens
+    // the same folder for everyone who double-clicks it.
+    if (options.cli.dataDir == protocol::defaultDataDir() && !sys::getEnv("MERADB_DATA")) {
+        const std::string project = projectDataDir();
+        if (!project.empty()) options.cli.dataDir = project;
+    }
     if (options.cli.showHelp) options.showHelp = true;
     if (options.error.empty() && !options.cli.error.empty()) options.error = options.cli.error;
     return options;

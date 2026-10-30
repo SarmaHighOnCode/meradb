@@ -1,8 +1,11 @@
 // cpp/include/meradb/parser.h
 #pragma once
 #include "meradb/ast.h"
+#include "meradb/proc_ast.h"
 #include "meradb/tokenizer.h"
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +21,8 @@ public:
     // internally by every statement parser.
     std::unique_ptr<ast::Expr> parseExpressionEntry();
     bool atEnd() const { return peek().type == TokenType::Eof; }
+    // A whole trigger / procedure / function body (the text between SHURU and KHATAM): statements, DECLARE, IF, loops ...
+    ast::ProcBlock parseProcBody();
 
 private:
     std::vector<Token> tokens_;
@@ -73,25 +78,54 @@ private:
     // Phase 2: users / privileges / procedure calls
     std::unique_ptr<ast::Statement> parseAdhikar();
     std::unique_ptr<ast::Statement> parseChalao();
-    std::vector<std::string> parsePrivilegeList();
+    void parsePrivilegeList(std::vector<std::string>& privileges, std::map<std::string, std::vector<std::string>>& columns);
     std::string expectPrivilege();
+    std::vector<std::string> parseNameList(const char* what);
+    std::unique_ptr<ast::Statement> parseShow();
+    std::unique_ptr<ast::Statement> parseSetRole();
+    std::optional<std::string> parseForUser();
     std::string expectString(const std::string& what);
     std::string parseBlockBody(const std::string& what);
     std::unique_ptr<ast::Statement> parseCreateTrigger();
     std::unique_ptr<ast::Statement> parseCreateProcedure();
-    ast::ProcParam parseProcParam();
+    ast::ProcParam parseProcParam(bool allowMode);
+    std::string parseTypeName(const std::string& what);
+    std::unique_ptr<ast::Statement> parseCreateFunction();
+    std::unique_ptr<ast::Statement> parseSet();
+    std::unique_ptr<ast::Statement> parsePrepare();
+    std::unique_ptr<ast::Statement> parseExecute();
+    std::vector<std::pair<std::string, std::unique_ptr<ast::Expr>>> parseVarAssignments();
+    // ---- procedural bodies (parser_proc.cpp)
+    bool atBlockEnd() const;
+    bool matchWord(const char* word);  // a soft word (IDENT) or the keyword with this spelling
+    bool isWord(int offset, const char* word) const;
+    ast::ProcBlock parseProcBlock();
+    std::unique_ptr<ast::ProcNode> parseProcStatement();
+    std::unique_ptr<ast::ProcNode> parseProcSql();
+    std::unique_ptr<ast::ProcNode> parseProcDeclare();
+    std::unique_ptr<ast::ProcNode> parseProcSet();
+    std::unique_ptr<ast::ProcNode> parseProcIf();
+    std::unique_ptr<ast::ProcNode> parseProcLoop(const std::string& label);
+    std::unique_ptr<ast::ProcNode> parseProcSelect();
+    std::unique_ptr<ast::ProcNode> parseProcCursorOp(const std::string& op);
+    void expectBlockEnd(const std::string& kind);  // END IF | KHATAM AGAR | END WHILE | KHATAM JAB TAK | END LOOP | END REPEAT
     std::unique_ptr<ast::Statement> parseSudharo();
     std::unique_ptr<ast::Statement> parseSaaf();
     std::unique_ptr<ast::Statement> parseSikodo();
     std::unique_ptr<ast::Statement> parseIstemal();
     std::unique_ptr<ast::Statement> parseBatao();
-    std::unique_ptr<ast::Statement> parseInsert();
+    std::unique_ptr<ast::Statement> parseInsert(bool replace, bool intoAlreadyRead);
     std::unique_ptr<ast::Statement> parseDikhaoStmt();
     std::unique_ptr<ast::Statement> parseUpdate();
     std::unique_ptr<ast::Statement> parseDelete();
     void parseTableItem(ast::CreateTable& stmt);
     std::vector<std::string> parseCompositeColumns();
     ast::ColumnDef parseColumnDef();
+    bool isSoftWord(int offset, const char* word) const;  // an IDENT (lower-cased) with this exact spelling
+    bool checkKeywordAt(int offset, const std::string& kw) const;
+    bool atForeignKeyItem(int offset) const;
+    ast::ForeignKeyDef parseForeignKeyDef();
+    void parseFkActions(std::string& onDelete, std::string& onUpdate);
     std::optional<int> parseTypeLength(const std::string& typeName, const std::string& column);
     std::unique_ptr<ast::CreateView> parseCreateView();
     std::vector<std::unique_ptr<ast::Expr>> parseValueTuple();
@@ -104,5 +138,7 @@ private:
 
 std::vector<std::unique_ptr<ast::Statement>> parseScript(const std::string& text);
 std::unique_ptr<ast::Expr> parseExpression(const std::string& text);
+// A stored body (trigger / procedure / function) parsed into its statement tree; the text is what BANAO ... SHURU ... KHATAM kept.
+ast::ProcBlock parseProcBody(const std::string& bodyText);
 
 }  // namespace meradb

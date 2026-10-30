@@ -34,6 +34,9 @@ constexpr int64_t INT_MAX_VALUE = INT64_MAX;
 
 std::optional<std::string> normalizeType(const std::string& name);
 Date parseDate(const std::string& text, const std::string& column = "");
+// DATETIME is stored as the canonical text 'YYYY-MM-DD HH:MM:SS' (so it sorts, hashes and compares as text).
+// Accepts 'YYYY-MM-DD' (midnight), 'YYYY-MM-DD HH:MM[:SS]' and the 'T' separator; ExecutionError otherwise.
+std::string parseDateTime(const std::string& text, const std::string& column = "");
 Value coerce(const Value& value, const std::string& typeName, const std::string& column);
 std::string formatValue(const Value& value);
 

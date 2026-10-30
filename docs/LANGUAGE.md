@@ -53,6 +53,10 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `BANAO VIEW ... KAHO` | CREATE VIEW ... AS | banao view = make a view |
 | `HATAO VIEW`      | DROP VIEW       | hatao = remove        |
 | `DIKHAO VIEWS`    | SHOW VIEWS (informal SQL) | dikhao = show |
+| `BANAO OR REPLACE VIEW` / `BANAO BADAL VIEW` | CREATE OR REPLACE VIEW | badal = replace |
+| `SUDHARO VIEW v KAHO ...` | ALTER VIEW v AS ... | sudharo = alter |
+| `... WITH [LOCAL\|CASCADED] CHECK OPTION` | WITH CHECK OPTION | English words, no Hinglish equivalent |
+| `SHOW ...` / `DIKHAO GRANTS\|TRIGGERS\|PROCEDURES\|DATABASES` | SHOW GRANTS / TRIGGERS / PROCEDURE STATUS / DATABASES | see "Introspection: SHOW" |
 | `SANYUKT`         | UNION           | sanyukt = united/combined |
 | `SAAJHA`          | INTERSECT       | saajha = shared/common |
 | `CHHODKAR`        | EXCEPT / MINUS  | chhodkar = leaving out |
@@ -60,6 +64,25 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `DAHINA MILAO`    | RIGHT JOIN      | dahina = right         |
 | `DONO MILAO`      | FULL OUTER JOIN | dono = both            |
 | `PEHLA(...)`      | COALESCE(...) / NVL | pehla = first non-empty |
+| `SIRF n OFFSET m` / `SIRF m, n` | LIMIT n OFFSET m / LIMIT m, n | skip m rows, then show n |
+| `MILAO t USING (c)` | JOIN t USING (c) | join on the shared column(s) `c` |
+| `EXISTS (...)` / `ANY` / `SOME` / `ALL` | EXISTS / ANY / SOME / ALL | subquery tests (English words) |
+| `SE (DIKHAO ...) t` | FROM (SELECT ...) t | derived table: a query used as a table |
+| `DIKHAO NOW(), 1 + 1` (no `SE`) | SELECT NOW(), 1 + 1 | one row computed from the expressions alone |
+| `LIMIT n [OFFSET m]` / `LIMIT m, n` | the same | English spelling of `SIRF` (accepted wherever `SIRF` is) |
+| `a / b`, `a DIV b` | `/` and `DIV` | `/` is exact (`7 / 2` = 3.5, `6 / 2` = 3); `DIV` truncates (`7 DIV 2` = 3) |
+| `AUTO_INCREMENT` / `AUTO_ANK` | AUTO_INCREMENT | an INT column numbers itself 1, 2, 3... |
+| `ENUM('a', 'b')` | ENUM('a', 'b') | text that must be one of the listed members |
+| `DATETIME` / `TIMESTAMP` | DATETIME / TIMESTAMP | `'YYYY-MM-DD HH:MM:SS'` |
+| `BANAO TABLE t KAHO DIKHAO ...` / `... AS DIKHAO ...` | CREATE TABLE t AS SELECT ... | a new table from a query's columns and rows |
+| `BANAO TABLE t2 LIKE t1` | CREATE TABLE t2 LIKE t1 | same columns and constraints, no rows |
+| `SANDARBH p(c) ON DELETE CASCADE` | FOREIGN KEY ... ON DELETE CASCADE | also `SET NULL`, `RESTRICT`, `NO ACTION`; `ON UPDATE` too |
+| `JODO [CONSTRAINT n] FOREIGN KEY (c) SANDARBH p(c)` / `HATAO FOREIGN KEY n` | ADD / DROP FOREIGN KEY | named foreign keys, after the table exists |
+| `SUDHARO TABLE t CHANGE old new type` / `MODIFY col type` | ALTER TABLE ... CHANGE / MODIFY | rename + retype / retype a column |
+| `JODO col type FIRST` / `AFTER other` | ADD COLUMN ... FIRST / AFTER | where the new column goes |
+| `BADAL DAALO MEIN` / `REPLACE INTO` | REPLACE INTO | insert, first deleting rows that collide on a key |
+| `UPPER()`, `CONCAT()`, `ROUND()`, `NOW()`, `CAST(x AS t)` ... | the same names | scalar functions (English words) |
+| `a \|\| b`        | a \|\| b (string concatenation) | joins two texts |
 | `AGAR ... TAB ... WARNA ... KHATAM` | CASE WHEN ... THEN ... ELSE ... END | agar/tab/khatam = if/then/end |
 | `TAKRAAV PAR BADLO` | ON CONFLICT DO UPDATE | takraav = collision |
 | `ANOKHA (a, b)` / `MUKHYA KUNJI (a, b)` | composite UNIQUE / PRIMARY KEY | multi-column constraint |
@@ -68,6 +91,11 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `ADHIKAR DO ... PAR ... KO` | GRANT ... ON ... TO | adhikar do = give privilege |
 | `ADHIKAR WAPAS ... PAR ... SE` | REVOKE ... ON ... FROM | adhikar wapas = take back privilege |
 | `SAB` (after `ADHIKAR DO`) | ALL             | sab = all              |
+| `BANAO ROLE r` / `HATAO ROLE r` | CREATE ROLE / DROP ROLE | role has no Hinglish word |
+| `ADHIKAR DO ROLE r KO u` / `ADHIKAR WAPAS ROLE r SE u` | GRANT r TO u / REVOKE r FROM u | the `ROLE` word is required |
+| `SET ROLE r` / `SET ROLE SAB` / `SET ROLE NONE` | SET ROLE | picks the active roles of the session |
+| `... WITH GRANT OPTION` | WITH GRANT OPTION | the holder may pass the privilege on |
+| `DIKHAO (c1, c2)` inside a grant | SELECT (c1, c2) | column-level privileges |
 | `BANAO TRIGGER`   | CREATE TRIGGER  | banao = make            |
 | `HATAO TRIGGER`   | DROP TRIGGER    | hatao = remove          |
 | `PEHLE` / `BAAD`  | BEFORE / AFTER  | pehle/baad = before/after |
@@ -85,12 +113,26 @@ are also case-insensitive. Statements end with `;`. Comments start with `--`.
 | `TEXT`        | `SHABD`        | `'Ravi'` (use `''` for a quote inside: `'Ravi''s'`) |
 | `BOOL`        | `HAAN_NA`      | `SACH`, `JHOOTH` |
 | `DATE`        | `TAREEKH`      | `'2024-01-31'` -- written as a `'YYYY-MM-DD'` string literal |
+| `DATETIME`    | `TIMESTAMP`    | `'2024-01-31 09:30:00'` (`'2024-01-31'` means midnight) -- see below |
+| `ENUM('a','b')` | (none)       | `kind ENUM('open','closed')` -- TEXT that must be one of the members |
 | `VARCHAR(n)`  | `CHAR(n)`, `VARCHAR2(n)`, `SHABD(n)` | `naam VARCHAR(20)` -- TEXT with a max length |
 | `NUMBER(p,s)` | `NUMERIC(p,s)`, `DECIMAL(p,s)` | `score NUMBER(5,2)` -- an alias of FLOAT; `p`/`s` accepted, ignored |
 
 Every type accepts an optional `(n)` or `(n, n)` after its name (`INT(11)`, `TEXT(20)`,
 `NUMBER(5,2)`...). Only the first number on a TEXT-family type is kept, as its max length;
 everywhere else the number(s) are parsed for familiarity with SQL and then ignored.
+
+**`DATETIME`** is checked when stored and always shown as `'YYYY-MM-DD HH:MM:SS'`. A value may be
+written `'2024-01-31'` (midnight), `'2024-01-31 09:30'` or with a `T` instead of the space;
+anything that is not a real date and time is an error. `NOW()` can be inserted straight into a
+`DATETIME` column, and `YEAR()`, `MONTH()`, `DAY()`, `DATEDIFF()`, `DATE_FORMAT()` and
+`CAST(x AS DATETIME)` accept `DATETIME` values. It is kept as text of that one shape, so
+`KRAM`, `NYUNTAM`/`ADHIKTAM`, `SAMOOH`, `ANOKHA` and comparisons all work; a date-only
+`'2024-01-31'` next to a `DATETIME` means midnight of that day.
+
+**`ENUM('a', 'b', ...)`** is stored as text; any other value is an error that lists the members.
+`KHALI` is allowed unless the column is `ZAROORI`. It is a TEXT column underneath (comparisons are
+text comparisons), and `BATAO` shows it as `ENUM('a','b')`.
 
 ## DDL: Data Definition Language
 
@@ -141,6 +183,89 @@ BANAO TABLE enrollments (
 SUDHARO TABLE enrollments JODO ANOKHA (student_id, grade);   -- ALTER TABLE ... ADD
 ```
 
+### AUTO_INCREMENT, ENUM, DATETIME
+
+```sql
+BANAO TABLE tickets (
+    id      INT AUTO_INCREMENT MUKHYA KUNJI,          -- AUTO_ANK works too
+    status  ENUM('open', 'closed') WARNA 'open',
+    opened  DATETIME
+);
+DAALO MEIN tickets (opened) MAAN (NOW());             -- id = 1, status = 'open'
+DAALO MEIN tickets (id, opened) MAAN (KHALI, '2024-05-01 10:30:00');   -- KHALI id: next number
+DAALO MEIN tickets (status) MAAN ('stuck');           -- error: Column 'status' ENUM('open', 'closed') hai ...
+```
+
+An `AUTO_INCREMENT` column must be `INT`, there is one per table, and it can never be `KHALI`
+(it implies `ZAROORI`; combine it with `MUKHYA KUNJI` as above). When an `INSERT` leaves the column
+out or gives `KHALI`, the row gets the largest value in the table + 1 (1 for an empty table); a
+value you give yourself is kept and later rows continue after it. Numbers are not remembered after
+the top row is deleted: the largest remaining value + 1 is used.
+
+### CREATE TABLE ... AS SELECT / LIKE
+
+```sql
+BANAO TABLE toppers KAHO DIKHAO id, naam, cgpa * 10 KAHO score SE students JAHAN cgpa > 9;
+-- AS works instead of KAHO; the table takes the query's column names, types and rows, no constraints
+BANAO TABLE students_copy LIKE students;     -- the same columns AND constraints, no rows
+```
+
+`KAHO DIKHAO` names the columns after the query's output, so each must be a plain name: give an
+expression an alias (`COUNT(*)` alone is refused -- write `COUNT(*) KAHO total`) and no two may be
+the same. A column keeps its type from its source (an expression's type comes from its values; `NOW()`
+is a `DATETIME`). `LIKE` copies `MUKHYA KUNJI`, `ANOKHA`, `ZAROORI`, `WARNA`, `SHART`, `ENUM`,
+`AUTO_INCREMENT` and the `SANDARBH` definitions as written; the rows are not copied.
+
+### Foreign key actions
+
+```sql
+BANAO TABLE emp (
+    id  INT MUKHYA KUNJI,
+    did INT SANDARBH depts(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+-- ON DELETE / ON UPDATE take CASCADE | SET NULL | RESTRICT | NO ACTION (ON UPDATE too); RESTRICT is the default
+BANAO TABLE logs (
+    id INT MUKHYA KUNJI, did INT,
+    CONSTRAINT fk_logs_dept FOREIGN KEY (did) SANDARBH depts(id) ON DELETE SET NULL   -- table-level form
+);
+
+SUDHARO TABLE emp HATAO FOREIGN KEY emp_ibfk_1;                    -- or: HATAO CONSTRAINT emp_ibfk_1
+SUDHARO TABLE emp JODO CONSTRAINT fk_dept FOREIGN KEY (did) SANDARBH depts(id) ON DELETE CASCADE;
+SUDHARO TABLE emp JODO FOREIGN KEY (did) SANDARBH depts(id);       -- name made up: emp_ibfk_<n>
+```
+
+* `CASCADE` on delete deletes the child rows too; on update the child rows follow the parent's new
+  value. Cascades go on through further tables and self-references. `SET NULL` sets the child column
+  to `KHALI` and needs a column that may be `KHALI` (not `ZAROORI`, not `MUKHYA KUNJI`); this is checked
+  when the foreign key is defined. `RESTRICT` and `NO ACTION` refuse while a child row still points at the value.
+* A statement either does all of it or nothing: the knock-on changes are worked out and checked
+  first (a failure anywhere, such as a cascaded row breaking its own `SHART`, changes no table).
+  Triggers fire for the rows you named, not for the cascaded ones (as in MySQL).
+* Every foreign key has a name -- the one you give, or `<table>_ibfk_<n>` (1, 2, ... in column order; also
+  for tables written before names existed). `BATAO` shows a name you chose in brackets (`SANDARBH depts(id) [fk_dept]`; the automatic ones stay hidden)
+  and `HATAO FOREIGN KEY name` uses it. Names are unique in a database, and a column holds one foreign key.
+  `JODO FOREIGN KEY` checks the rows already in the table.
+
+### ALTER TABLE: CHANGE, MODIFY, AFTER / FIRST
+
+```sql
+SUDHARO TABLE students CHANGE naam full_naam VARCHAR(60) ZAROORI;   -- rename + new definition
+SUDHARO TABLE students MODIFY umar FLOAT;                           -- same name, new type
+SUDHARO TABLE students JODO shehar TEXT AFTER naam;                 -- column goes after naam
+SUDHARO TABLE students JODO roll INT FIRST;                         -- ...or first
+```
+
+`CHANGE` / `MODIFY` convert every existing value to the new type (like `CAST`: `'12'` becomes `12`,
+a number becomes its text) and then check the whole table against the new definition: a value
+that cannot convert (`'abc'` to `INT`), a `KHALI` in a column that is now `ZAROORI`, two equal values in a
+column that is `ANOKHA`, a value outside the new `ENUM`, a broken `SHART` -- any of these refuses the
+statement and leaves the table unchanged. The new definition decides the type, `ZAROORI`, `WARNA`, length,
+`ENUM` and `AUTO_INCREMENT`; `MUKHYA KUNJI`, `ANOKHA`, `SANDARBH` and `SHART` stay as they were unless the
+new definition gives its own `SANDARBH` / `SHART`. Composite `ANOKHA (...)` / `MUKHYA KUNJI (...)` groups and
+`SANDARBH` columns elsewhere that name the column follow a rename. Refused with a message: renaming a
+column that a `SHART` mentions (like `COLUMN ... NAYA_NAAM`), and changing the type of a column another
+table's `SANDARBH` points at. `JODO` carries the table's composite `ANOKHA` / `MUKHYA KUNJI` groups along.
+
 ## VIEWs
 
 A view is a **named, saved `DIKHAO` query** -- it has no storage of its own. Every time
@@ -160,11 +285,74 @@ BATAO cs_students;                             -- show its stored DIKHAO text
 HATAO VIEW cs_students;
 ```
 
-A view can be read from, but never written to: `DAALO`/`BADLO`/`MITAO`/`SUDHARO`/`SAAF`/
-`SIKODO`/`HATAO TABLE` all refuse a view's name with a clear error. If the tables a view
-selects from change shape or disappear, the view simply fails the next time it's read
-(same as most real databases without a dependency check at `BANAO VIEW` time beyond a
-first sanity run).
+Redefining a view:
+
+```sql
+BANAO OR REPLACE VIEW cs_students KAHO DIKHAO naam SE students;   -- create, or replace if it exists
+BANAO BADAL VIEW cs_students KAHO DIKHAO naam SE students;        -- same thing, Hinglish spelling
+SUDHARO VIEW cs_students KAHO DIKHAO naam, cgpa SE students;      -- ALTER VIEW: the view must already exist
+```
+
+Plain `BANAO VIEW` still refuses a name that is taken. A view may not select from itself.
+
+### Updatable views
+
+`DAALO MEIN` / `BADLO` / `MITAO SE` work **through a simple view** by being rewritten onto its
+one base table. A view is updatable when it is a plain `DIKHAO` of ONE real table with plain
+column references: no `ALAG`, no joins, no `GROUP BY`/`HAVING`, aggregates, `LIMIT`/`OFFSET`,
+set operations or sub-select source, no computed columns, and not a view over another view. Then:
+
+- the view's `JAHAN` is ANDed into every `BADLO`/`MITAO` filter, so only visible rows are touched;
+- view column names and aliases are mapped back to the base columns;
+- base columns the view does not expose get their `WARNA` default, NULL or AUTO_INCREMENT value
+  (a `ZAROORI` column with no default makes the insert fail, exactly as on the table).
+
+```sql
+BANAO VIEW cs_students KAHO DIKHAO naam, cgpa SE students JAHAN dept = 'CS'
+    WITH CHECK OPTION;
+DAALO MEIN cs_students MAAN ('Asha', 8.1);     -- ok, if the table's other columns allow NULL/default
+BADLO cs_students SET cgpa = 9 JAHAN naam = 'Asha';
+MITAO SE cs_students JAHAN naam = 'Asha';
+```
+
+`WITH CHECK OPTION` (`WITH LOCAL CHECK OPTION` and `WITH CASCADED CHECK OPTION` are accepted and
+behave the same, since views over views are not updatable) rejects any inserted or updated
+row that would not satisfy the view's `JAHAN`. It can only be put on an updatable view.
+A view that is not updatable keeps the clear error
+`'v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte`, and `SAAF`/`SIKODO`/
+`SUDHARO TABLE`/`HATAO TABLE` always refuse a view's name. Writing through a view needs the
+matching privilege **on the view**, not on the base table. `SHOW CREATE VIEW` and `BATAO` still
+work on any view.
+
+If the tables a view selects from change shape or disappear, the view simply fails the next
+time it's read (same as most real databases without a dependency check at `BANAO VIEW` time
+beyond a first sanity run).
+
+## Introspection: SHOW
+
+`SHOW` is a *soft* word (a column or table may still be called `show`). Everything here is
+read-only; Hinglish spellings are given where they exist.
+
+```sql
+SHOW TABLES;                    -- = DIKHAO TABLES
+SHOW VIEWS;                     -- = DIKHAO VIEWS
+SHOW DATABASES;                 -- = DIKHAO DATABASES
+SHOW TRIGGERS;                  -- = DIKHAO TRIGGERS: trigger, timing, event, table, body
+SHOW PROCEDURE STATUS;          -- = DIKHAO PROCEDURES: name, database, created (all databases)
+SHOW COLUMNS FROM students;     -- = BATAO students   (FIELDS / SE / IN also accepted)
+SHOW CREATE TABLE students;     -- a re-runnable BANAO TABLE: types, MUKHYA KUNJI, ANOKHA, ZAROORI,
+                                -- WARNA, AUTO_INCREMENT, ENUM, SHART, SANDARBH with ON DELETE/UPDATE
+SHOW CREATE VIEW cs_students;   -- a re-runnable BANAO VIEW (with its CHECK OPTION)
+SHOW GRANTS;                    -- = DIKHAO GRANTS: your own grants
+SHOW GRANTS FOR ravi;           -- = DIKHAO GRANTS FOR ravi (other users: superuser only)
+```
+
+`SHOW GRANTS` returns one column, `Grants for ravi`, with rows such as
+`GRANT SELECT, INSERT ON college.students TO ravi`, `GRANT SELECT (naam, cgpa) ON college.students TO ravi`
+and `GRANT staff TO ravi` (a role grant); `WITH GRANT OPTION` is appended where it applies.
+`SHOW TRIGGERS` lists the current database's triggers. Procedure creation times are kept in a small
+`procedures.meta.json` beside `catalog.json` (procedures made before it existed show KHALI).
+The workbench tree and plain `DIKHAO TABLES` / `DIKHAO VIEWS` behave as before.
 
 ## Users & privileges
 
@@ -193,20 +381,54 @@ this project, `--local` on the CLI) never has a username at all, so it is always
 client that connects with `-U/--user` (see `docs/SERVER.md`) authenticates as a specific
 user and becomes subject to privilege checks from that point on.
 
+### Roles, grant option and column grants
+
+```sql
+BANAO ROLE staff;                                  -- CREATE ROLE (nobody can log in as a role)
+ADHIKAR DO DIKHAO, DAALO PAR students KO staff;    -- grant to the role
+ADHIKAR DO ROLE staff KO ravi;                     -- GRANT staff TO ravi   (ROLE is required)
+ADHIKAR WAPAS ROLE staff SE ravi;
+HATAO ROLE staff;
+
+SET ROLE staff;     -- only staff's grants (plus ravi's own) are in force for this session
+SET ROLE SAB;       -- every role granted to ravi (the default)
+SET ROLE NONE;      -- only ravi's own grants
+
+ADHIKAR DO DIKHAO PAR students KO ravi WITH GRANT OPTION;
+ADHIKAR DO DIKHAO (naam, cgpa), BADLO (cgpa) PAR students KO ravi;   -- column-level
+```
+
+- A session's effective privileges are the user's own grants plus those of its active roles
+  (by default every granted role; `SET ROLE` narrows that for the session). `SET ROLE` can only
+  name roles granted to the user, and is open to every user.
+- English privilege names are accepted everywhere: `SELECT`, `INSERT`, `UPDATE`, `DELETE`,
+  `ALL [PRIVILEGES]`. `MITAO` cannot be column-level.
+- `WITH GRANT OPTION`: a non-superuser who holds a privilege with the option may grant it on to
+  others (users or roles), never more than they hold. Revoke stays superuser-only and does not
+  cascade; a table-wide revoke also removes the column grants on that table.
+- Column grants: with only `DIKHAO (c1, c2)`, the select list, `JAHAN`, `KRAM` and the other
+  clauses may reference only those columns (`*` is refused); `BADLO` checks its `SET` targets and
+  `DAALO MEIN t (cols)` its column list. Sub-selects and derived tables are checked the same way.
+- `users.json` stays backward compatible: roles and column grants are extra keys written only when
+  used (`roles`, `grant_option`, `column_grants`, `column_grant_option`; a role is an entry with
+  `"role": true` and no password hash). Older files load unchanged.
+
 **Honest scope (see the top of this doc's intro and `docs/ARCHITECTURE.md`):**
-- Grants are per `(database, table)` -- there are no schema-level roles, no column-level
-  grants, and no `WITH GRANT OPTION` (a granted user can never grant to someone else).
+- Grants are per `(database, table)`, optionally narrowed to columns. There are no schema-level
+  grants, no `REVOKE ... CASCADE`, and no role hierarchy (a role cannot be granted to a role).
 - Once a session HAS authenticated as a (non-super) user, it can run **only**
   `DIKHAO`/`DAALO`/`BADLO`/`MITAO` against tables/views it holds the matching privilege
-  on. Every DDL statement (`BANAO`/`HATAO`/`SUDHARO`/`SAAF`/`SIKODO TABLE`, `VIEW`,
-  `TRIGGER`, `PROCEDURE`), user/grant management (`BANAO`/`HATAO USER`, `ADHIKAR`), and
-  every transaction command (`SHURU`/`PAKKA`/`WAPAS`) is **superuser-only** from that point
-  -- kept simple and strict rather than a fine-grained "who can ALTER what" model.
+  on, plus `ISTEMAL` (switch database), `SET ROLE`, `SHOW GRANTS` for itself and `ADHIKAR DO` where
+  it holds the grant option. Every DDL statement (`BANAO`/`HATAO`/`SUDHARO`/`SAAF`/`SIKODO TABLE`,
+  `VIEW`, `TRIGGER`, `PROCEDURE`), user/role management, `ADHIKAR WAPAS`, schema listing
+  (`DIKHAO TABLES` / `SHOW ...` and friends) and every transaction command
+  (`SHURU`/`PAKKA`/`WAPAS`) is **superuser-only** from that point -- kept simple and strict
+  rather than a fine-grained "who can ALTER what" model.
 - A trigger or stored procedure body runs with the **invoking session's own privileges**
   (no "definer rights") -- a restricted user needs grants on every table a trigger/procedure
   they trigger touches, not just the one they directly wrote to.
-- There is no password rotation/expiry, no account lockout, and no `WITH GRANT OPTION` --
-  this is a teaching-project user store, not a production one.
+- There is no password rotation/expiry and no account lockout -- this is a teaching-project
+  user store, not a production one.
 
 ## Triggers
 
@@ -305,6 +527,14 @@ DAALO MEIN students (id, naam) MAAN (1, 'Ravi Verma') TAKRAAV PAR BADLO naam = n
 -- A conflict against ANOTHER ROW IN THE SAME STATEMENT is still a hard error --
 -- only conflicts against rows already on disk are rescued this way.
 
+-- REPLACE: same grammar as DAALO MEIN (column list, several rows, DIKHAO ...), but a new row
+-- that collides on a MUKHYA KUNJI / ANOKHA key first DELETES the row(s) it collides with.
+REPLACE INTO students (id, naam) MAAN (1, 'Ravi K'), (9, 'Neha');     -- BADAL DAALO MEIN is the same
+-- "3 row(s) affected (2 daali, 1 purani row(s) replace hui)": a replaced row counts twice, like MySQL.
+-- The delete obeys the SANDARBH rules (a child row can block it, ON DELETE CASCADE follows it) and
+-- needs the MITAO privilege as well as DAALO. Within one statement a later row replaces an earlier one
+-- with the same key. TAKRAAV PAR BADLO cannot be combined with REPLACE.
+
 -- SELECT
 DIKHAO * SE students;
 DIKHAO naam, umar + 1 SE students
@@ -380,6 +610,30 @@ DIKHAO naam SE students JAHAN dept_id = 1
 SANYUKT
 DIKHAO naam SE teachers JAHAN dept_id = 1;
 
+-- paging: SIRF n OFFSET m skips m rows first; the MySQL form SIRF m, n means the same as SIRF n OFFSET m
+DIKHAO * SE students KRAM id SIRF 10 OFFSET 20;
+DIKHAO * SE students KRAM id SIRF 20, 10;
+DIKHAO * SE students KRAM id LIMIT 10 OFFSET 20;      -- LIMIT = SIRF (also LIMIT m, n)
+
+-- no SE: one row, computed from the expressions alone
+DIKHAO NOW();
+DIKHAO 1 + 1, UPPER('a'), 7 / 2;
+
+-- JOIN ... USING: join on same-named columns; the shared column shows ONCE in *
+DIKHAO * SE students s MILAO depts d USING (dept_id);
+DIKHAO naam, dname SE students BAAYAN MILAO depts USING (dept_id);   -- BAAYAN / DAHINA / DONO work too
+DIKHAO * SE a MILAO b USING (x, y);                                  -- several columns
+
+-- EXISTS / NOT EXISTS (correlated or not) and ANY / SOME / ALL
+DIKHAO title SE courses c JAHAN EXISTS (DIKHAO 1 SE students s JAHAN s.cid = c.id);
+DIKHAO title SE courses c JAHAN NAHI EXISTS (DIKHAO 1 SE students s JAHAN s.cid = c.id);  -- NOT EXISTS also works
+DIKHAO naam SE students JAHAN cgpa > ANY (DIKHAO cgpa SE students JAHAN shehar = 'Pune');
+DIKHAO naam SE students JAHAN cgpa >= ALL (DIKHAO cgpa SE students);
+
+-- derived table: a subquery in SE (or after MILAO) needs an alias; its output names are the columns
+DIKHAO t.shehar, t.n SE (DIKHAO shehar, GINO(*) KAHO n SE students SAMOOH shehar) t JAHAN t.n > 1;
+DIKHAO c.title, x.n SE courses c MILAO (DIKHAO cid, GINO(*) KAHO n SE students SAMOOH cid) x PAR x.cid = c.id;
+
 -- UPDATE
 BADLO students RAKHO umar = umar + 1, email = KHALI JAHAN id = 1;
 
@@ -388,7 +642,52 @@ MITAO SE students JAHAN umar HAI KHALI;
 MITAO SE students;                             -- deletes every row
 ```
 
-Operators: `=  !=  <>  <  <=  >  >=  +  -  *  /  %`, where `+` also joins two texts.
+Operators: `=  !=  <>  <  <=  >  >=  +  -  *  /  DIV  %  ||`, where `+` and `||` also join two texts
+(`||` turns a number into text first: `'id-' || 5` is `id-5`; KHALI on either side gives KHALI).
+`/` is exact division like MySQL: two INTs that divide evenly give an INT (`6 / 2` is `3`), otherwise
+a FLOAT (`7 / 2` is `3.5`). `DIV` is integer division, cutting off the fraction (`7 DIV 2` is `3`,
+`-7 DIV 2` is `-3`). Dividing by zero is an error.
+
+## Scalar functions
+
+These work on one row's values and can be used anywhere an expression can: the `DIKHAO` list,
+`JAHAN`, `KRAM`, `SAMOOH`, `JINKA`, `BADLO ... RAKHO` and `DAALO ... MAAN`. Names are
+case-insensitive and are the plain English SQL names. **If any argument is KHALI the result is
+KHALI** (the exceptions are `NULLIF` and `IFNULL`, described below).
+
+```sql
+DIKHAO UPPER(naam), LENGTH(naam), CONCAT(naam, ' (', shehar, ')') SE students;
+DIKHAO naam SE students JAHAN LOWER(shehar) = 'delhi' KRAM LENGTH(naam) ULTA;
+DIKHAO ROUND(AUSAT(cgpa), 2), YEAR(CURDATE()) SE students;
+BADLO students RAKHO naam = TRIM(naam), email = LOWER(email);
+```
+
+| Function | Result |
+|----------|--------|
+| `UPPER(s)`, `LOWER(s)` | upper / lower case text (upper-case covers ASCII, Latin-1, Greek and Cyrillic letters) |
+| `LENGTH(s)`, `CHAR_LENGTH(s)` | number of **characters** (not bytes) |
+| `TRIM(s)`, `LTRIM(s)`, `RTRIM(s)` | text without surrounding spaces (both / left / right) |
+| `SUBSTRING(s, start [, len])`, `SUBSTR` | part of `s`; `start` is **1-based**, a negative `start` counts from the end, `start` 0 gives `''` |
+| `CONCAT(a, b, ...)` | any number of arguments, numbers become text; KHALI if **any** argument is KHALI |
+| `REPLACE(s, from, to)` | every `from` in `s` replaced by `to` |
+| `LEFT(s, n)`, `RIGHT(s, n)` | first / last `n` characters |
+| `ROUND(x [, digits])` | rounds half away from zero; `ROUND(1234, -2)` is `1200`; a FLOAT stays FLOAT |
+| `FLOOR(x)`, `CEIL(x)` / `CEILING(x)` | whole number below / above (an INT, unless it does not fit) |
+| `ABS(x)` | absolute value |
+| `MOD(a, b)` | remainder like MySQL: the sign follows `a` (`MOD(-7, 3)` = -1). The `%` operator keeps the engine's rule, the sign follows `b` (`-7 % 3` = 2); `b = 0` is an error for both |
+| `POWER(a, b)` / `POW` | `a` to the power `b` (an INT when both are INT, `b >= 0` and it fits) |
+| `SQRT(x)` | square root as FLOAT; a negative `x` gives KHALI |
+| `NOW()` | current local date and time as TEXT `'YYYY-MM-DD HH:MM:SS'` |
+| `CURDATE()`, `CURRENT_DATE` | today as a DATE (usable for a `DATE` column) |
+| `YEAR(d)`, `MONTH(d)`, `DAY(d)` | parts of a DATE, `'YYYY-MM-DD'` text or `NOW()` text |
+| `DATEDIFF(a, b)` | days from `b` to `a` (`a - b`); dates or `'YYYY-MM-DD'` text |
+| `DATE_FORMAT(d, fmt)` | text from a DATE using `%Y %y %m %d %e %H %i %s %M %b %W %a %j %%` (year, 2-digit year, month, day, day without zero, hour, minute, second, month name, short month name, weekday name, short weekday name, day of year) |
+| `NULLIF(a, b)` | KHALI when `a = b`, else `a` (a KHALI `b` gives `a`) |
+| `IFNULL(a, b)` | `a`, or `b` if `a` is KHALI (the same as `PEHLA(a, b)`) |
+| `CAST(x AS type)` | converts `x` to `INT`, `FLOAT`, `TEXT`, `DATE` or `BOOL`; `KAHO` can replace `AS`, and the Hinglish type names work (`ANK`, `DASHAMLAV`, `SHABD`, `TAREEKH`). `CAST(3.7 AS INT)` is `4` (rounds), `CAST('12' AS INT)` is `12`; text that is not a valid value is an error |
+
+`NOW()` returns TEXT, so store it in a TEXT column; `DATEDIFF`, `YEAR` and friends accept it
+directly. Use `CURDATE()` for a `DATE` column.
 
 ## Transactions
 
@@ -436,8 +735,9 @@ script      = statement { ";" statement } [ ";" ] ;
 
 statement   = create_db | drop_db | use_db | create_tbl | drop_tbl | alter_tbl
             | truncate | compact | describe | show_tables | show_views
-            | create_view | drop_view
+            | create_view | alter_view | drop_view | show_stmt
             | create_user | drop_user | grant_stmt | revoke_stmt
+            | create_role | drop_role | grant_role | revoke_role | set_role
             | create_trigger | drop_trigger | create_procedure | drop_procedure | call_proc
             | insert | select_stmt | update | delete
             | "SHURU" | "PAKKA" | "WAPAS" | "SAMJHAO" statement ;
@@ -445,18 +745,32 @@ statement   = create_db | drop_db | use_db | create_tbl | drop_tbl | alter_tbl
 create_db   = "BANAO" "DATABASE" IDENT ;
 drop_db     = "HATAO" "DATABASE" IDENT ;
 use_db      = "ISTEMAL" [ "DATABASE" ] IDENT ;
-create_tbl  = "BANAO" "TABLE" IDENT "(" table_item { "," table_item } ")" ;
-table_item  = column_def | composite_constraint ;
-column_def  = IDENT TYPE [ "(" INTEGER [ "," INTEGER ] ")" ]
+create_tbl  = "BANAO" "TABLE" IDENT
+              ( "(" table_item { "," table_item } ")"
+              | ( "KAHO" | "AS" ) "DIKHAO" select_stmt_body       (* CREATE TABLE ... AS SELECT *)
+              | "LIKE" IDENT ) ;                                  (* copy columns + constraints, no rows *)
+table_item  = column_def | composite_constraint | foreign_key ;
+column_def  = IDENT col_type
               { "MUKHYA" "KUNJI" | "ZAROORI" | "ANOKHA" | "WARNA" literal
-              | "SANDARBH" IDENT "(" IDENT ")" | "SHART" "(" expr ")" } ;
+              | "AUTO_INCREMENT" | "AUTO_ANK"
+              | "SANDARBH" IDENT "(" IDENT ")" { fk_action } | "SHART" "(" expr ")" } ;
+col_type    = TYPE [ "(" INTEGER [ "," INTEGER ] ")" ]             (* TYPE includes DATETIME / TIMESTAMP *)
+            | "ENUM" "(" STRING { "," STRING } ")" ;
+fk_action   = "ON" ( "DELETE" | "UPDATE" )
+              ( "CASCADE" | "SET" "NULL" | "RESTRICT" | "NO" "ACTION" ) ;   (* SET NULL may also be written SET KHALI *)
+foreign_key = [ "CONSTRAINT" IDENT ] "FOREIGN" "KEY" "(" IDENT ")"
+              ( "SANDARBH" | "REFERENCES" ) IDENT "(" IDENT ")" { fk_action } ;
 composite_constraint = ( "ANOKHA" | "MUKHYA" "KUNJI" ) "(" IDENT { "," IDENT } ")" ;
                        (* table-level: 2+ columns, distinguished from column_def by
                           lookahead -- a column_def always starts with the column's own IDENT *)
 drop_tbl    = "HATAO" "TABLE" IDENT ;
 alter_tbl   = "SUDHARO" "TABLE" IDENT
-              ( "JODO" [ "COLUMN" ] column_def
+              ( "JODO" [ "COLUMN" ] column_def [ "FIRST" | "AFTER" IDENT ]
               | "JODO" composite_constraint
+              | "JODO" foreign_key                              (* named, or <table>_ibfk_<n> *)
+              | "CHANGE" [ "COLUMN" ] IDENT column_def          (* rename + new definition *)
+              | "MODIFY" [ "COLUMN" ] column_def                (* same name, new definition *)
+              | "HATAO" ( "FOREIGN" "KEY" | "CONSTRAINT" ) IDENT
               | "HATAO" [ "COLUMN" ] IDENT
               | "NAYA_NAAM" IDENT                              (* rename the table *)
               | "COLUMN" IDENT "NAYA_NAAM" IDENT ) ;            (* rename a column *)
@@ -465,15 +779,30 @@ compact     = "SIKODO" "TABLE" IDENT ;
 describe    = "BATAO" [ "TABLE" ] IDENT ;                      (* also shows a VIEW's definition *)
 show_tables = "DIKHAO" "TABLES" ;
 show_views  = "DIKHAO" "VIEWS" ;
-create_view = "BANAO" "VIEW" IDENT "KAHO" select ;              (* select's SOURCE TEXT is stored *)
+create_view = "BANAO" [ "OR" "REPLACE" | "BADAL" ] "VIEW" IDENT "KAHO" select [ check_opt ] ;
+                                                                (* select's SOURCE TEXT is stored *)
+alter_view  = "SUDHARO" "VIEW" IDENT "KAHO" select [ check_opt ] ;
+check_opt   = "WITH" [ "LOCAL" | "CASCADED" ] "CHECK" "OPTION" ; (* updatable views only *)
+show_stmt   = "SHOW" ( "TABLES" | "VIEWS" | "DATABASES" | "TRIGGERS" | "PROCEDURE" "STATUS"
+                     | "GRANTS" [ "FOR" IDENT ]
+                     | "CREATE" ( "TABLE" | "VIEW" ) IDENT
+                     | ( "COLUMNS" | "FIELDS" ) ( "FROM" | "SE" | "IN" ) [ "TABLE" ] IDENT )
+            | "DIKHAO" ( "GRANTS" [ "FOR" IDENT ] | "TRIGGERS" | "PROCEDURES" | "DATABASES" ) ;
 drop_view   = "HATAO" "VIEW" IDENT ;
 
 create_user = "BANAO" "USER" IDENT "GUPT" STRING ;
 drop_user   = "HATAO" "USER" IDENT ;
-privilege   = "DIKHAO" | "DAALO" | "BADLO" | "MITAO" ;
-priv_list   = "SAB" | privilege { "," privilege } ;
-grant_stmt  = "ADHIKAR" "DO" priv_list "PAR" IDENT "KO" IDENT ;
+privilege   = "DIKHAO" | "DAALO" | "BADLO" | "MITAO"
+            | "SELECT" | "INSERT" | "UPDATE" | "DELETE" ;
+priv_item   = privilege [ "(" IDENT { "," IDENT } ")" ] ;       (* columns: not with MITAO / DELETE *)
+priv_list   = "SAB" | "ALL" [ "PRIVILEGES" ] | priv_item { "," priv_item } ;
+grant_stmt  = "ADHIKAR" "DO" priv_list "PAR" IDENT "KO" IDENT [ "WITH" "GRANT" "OPTION" ] ;
 revoke_stmt = "ADHIKAR" "WAPAS" priv_list "PAR" IDENT "SE" IDENT ;
+create_role = "BANAO" "ROLE" IDENT ;
+drop_role   = "HATAO" "ROLE" IDENT ;
+grant_role  = "ADHIKAR" "DO" "ROLE" IDENT { "," IDENT } "KO" IDENT ;
+revoke_role = "ADHIKAR" "WAPAS" "ROLE" IDENT { "," IDENT } "SE" IDENT ;
+set_role    = "SET" "ROLE" ( IDENT { "," IDENT } | "SAB" | "NONE" ) ;
 
 block_body  = "SHURU" statement ";" { statement ";" } "KHATAM" ;   (* 1+ statements; raw SOURCE
                                                                        TEXT between SHURU/KHATAM
@@ -487,23 +816,28 @@ create_procedure = "BANAO" "PROCEDURE" IDENT "(" [ proc_param { "," proc_param }
 drop_procedure   = "HATAO" "PROCEDURE" IDENT ;
 call_proc        = "CHALAO" IDENT "(" [ expr { "," expr } ] ")" ;
 
-insert      = "DAALO" "MEIN" IDENT [ "(" IDENT { "," IDENT } ")" ]
+insert      = ( "DAALO" "MEIN" | "REPLACE" "INTO" | "BADAL" "DAALO" "MEIN" ) IDENT [ "(" IDENT { "," IDENT } ")" ]
               ( "MAAN" tuple { "," tuple } | select )
-              [ "TAKRAAV" "PAR" "BADLO" assignment { "," assignment } ] ;
+              [ "TAKRAAV" "PAR" "BADLO" assignment { "," assignment } ] ;   (* not with REPLACE / BADAL *)
 tuple       = "(" expr { "," expr } ")" ;
 assignment  = IDENT "=" expr ;
 
 select_stmt = select { set_op select } ;                        (* left-associative chaining *)
 set_op      = "SANYUKT" | "SAAJHA" | "CHHODKAR" ;                (* UNION / INTERSECT / EXCEPT *)
-select      = "DIKHAO" [ "ALAG" ] item { "," item } "SE" IDENT [ IDENT ]
-              { join }
+select      = "DIKHAO" select_body ;
+select_body = [ "ALAG" ] item { "," item } [ "SE" source           (* no SE: one row of constants *)
+              { join } ]
               [ "JAHAN" expr ]
               [ "SAMOOH" expr { "," expr } ]
               [ "JINKA" expr ]
               [ "KRAM" order_item { "," order_item } ]
-              [ "SIRF" INTEGER ] ;
-join        = ( [ "BAAYAN" | "DAHINA" | "DONO" ] "MILAO" IDENT [ IDENT ] "PAR" expr )
-            | ( "SAMAAN" "MILAO" IDENT [ IDENT ] ) ;   (* NATURAL: no PAR -- synthesised at bind time *)
+              [ ( "SIRF" | "LIMIT" ) INTEGER [ "OFFSET" INTEGER | "," INTEGER ] ] ;   (* SIRF m, n = SIRF n OFFSET m *)
+select_stmt_body = select_body { set_op "DIKHAO" select_body } ;  (* what follows DIKHAO in create_tbl *)
+source      = IDENT [ IDENT ]
+            | "(" "DIKHAO" select_body ")" [ "KAHO" | "AS" ] IDENT ;   (* derived table: alias is required *)
+join        = ( [ "BAAYAN" | "DAHINA" | "DONO" ] "MILAO" source
+                ( "PAR" expr | "USING" "(" IDENT { "," IDENT } ")" ) )
+            | ( "SAMAAN" "MILAO" source ) ;   (* NATURAL: no PAR -- synthesised at bind time *)
 item        = "*" | IDENT "." "*" | expr [ "KAHO" IDENT ] ;   (* KAHO = output column alias *)
 order_item  = expr [ "SEEDHA" | "ULTA" ] ;
 update      = "BADLO" IDENT "RAKHO" assignment { "," assignment } [ "JAHAN" expr ] ;
@@ -513,22 +847,27 @@ delete      = "MITAO" "SE" IDENT [ "JAHAN" expr ] ;
 expr        = or_expr ;
 or_expr     = and_expr { "YA" and_expr } ;
 and_expr    = not_expr { "AUR" not_expr } ;
-not_expr    = "NAHI" not_expr | comparison ;
+not_expr    = ( "NAHI" | "NOT" "EXISTS" ) not_expr | comparison ;   (* NOT is only taken before EXISTS *)
 comparison  = additive [ ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) additive
+                       | ( "=" | "!=" | "<" | "<=" | ">" | ">=" ) ( "ANY" | "SOME" | "ALL" ) "(" "DIKHAO" select_body ")"
                        | "HAI" [ "NAHI" ] "KHALI"
                        | [ "NAHI" ] "JAISA" additive
                        | [ "NAHI" ] "BEECH" additive "AUR" additive
                        | [ "NAHI" ] "MEIN" "(" ( expr { "," expr } | "DIKHAO" select_body ) ")" ] ;
-additive    = term { ( "+" | "-" ) term } ;
-term        = unary { ( "*" | "/" | "%" ) unary } ;
+additive    = term { ( "+" | "-" | "||" ) term } ;
+term        = unary { ( "*" | "/" | "DIV" | "%" ) unary } ;
 unary       = "-" unary | primary ;
 primary     = NUMBER | STRING | "SACH" | "JHOOTH" | "KHALI"
-            | case_expr | coalesce_expr
+            | case_expr | coalesce_expr | cast_expr
+            | "EXISTS" "(" "DIKHAO" select_body ")"
+            | IDENT "(" [ expr { "," expr } ] ")"        (* scalar function: UPPER(x), NOW(), ... *)
+            | "CURRENT_DATE"
             | IDENT "(" ( "*" | expr ) ")"               (* aggregate call *)
             | IDENT [ "." IDENT ]                        (* column, or alias.column *)
             | "(" ( expr | "DIKHAO" select_body ) ")" ;   (* the 2nd form: a scalar subquery *)
 case_expr   = "AGAR" expr "TAB" expr { "AGAR" expr "TAB" expr } [ "WARNA" expr ] "KHATAM" ;
-coalesce_expr = ( "PEHLA" | "COALESCE" ) "(" expr { "," expr } ")" ;
+coalesce_expr = ( "PEHLA" | "COALESCE" ) "(" expr { "," expr } ")" | "IFNULL" "(" expr "," expr ")" ;
+cast_expr   = "CAST" "(" expr ( "KAHO" | "AS" ) TYPE ")" ;
 literal     = [ "-" ] NUMBER | STRING | "SACH" | "JHOOTH" | "KHALI" ;
 ```
 
@@ -548,10 +887,11 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   `COUNT/SUM/AVG/MIN/MAX` also work.
 - **In a grouped query, every plain column must be in `SAMOOH`.** `DIKHAO naam, GINO(*) SE s`
   is an error, because one output row stands for many rows, each with its own `naam`.
-- **`SANDARBH` (FOREIGN KEY) is RESTRICT, not CASCADE.** Deleting/changing a parent row that a
-  child still points at is an error -- you must remove or repoint the child rows first. There is
-  no `ON DELETE CASCADE` (future work). The parent column must be `MUKHYA KUNJI`/`ANOKHA`, so
-  the child-side check is an O(1) hash-index lookup, same as uniqueness checks.
+- **`SANDARBH` (FOREIGN KEY) is RESTRICT unless you say otherwise.** Deleting/changing a parent row that a
+  child still points at is an error -- you must remove or repoint the child rows first -- unless the
+  foreign key has `ON DELETE` / `ON UPDATE` `CASCADE` or `SET NULL` (see "Foreign key actions"). The
+  parent column must be `MUKHYA KUNJI`/`ANOKHA`, so the child-side check is an O(1) hash-index lookup,
+  same as uniqueness checks.
 - **`SHART` (CHECK) uses NULL semantics, not boolean ones.** A row is rejected only when the
   expression is exactly `JHOOTH`. If it's `KHALI` (unknown -- e.g. because a column it reads is
   `KHALI`), the row is accepted, exactly like a `JAHAN` clause treats `KHALI`.
@@ -568,6 +908,20 @@ evaluator already knows (`x >= a AUR x <= b`, and `x = a YA x = b ...`).
   correct (rows filtered by the synthesised condition) matters far more than `*` cosmetics, so
   `DIKHAO * SE a SAMAAN MILAO b` currently lists a shared column once per side rather than once
   -- write the columns out explicitly if you want each name only once.
+- **`MILAO ... USING (c)` shows the shared column once.** In `*` it appears once (for a
+  `DAHINA`/`DONO` join it takes whichever side has a value), and a plain `c` anywhere in the
+  query is not ambiguous. `t.*` still lists all of `t`'s own columns.
+- **`OFFSET`, `USING`, `EXISTS`, `ANY`, `SOME`, `ALL`, `CAST` and the scalar function
+  names are not reserved words.** They keep working as column or table names; they only mean
+  something in the places shown above. The same goes for the words added with the newer syntax:
+  `LIMIT` (English `SIRF`; only taken before a number), `DIV`, `AS`, `LIKE`, `REPLACE`, `INTO`, `BADAL`,
+  `AUTO_INCREMENT`, `AUTO_ANK`, `ENUM`, `FOREIGN`, `KEY`, `CONSTRAINT`, `REFERENCES`, `ON`, `DELETE`,
+  `UPDATE`, `CASCADE`, `RESTRICT`, `NO`, `ACTION`, `SET`, `CHANGE`, `MODIFY`, `FIRST` and `AFTER`.
+  (The workbench highlights them wherever they appear.)
+- **`DIKHAO` without `SE` has no columns to read.** `DIKHAO naam` is an error ("Column 'naam' ke liye
+  table chahiye"); only constants, functions and subqueries make sense there.
+- **A derived table is run first and then used like a view.** It cannot refer to columns of the
+  query around it (no correlation), it needs an alias, and its column names must be unique.
 - **A view is not a table.** It has no rows of its own, no index, and always does a full scan of
   its freshly re-run query -- see the VIEWs section above and `docs/ARCHITECTURE.md`.
 - **No username = superuser.** Privilege checking only ever applies to a session that

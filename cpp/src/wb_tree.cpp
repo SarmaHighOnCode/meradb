@@ -64,7 +64,8 @@ Line columnLabel(const Json& col) {
     Line l;
     appendSegment(l, nameOf(col), Style{});
     appendSegment(l, " ", Style{});
-    appendSegment(l, pytext::lower(col.value("type_name", std::string())), fgStyle(palette::kCyan));
+    bool isEnum = col.contains("enum_values");  // an ENUM column is TEXT underneath
+    appendSegment(l, isEnum ? std::string("enum") : pytext::lower(col.value("type_name", std::string())), fgStyle(palette::kCyan));
     if (col.value("primary_key", false)) appendSegment(l, " PK", fgStyle(palette::kOrange));
     else if (col.value("unique", false)) appendSegment(l, " UQ", fgStyle(palette::kOrange));
     if (col.value("not_null", false)) appendSegment(l, " NN", fgStyle(-1, false, true));

@@ -39,7 +39,7 @@ TEST_CASE("DML against a VIEW is refused with Python's wording", "[engine][dml]"
     Engine e(dir.str());
     run(e, "BANAO TABLE t (id INT);");
     // a view definition can be stored straight in the catalog: SE/BANAO VIEW is Task 19
-    e.catalog().addView("v", "DIKHAO * SE t");
+    e.catalog().addView("v", "DIKHAO ALAG * SE t");  // a plain one-table view would accept DAALO/BADLO/MITAO now
     const std::string msg = "[Execution Galti] 'v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte";
     REQUIRE(run(e, "DAALO MEIN v MAAN (1);").error == msg);
     REQUIRE(run(e, "BADLO v RAKHO id = 1;").error == msg);

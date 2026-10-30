@@ -14,9 +14,11 @@
 #pragma once
 #include "meradb/backend.h"
 #include "meradb/wb_editor.h"
+#include "meradb/wb_querystore.h"
 #include "meradb/wb_text.h"
 #include "meradb/wb_tree.h"
 #include "meradb/wb_worker.h"
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -56,6 +58,9 @@ struct SessionOptions {
     std::string exportBaseDir;               // exports/ goes below this; "" = the current directory
     BackendFactory factory;                  // empty = defaultBackendFactory
     std::function<std::string()> stamp;      // empty = exportFileStamp
+    // Local mode keeps the queries and the writing area per database under <dataDir>/.history (the desktop window's
+    // Queries tab). false = behave exactly like tui.py (the workbench_diff probe compares against it).
+    bool keepWork = true;
 };
 
 class Session {
@@ -86,6 +91,17 @@ public:
     const Result* lastResult() const { return lastResult_ ? &*lastResult_ : nullptr; }
     int resultVersion() const { return resultVersion_; }                       // bumps on every new table
     const History& history() const { return history_; }
+    // The queries run so far in the current database, oldest first, kept in <data>/.history/<db>.jsonl (local mode
+    // only; empty and disabled for a server connection). savedVersion() bumps whenever the list changes.
+    const std::vector<SavedQuery>& savedQueries() const { return saved_; }
+    int savedVersion() const { return savedVersion_; }
+    bool savedQueriesEnabled() const { return store_.enabled(); }
+    void clearSavedQueries();
+    // The writing area keeps its text per database (local mode): saved a moment after each change (force = now), and
+    // loaded again when the database is opened with openDatabase(), which also runs ISTEMAL.
+    void persistEditor(bool force = false);
+    void openDatabase(const std::string& name);
+    std::size_t savedQueryCount(const std::string& db) const { return store_.enabled() ? store_.load(db).size() : 0; }
     Modal modal() const { return modal_; }
     std::optional<Panel> takeFocusRequest();         // set by history / column insert (Python: editor.focus())
     ConnectDefaults connectDefaults() const;         // for the dialog
@@ -150,6 +166,16 @@ private:
     std::optional<ResultTable> table_;
     std::optional<Result> lastResult_;
     History history_;
+    QueryStore store_{""};
+    std::vector<SavedQuery> saved_;
+    std::string savedDb_;
+    int savedVersion_ = 0;
+    void reloadSaved();
+    void seedHistory();
+    bool stepping_ = false;        // Pichli / Agli is walking through the history
+    std::string draft_;            // what the writing area held before the walk; Agli past the end brings it back
+    std::string scriptDb_, lastScript_, switchScriptTo_;
+    std::chrono::steady_clock::time_point lastScriptWrite_{};
     Modal modal_ = Modal::None;
     std::optional<Panel> focusRequest_;
     int pending_ = 0;

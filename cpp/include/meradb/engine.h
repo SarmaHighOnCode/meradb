@@ -17,10 +17,12 @@
 #include "meradb/catalog.h"
 #include "meradb/evaluator.h"
 #include "meradb/planner.h"
+#include "meradb/proc_ast.h"
 #include "meradb/pyvalue.h"
 #include "meradb/substitute.h"
 #include "meradb/table.h"
 #include "meradb/users.h"
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -68,6 +70,12 @@ public:
     void discardSnapshot(const std::string& db);
     void restoreSnapshot(const std::string& db);
 
+    // Extra COPIES of a database folder (data/.wapas/<db>.<tag>.sp) for SAVEPOINTs and for undoing one statement whose
+    // trigger raised SIGNAL. Unlike the SHURU snapshot a copy survives being restored from, so ROLLBACK TO can be repeated.
+    void takeCopy(const std::string& db, const std::string& tag);
+    void restoreCopy(const std::string& db, const std::string& tag);
+    void dropCopy(const std::string& db, const std::string& tag);
+
     // Databases rolled back by crash recovery when this Instance started.
     const std::vector<std::string>& recovered() const { return recovered_; }
 
@@ -91,7 +99,7 @@ struct Result {
     std::string error;
 };
 
-class Engine {
+class Engine : private SessionHost {
 public:
     explicit Engine(std::shared_ptr<Instance> instance);
     explicit Engine(const std::string& dataDir);  // embedded: owns a private Instance
@@ -104,8 +112,12 @@ public:
     // every embedded Engine and every server session that connected without a
     // username. See docs/SERVER.md "no username = superuser".
     std::optional<std::string> user;
+    // SET ROLE: the roles in force for `user`. nullopt = every role granted to it (the default); empty = none.
+    std::optional<std::set<std::string>> activeRoles;
     std::optional<std::string> txnDb;  // database of the open transaction, if any
     bool inTransaction() const { return txnDb.has_value(); }
+    // SET autocommit = 0: every statement that changes something opens a transaction (if none is open) that stays open until PAKKA / WAPAS.
+    bool autocommit() const { return autocommit_; }
     Catalog& catalog();
     Instance& instance() { return *instance_; }
 
@@ -154,19 +166,127 @@ private:
     Result execAlterAddColumn(const ast::AlterAddColumn&);
     Result execAlterAddComposite(const ast::AlterAddComposite&);
     Result execAlterDropColumn(const ast::AlterDropColumn&);
+    Result execAlterModifyColumn(const ast::AlterModifyColumn&);
+    Result execAlterAddForeignKey(const ast::AlterAddForeignKey&);
+    Result execAlterDropForeignKey(const ast::AlterDropForeignKey&);
+    Result execCreateTableLike(const ast::CreateTable&);
+    Result execCreateTableAs(const ast::CreateTable&);
+    Result execReplace(Table& table, const ast::Insert& stmt, std::vector<std::vector<Value>> newRows);
     Result execRenameTable(const ast::RenameTable&);
     Result execRenameColumn(const ast::RenameColumn&);
     Result execBegin(const ast::Begin&);
     Result execCommit(const ast::Commit&);
     Result execRollback(const ast::Rollback&);
-    Result execInsert(const ast::Insert&);
-    Result execUpdate(const ast::Update&);
+    Result execSavepoint(const ast::Savepoint&);
+    Result execRollbackToSavepoint(const ast::RollbackToSavepoint&);
+    Result execReleaseSavepoint(const ast::ReleaseSavepoint&);
+    Result execSetVariable(const ast::SetVariable&);
+    Result execShowVariables(const ast::ShowVariables&);
+    Result execPrepare(const ast::Prepare&);
+    Result execExecutePrepared(const ast::ExecutePrepared&);
+    Result execDeallocate(const ast::Deallocate&);
+    Result execCreateFunction(const ast::CreateFunction&);
+    Result execDropFunction(const ast::DropFunction&);
+    Result execShowFunctions(const ast::ShowFunctions&);
+
+    // ---- transactions, autocommit, savepoints ----
+    bool autocommit_ = true;
+    bool implicitTxn_ = false;  // the open transaction was started by autocommit = 0 (SHURU then commits it first)
+    struct SavepointEntry { std::string name, tag; };
+    std::vector<SavepointEntry> savepoints_;
+    int savepointSeq_ = 0;
+    void beginTransaction();
+    void finishTransaction(bool commit);
+    void clearSavepoints();
+    void setAutocommit(bool on);
+    static bool startsTransaction(const ast::Statement& stmt);
+    static bool isReadOnlyStatement(const ast::Statement& stmt);
+    // Runs a DAALO / BADLO / MITAO; if a trigger raises SIGNAL the whole statement is undone.
+    Result guardSignal(const std::function<Result()>& run);
+
+    // ---- session variables and prepared statements ----
+    std::unordered_map<std::string, Value> userVars_;        // "@name" -> value
+    std::unordered_map<std::string, std::string> prepared_;  // name -> SQL text with ? marks
+    // SessionHost (evaluator.h): what the evaluator asks the engine for
+    Value userVariable(const std::string& name) override;
+    bool hasFunction(const std::string& name) override;
+    Value callFunction(const std::string& name, const std::vector<Value>& args) override;
+
+    // ---- procedural bodies (procedural.cpp) ----
+    // One run of a trigger / procedure / function body: its variables, cursors and the rows NAYA / PURANA stand for.
+    struct ProcFrame {
+        struct Var {
+            std::string type;
+            Value value;
+        };
+        struct Cursor {
+            std::string selectText;
+            bool open = false;
+            std::vector<std::vector<Value>> rows;
+            size_t position = 0;
+        };
+        std::unordered_map<std::string, Var> vars;
+        std::unordered_map<std::string, Cursor> cursors;
+        const ast::PDeclareHandler* notFound = nullptr;  // DECLARE CONTINUE HANDLER FOR NOT FOUND
+        const Row* newView = nullptr;                    // NAYA (trigger)
+        Row* newRow = nullptr;                           // the same row when this trigger may change it
+        const Row* oldRow = nullptr;                     // PURANA (trigger)
+        std::string newError;                            // why NAYA cannot be changed here
+        bool newChanged = false;
+        std::vector<Result>* results = nullptr;  // the results of the statements run (procedures)
+        bool isFunction = false;
+        std::string flowLabel;  // the label a LEAVE / ITERATE in flight is heading for
+        Value returnValue;
+        bool returned = false;
+    };
+    enum class ProcFlow { Next, Leave, Iterate, Return };
+    static constexpr int64_t kMaxLoopIterations = 100000;
+    static constexpr int kMaxFunctionDepth = 32;
+    int functionDepth_ = 0;  // > 0: a stored function body is running (it may only read)
+    void runBodyTree(const std::string& bodyText, ProcFrame& frame);
+    ProcFlow runProcBlock(const ast::ProcBlock& block, ProcFrame& frame);
+    ProcFlow runProcNode(const ast::ProcNode& node, ProcFrame& frame);
+    ProcFlow runProcLoop(const ast::PLoop& loop, ProcFrame& frame);
+    void runProcSql(const std::string& text, ProcFrame& frame);
+    void runProcSelectInto(const ast::PSelectInto& node, ProcFrame& frame);
+    void runProcCursorOp(const ast::PCursorOp& node, ProcFrame& frame);
+    Result runProcQuery(const std::string& text, ProcFrame& frame);
+    Value evalExprValue(const ast::Expr& expr, ProcFrame* frame);  // frame may be null (top level)
+    RefReplacer frameReplacer(ProcFrame& frame);
+    void assignVariable(ProcFrame* frame, const std::string& name, Value value);
+    Result callProcedure(const std::string& name, const std::vector<const ast::Expr*>& args, ProcFrame* caller);
+    void checkBodyAllowed(const ast::ProcBlock& block, const std::string& kind, const std::string& trigTiming,
+                          const std::string& trigEvent);
+    // WITH CHECK OPTION: called with the rows an INSERT / UPDATE is about to write (in the target table's column order);
+    // throws when one of them would not be visible through the view.
+    using RowCheck = std::function<void(const TableSchema&, const std::vector<std::vector<Value>>&)>;
+    Result execInsert(const ast::Insert&, const RowCheck* check = nullptr);
+    Result execUpdate(const ast::Update&, const RowCheck* check = nullptr);
     Result execDelete(const ast::Delete&);
+    // DAALO / BADLO / MITAO on a simple view are rewritten onto its one base table (see "updatable views" in engine.cpp)
+    struct ViewTarget;
+    std::unique_ptr<ViewTarget> viewTargetOf(const std::string& name, const std::string& queryText, std::string& reason);
+    std::unique_ptr<ViewTarget> updatableView(const std::string& name);  // throws the "ek VIEW hai" error if it is not
+    RowCheck viewCheck(const ViewTarget& target);
+    Result execInsertViaView(const ast::Insert&);
+    Result execUpdateViaView(const ast::Update&);
+    Result execDeleteViaView(const ast::Delete&);
     Result execSelect(const ast::Select&);
     Result execSetOp(const ast::SetOp&);
     Result execCreateView(const ast::CreateView&);
     Result execDropView(const ast::DropView&);
     Result execShowViews(const ast::ShowViews&);
+    Result execShowDatabases(const ast::ShowDatabases&);
+    Result execShowTriggers(const ast::ShowTriggers&);
+    Result execShowProcedures(const ast::ShowProcedures&);
+    Result execShowGrants(const ast::ShowGrants&);
+    Result execShowCreateTable(const ast::ShowCreateTable&);
+    Result execShowCreateView(const ast::ShowCreateView&);
+    Result execCreateRole(const ast::CreateRole&);
+    Result execDropRole(const ast::DropRole&);
+    Result execGrantRole(const ast::GrantRole&);
+    Result execRevokeRole(const ast::RevokeRole&);
+    Result execSetRole(const ast::SetRole&);
     Result execExplain(const ast::Explain&);
     Result execCreateUser(const ast::CreateUser&);
     Result execDropUser(const ast::DropUser&);
@@ -180,11 +300,15 @@ private:
 
     // Trigger / procedure bodies (each firing parses the body fresh and substitutes NAYA/PURANA before running it). `newRow`/`oldRow` are plain
     // {column: value} dicts, independent of any Scope's "table.col" aliasing.
+    // Read-only NAYA/PURANA (AFTER triggers, and the REPLACE / TAKRAAV paths where a changed NAYA cannot be written back).
     void fireTriggers(const std::string& timing, const std::string& event, const std::string& table,
                       const Row* newRow, const Row* oldRow);
-    // Parse `bodyText` fresh, substitute, run each statement through executeStatement
-    // (so it takes the lock, re-checks privileges and can fire further triggers).
-    void runBody(const std::string& bodyText, const RefReplacer& replace, std::vector<Result>* results);
+    // A BEFORE DAALO / BADLO trigger may change the row about to be written (RAKHO NAYA.col = ...): true if one did.
+    bool fireBeforeTriggers(const std::string& event, const std::string& table, Row& newRow, const Row* oldRow);
+    bool fireTriggersImpl(const std::string& timing, const std::string& event, const std::string& table,
+                          const Row* newView, Row* newWritable, const Row* oldRow, const std::string& cannotWrite);
+    // Rebuilds a row's values (schema order) from a trigger-edited {column: value} dict, validated like any new row.
+    std::vector<Value> rowFromDict(const TableSchema& schema, const Row& dict) const;
     static Row rowDict(const TableSchema& schema, const std::vector<Value>& values);
 
     static constexpr int kMaxBodyDepth = 32;
@@ -193,12 +317,22 @@ private:
     // ---- helpers ----
     void noTransaction(const std::string& command) const;
     void checkPrivileges(const ast::Statement& stmt);
-    void requirePrivilege(const std::string& privilege, const std::string& table);
+    void requirePrivilege(const std::string& privilege, const std::string& table);  // table-wide privilege
+    Access accessOf(const std::string& privilege, const std::string& table);        // the session's own + active roles
+    Access requireAccess(const std::string& privilege, const std::string& table);   // table-wide or some columns
+    [[noreturn]] void denyColumn(const std::string& privilege, const std::string& table, const std::string& column) const;
+    struct PrivScope;
+    void checkSelectAccess(const ast::Select& stmt, const PrivScope* outer);
+    void checkExprSubqueries(const ast::Expr* expr);
+    void checkGrantAllowed(const ast::Grant& stmt);
+    static std::string nowText();
     static std::vector<std::string> tablesRead(const ast::Select& stmt);
     // A REAL table only (DAALO/BADLO/MITAO/SUDHARO/SAAF/SIKODO/HATAO TABLE targets).
     std::unique_ptr<Table> table(const std::string& name);
     // A SE/MILAO source: a real table, or a VIEW materialized fresh.
     std::unique_ptr<Table> resolveSource(const std::string& name);
+    // A query result as a read-only table (a VIEW's rows, a derived table's rows).
+    static std::unique_ptr<Table> materialize(const std::string& name, const Result& result);
     static constexpr int kMaxViewDepth = 32;  // views defined over views (Python: none, RecursionError)
     int viewDepth_ = 0;
     Column makeColumn(const ast::ColumnDef& def) const;
@@ -212,9 +346,22 @@ private:
     void checkFk(Table& table, const std::vector<std::vector<Value>>& newRows);
     // Values are compared the way Python's set membership does (pyEquals).
     using ValueSet = std::unordered_set<Value, PyValueHash, PyValueEq>;
-    void checkNoChildren(const TableSchema& schema, const std::unordered_map<size_t, ValueSet>& changedByColumn,
-                         const std::set<int64_t>& exemptRowIds = {},
-                         const std::unordered_map<int64_t, std::vector<Value>>* overrides = nullptr);
+
+    // SANDARBH, parent side: what a DELETE / UPDATE does to the rows that point at it (RESTRICT / CASCADE / SET NULL).
+    // The whole knock-on set (every table, recursively) is worked out in memory first -- fkDelete / fkUpdate throw on
+    // the first RESTRICT -- checked by fkValidate, and only then written by fkApply, so a failure changes nothing.
+    struct FkWork;
+    struct FkChange {
+        int64_t rowId;
+        std::vector<Value> oldValues, newValues;
+    };
+    void fkDelete(FkWork& work, const std::string& tableName, const std::vector<StoredRow>& rows);
+    void fkUpdate(FkWork& work, const std::string& tableName, const std::vector<FkChange>& changes, bool cascaded);
+    void fkValidate(FkWork& work);
+    void fkApply(FkWork& work);
+    static constexpr int kMaxFkDepth = 64;  // nested cascades (a table cascading into itself through a chain)
+    void checkSchemaExtras(const TableSchema& schema) const;  // one AUTO_INCREMENT, SET NULL only on nullable columns
+    void checkFkNameFree(const std::string& name, const std::string& exceptTable);
     std::optional<int64_t> findConflict(Table& table, const std::vector<Value>& values);
     std::vector<StoredRow> candidates(Table& table, const std::optional<IndexLookup>& access);
 

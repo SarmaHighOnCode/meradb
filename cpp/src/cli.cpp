@@ -556,7 +556,10 @@ int runGuiCommand(const CliArgs& args) {
         return 1;
     }
 
-    std::vector<std::string> forwarded = {"-D", args.dataDir};
+    // The default folder is not forwarded: the window then picks it itself (inside a checkout that is <checkout>/data),
+    // so `meradb gui` opens the same databases as a double-click on meradb_gui.
+    std::vector<std::string> forwarded;
+    if (args.dataDir != protocol::defaultDataDir() || sys::getEnv("MERADB_DATA")) forwarded = {"-D", args.dataDir};
     if (args.host) forwarded.insert(forwarded.end(), {"-H", *args.host});
     if (args.port) forwarded.insert(forwarded.end(), {"-p", std::to_string(*args.port)});
     if (args.database) forwarded.insert(forwarded.end(), {"-d", *args.database});

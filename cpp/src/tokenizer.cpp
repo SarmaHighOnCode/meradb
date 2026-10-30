@@ -206,17 +206,29 @@ std::vector<Token> Tokenizer::tokenize() {
             tokens.push_back(readNumber());
         } else if (c == '\'') {
             tokens.push_back(readString());
+        } else if (c == '@' && (std::isalpha(static_cast<unsigned char>(peek(1))) || peek(1) == '_')) {
+            // @name: a session user variable. One Ident token whose text keeps the '@', so it can never clash with a column name.
+            int startLine = line_, startCol = col_;
+            size_t start = pos_;
+            advance();
+            while (pos_ < text_.size() && (std::isalnum(static_cast<unsigned char>(peek())) || peek() == '_')) advance();
+            Token t;
+            t.type = TokenType::Ident;
+            t.textValue = toLower(text_.substr(start, pos_ - start));
+            t.line = startLine; t.col = startCol;
+            t.start = static_cast<int>(start); t.end = static_cast<int>(pos_);
+            tokens.push_back(t);
         } else {
             int startLine = line_, startCol = col_;
             size_t start = pos_;
             std::string two = text_.substr(pos_, 2);
-            static const std::set<std::string> twoChar = {"<=", ">=", "!=", "<>"};
+            static const std::set<std::string> twoChar = {"<=", ">=", "!=", "<>", "||"};
             std::string symbol;
             if (twoChar.count(two)) {
                 advance(); advance();
                 symbol = (two == "<>") ? "!=" : two;
             } else {
-                static const std::string oneChar = "(),;*=<>+-/%.";
+                static const std::string oneChar = "(),;*=<>+-/%.:";  // ':' only for loop labels (name: LOOP)
                 if (oneChar.find(c) == std::string::npos) {
                     // Python formats the character with repr(): '@', '\\', '\x00' (see reprCharacter)
                     error("Ye character samajh nahi aaya: " + reprCharacter(text_, pos_));

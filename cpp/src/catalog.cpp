@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <set>
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -148,6 +149,12 @@ json Column::toJson() const {
     j["ref_table"] = refTable.has_value() ? json(*refTable) : json(nullptr);
     j["ref_column"] = refColumn.has_value() ? json(*refColumn) : json(nullptr);
     j["check"] = check.has_value() ? json(*check) : json(nullptr);
+    // C++-only keys, present only when used (a catalog without them is byte-identical to the Python engine's)
+    if (autoIncrement) j["auto_increment"] = true;
+    if (!enumValues.empty()) j["enum_values"] = enumValues;
+    if (!fkName.empty()) j["fk_name"] = fkName;
+    if (!onDelete.empty()) j["on_delete"] = onDelete;
+    if (!onUpdate.empty()) j["on_update"] = onUpdate;
     return j;
 }
 
@@ -165,6 +172,11 @@ Column Column::fromJson(const json& j) {
     c.refTable = optionalField<std::string>(j, "ref_table");
     c.refColumn = optionalField<std::string>(j, "ref_column");
     c.check = optionalField<std::string>(j, "check");
+    c.autoIncrement = j.value("auto_increment", false);
+    if (auto it = j.find("enum_values"); it != j.end() && it->is_array()) c.enumValues = it->get<std::vector<std::string>>();
+    c.fkName = optionalField<std::string>(j, "fk_name").value_or("");
+    c.onDelete = optionalField<std::string>(j, "on_delete").value_or("");
+    c.onUpdate = optionalField<std::string>(j, "on_update").value_or("");
     return c;
 }
 
@@ -196,7 +208,22 @@ json TableSchema::toJson() const {
     json j;
     j["name"] = name;
     j["columns"] = json::array();
-    for (const auto& c : columns) j["columns"].push_back(c.toJson());
+    // An auto-generated constraint name (<table>_ibfk_<n>) is left out when loading would regenerate the very same
+    // name, so a catalog written by the Python engine saves back unchanged; any other name is written.
+    TableSchema probe = *this;
+    auto isAutoName = [&](const std::string& n) {
+        std::string prefix = name + "_ibfk_";
+        return n.compare(0, prefix.size(), prefix) == 0 && n.size() > prefix.size() &&
+               n.find_first_not_of("0123456789", prefix.size()) == std::string::npos;
+    };
+    for (auto& c : probe.columns)
+        if (isAutoName(c.fkName)) c.fkName.clear();
+    probe.assignFkNames();
+    for (size_t i = 0; i < columns.size(); ++i) {
+        json cj = columns[i].toJson();
+        if (isAutoName(columns[i].fkName) && probe.columns[i].fkName == columns[i].fkName) cj.erase("fk_name");
+        j["columns"].push_back(std::move(cj));
+    }
     j["composite_unique"] = compositeUnique;
     j["composite_pk"] = compositePk.has_value() ? json(*compositePk) : json(nullptr);
     return j;
@@ -210,7 +237,23 @@ TableSchema TableSchema::fromJson(const json& j) {
     auto cu = j.find("composite_unique");
     if (cu != j.end() && !cu->is_null()) s.compositeUnique = cu->get<std::vector<std::vector<std::string>>>();
     s.compositePk = optionalField<std::vector<std::string>>(j, "composite_pk");
+    s.assignFkNames();  // older catalogs have unnamed foreign keys
     return s;
+}
+
+void TableSchema::assignFkNames() {
+    std::set<std::string> used;
+    for (const auto& c : columns)
+        if (!c.fkName.empty()) used.insert(c.fkName);
+    size_t n = 0;
+    for (auto& c : columns) {
+        if (!c.refTable.has_value() || c.refTable->empty() || !c.fkName.empty()) continue;
+        std::string candidate;
+        do candidate = name + "_ibfk_" + std::to_string(++n);
+        while (used.count(candidate));
+        c.fkName = candidate;
+        used.insert(candidate);
+    }
 }
 
 // ---------------------------------------------------------------- Catalog
@@ -223,8 +266,21 @@ Catalog::Catalog(std::string dbDir) : dbDir_(std::move(dbDir)) {
 void Catalog::load() {
     tables.clear();
     views.clear();
+    viewCheckOption.clear();
     triggers = json::object();
     procedures = json::object();
+    functions = json::object();
+    procedureCreated_.clear();
+    try {
+        std::ifstream meta(pathOf((pathOf(dbDir_) / "procedures.meta.json").u8string()));
+        if (meta) {
+            json mj = json::parse(meta);
+            for (const auto& [name, when] : mj.items())
+                if (when.is_string()) procedureCreated_[name] = when.get<std::string>();
+        }
+    } catch (...) {
+        procedureCreated_.clear();
+    }
     if (!fs::exists(pathOf(path_))) return;  // fresh database: empty catalog
 
     std::ifstream in(pathOf(path_));
@@ -237,8 +293,12 @@ void Catalog::load() {
         // "views"/"triggers"/"procedures" keys are absent in older catalog.json files
         if (auto it = data.find("views"); it != data.end())
             for (const auto& [name, vj] : it->items()) views[name] = vj.get<std::string>();
+        if (auto it = data.find("view_check_options"); it != data.end() && it->is_array())
+            for (const auto& n : *it)
+                if (n.is_string() && views.count(n.get<std::string>())) viewCheckOption.insert(n.get<std::string>());
         if (auto it = data.find("triggers"); it != data.end()) triggers = *it;
         if (auto it = data.find("procedures"); it != data.end()) procedures = *it;
+        if (auto it = data.find("functions"); it != data.end() && it->is_object()) functions = *it;
     } catch (const nlohmann::json::exception& e) {
         throw StorageError(path_ + " corrupt hai: " + e.what());
     }
@@ -255,6 +315,15 @@ void Catalog::save() {
     data["views"] = std::move(viewsJson);
     data["triggers"] = triggers;
     data["procedures"] = procedures;
+    if (!functions.empty()) data["functions"] = functions;
+    if (!viewCheckOption.empty()) {  // only written when used, so catalogs without it stay byte-for-byte as before
+        json checks = json::array();
+        for (const auto& [name, text] : views) {
+            (void)text;
+            if (viewCheckOption.count(name)) checks.push_back(name);
+        }
+        data["view_check_options"] = std::move(checks);
+    }
 
     // Never leave a half-written catalog behind: write a temp file, then
     // swap it in (Python: os.replace). Text mode on purpose, so line endings
@@ -340,22 +409,28 @@ void Catalog::remove(const std::string& table) {
     save();
 }
 
-void Catalog::addView(const std::string& name, const std::string& queryText) {
+void Catalog::addView(const std::string& name, const std::string& queryText, bool checkOption) {
     renderJson(json(queryText));
     std::optional<std::string> previous;
     if (auto it = views.find(name); it != views.end()) previous = it->second;
+    const bool hadCheck = viewCheckOption.count(name) > 0;
     views[name] = queryText;
+    if (checkOption) viewCheckOption.insert(name);
+    else viewCheckOption.erase(name);
     try {
         save();
     } catch (...) {
         if (previous) views[name] = std::move(*previous);
         else views.erase(name);
+        if (hadCheck) viewCheckOption.insert(name);
+        else viewCheckOption.erase(name);
         throw;
     }
 }
 
 void Catalog::removeView(const std::string& name) {
     if (views.erase(name) == 0) throw ExecutionError("View '" + name + "' exist nahi karta");
+    viewCheckOption.erase(name);
     save();
 }
 
@@ -403,10 +478,15 @@ std::vector<Catalog::TriggerInfo> Catalog::triggersFor(const std::string& timing
 }
 
 void Catalog::addProcedure(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
-                           const std::string& bodyText) {
+                           const std::string& bodyText, const std::string& created,
+                           const std::vector<std::string>& modes) {
     json entry = json::object();
     json list = json::array();
-    for (const auto& [pname, ptype] : params) list.push_back(json::array({pname, ptype}));
+    for (size_t i = 0; i < params.size(); ++i) {
+        json item = json::array({params[i].first, params[i].second});
+        if (i < modes.size() && modes[i] != "IN") item.push_back(modes[i]);  // [name, type, "OUT"]
+        list.push_back(std::move(item));
+    }
     entry["params"] = std::move(list);
     entry["body_text"] = bodyText;
     renderJson(entry);
@@ -420,6 +500,23 @@ void Catalog::addProcedure(const std::string& name, const std::vector<std::pair<
         else procedures.erase(name);
         throw;
     }
+    if (!created.empty()) procedureCreated_[name] = created;
+    else procedureCreated_.erase(name);
+    saveProcedureMeta();
+}
+
+void Catalog::saveProcedureMeta() const {
+    std::error_code ec;
+    const auto file = pathOf((pathOf(dbDir_) / "procedures.meta.json").u8string());
+    json mj = json::object();
+    for (const auto& [name, when] : procedureCreated_)
+        if (procedures.contains(name)) mj[name] = when;
+    if (mj.empty()) {
+        fs::remove(file, ec);
+        return;
+    }
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (out) out << mj.dump(2) << "\n";
 }
 
 void Catalog::removeProcedure(const std::string& name) {
@@ -432,6 +529,8 @@ void Catalog::removeProcedure(const std::string& name) {
         if (previous) procedures[name] = *previous;  // a failed save leaves memory as it was
         throw;
     }
+    procedureCreated_.erase(name);
+    saveProcedureMeta();
 }
 
 std::optional<Catalog::ProcedureInfo> Catalog::findProcedure(const std::string& name) const {
@@ -439,10 +538,63 @@ std::optional<Catalog::ProcedureInfo> Catalog::findProcedure(const std::string& 
     if (it == procedures.end()) return std::nullopt;
     ProcedureInfo info;
     try {
-        for (const auto& p : it->at("params")) info.params.emplace_back(p.at(0).get<std::string>(), p.at(1).get<std::string>());
+        for (const auto& p : it->at("params")) {
+            info.params.emplace_back(p.at(0).get<std::string>(), p.at(1).get<std::string>());
+            info.modes.push_back(p.size() > 2 ? p.at(2).get<std::string>() : std::string("IN"));
+        }
         info.bodyText = it->at("body_text").get<std::string>();
+        if (auto c = procedureCreated_.find(name); c != procedureCreated_.end()) info.created = c->second;
     } catch (const nlohmann::json::exception&) {
         throw StorageError("catalog.json corrupt hai: procedure '" + name + "' samajh nahi aaya");
+    }
+    return info;
+}
+
+void Catalog::addFunction(const std::string& name, const std::vector<std::pair<std::string, std::string>>& params,
+                          const std::string& returnType, const std::string& bodyText, const std::string& created) {
+    json entry = json::object();
+    json list = json::array();
+    for (const auto& [pname, ptype] : params) list.push_back(json::array({pname, ptype}));
+    entry["params"] = std::move(list);
+    entry["returns"] = returnType;
+    entry["body_text"] = bodyText;
+    entry["created"] = created;
+    renderJson(entry);
+    std::optional<json> previous;
+    if (functions.contains(name)) previous = functions[name];
+    functions[name] = entry;
+    try {
+        save();
+    } catch (...) {
+        if (previous) functions[name] = *previous;
+        else functions.erase(name);
+        throw;
+    }
+}
+
+void Catalog::removeFunction(const std::string& name) {
+    std::optional<json> previous;
+    if (functions.contains(name)) previous = functions[name];
+    functions.erase(name);
+    try {
+        save();
+    } catch (...) {
+        if (previous) functions[name] = *previous;
+        throw;
+    }
+}
+
+std::optional<Catalog::FunctionInfo> Catalog::findFunction(const std::string& name) const {
+    auto it = functions.find(name);
+    if (it == functions.end()) return std::nullopt;
+    FunctionInfo info;
+    try {
+        for (const auto& p : it->at("params")) info.params.emplace_back(p.at(0).get<std::string>(), p.at(1).get<std::string>());
+        info.returnType = it->at("returns").get<std::string>();
+        info.bodyText = it->at("body_text").get<std::string>();
+        info.created = it->value("created", "");
+    } catch (const nlohmann::json::exception&) {
+        throw StorageError("catalog.json corrupt hai: function '" + name + "' samajh nahi aaya");
     }
     return info;
 }

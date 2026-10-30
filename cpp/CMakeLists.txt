@@ -136,6 +136,8 @@ add_library(meradb_core STATIC
   src/tokenizer.cpp
   src/ast_util.cpp
   src/parser.cpp
+  src/parser_proc.cpp
+  src/procedural.cpp
   src/catalog.cpp
   src/storage.cpp
   src/table.cpp
@@ -143,6 +145,7 @@ add_library(meradb_core STATIC
   src/pyvalue.cpp
   src/evaluator.cpp
   src/aggregates.cpp
+  src/scalar_funcs.cpp
   src/engine.cpp
   src/cli_format.cpp
   src/sys_compat.cpp
@@ -197,6 +200,7 @@ if(MERADB_WORKBENCH OR MERADB_GUI)
     src/wb_editor.cpp
     src/wb_tree.cpp
     src/wb_worker.cpp
+    src/wb_querystore.cpp
     src/wb_session.cpp
     src/wb_markdown.cpp
     src/wb_help.cpp

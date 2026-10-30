@@ -39,6 +39,28 @@ struct SubqueryResult {
 };
 using SubqueryResults = std::unordered_map<const ast::Expr*, SubqueryResult>;
 
+// What the evaluator cannot know by itself: the session's @user_variables and the stored functions. The Engine
+// implements it and installs itself (ScopedSessionHost) while a statement runs; with no host, @x is KHALI and every
+// function name that is not built in is unknown.
+class SessionHost {
+public:
+    virtual ~SessionHost() = default;
+    virtual Value userVariable(const std::string& name) = 0;  // name keeps its '@'; KHALI when never set
+    virtual bool hasFunction(const std::string& name) = 0;
+    virtual Value callFunction(const std::string& name, const std::vector<Value>& args) = 0;
+};
+SessionHost* currentSessionHost();
+class ScopedSessionHost {
+public:
+    explicit ScopedSessionHost(SessionHost* host);
+    ~ScopedSessionHost();
+    ScopedSessionHost(const ScopedSessionHost&) = delete;
+    ScopedSessionHost& operator=(const ScopedSessionHost&) = delete;
+
+private:
+    SessionHost* previous_;
+};
+
 Value evaluate(const ast::Expr& expr, const Row& row, const SubqueryResults* subqueries = nullptr);
 
 // Used by JAHAN/JINKA: only exactly SACH counts. KHALI (unknown) does not.

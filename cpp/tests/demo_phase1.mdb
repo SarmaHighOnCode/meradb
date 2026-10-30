@@ -76,7 +76,7 @@ DIKHAO s.naam SE students s
 SAMJHAO DIKHAO naam SE students JAHAN cgpa > (DIKHAO AUSAT(cgpa) SE students);
 
 -- ======================= VIEWS =======================
-BANAO VIEW delhi_students KAHO DIKHAO naam, cgpa SE students JAHAN shehar = 'Delhi';
+BANAO VIEW delhi_students KAHO DIKHAO ALAG naam, cgpa SE students JAHAN shehar = 'Delhi';
 DIKHAO * SE delhi_students KRAM naam;
 DIKHAO VIEWS;
 BATAO delhi_students;

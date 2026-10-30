@@ -403,9 +403,9 @@ TEST_CASE("gui panels: Pichli and Agli walk the history with the keys", "[gui][h
     s.press(ImGuiKey_DownArrow, false, false, true);     // Alt+Down
     CHECK(s.text() == "DIKHAO * SE h;");
     s.press(ImGuiKey_DownArrow, true);                   // Ctrl+Down
-    CHECK(s.text().empty());                             // past the newest entry: empty, like the terminal workbench
+    CHECK(s.text() == "DIKHAO * SE h;");                 // past the newest entry: the text from before the walk comes back
     s.press(ImGuiKey_Z, true);                           // a history step is one undo step
-    CHECK(s.text() == "DIKHAO * SE h;");
+    CHECK(s.text() == "BANAO TABLE h (a ANK);");
 }
 
 TEST_CASE("gui panels: a double click on a table runs its rows, on a column inserts its name", "[gui][headless][panels]") {

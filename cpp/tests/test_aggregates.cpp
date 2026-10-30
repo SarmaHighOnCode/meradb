@@ -48,7 +48,8 @@ TEST_CASE("canonicalName resolves every alias", "[aggregates]") {
 TEST_CASE("canonicalName throws for unknown function name", "[aggregates]") {
     REQUIRE_THROWS_AS(canonicalName(makeCall("NONSENSE", std::make_unique<Star>())), ExecutionError);
     REQUIRE(messageOf([] { canonicalName(makeCall("NONSENSE", std::make_unique<Star>())); }) ==
-            "Function 'NONSENSE' nahi pata. Ye chalte hain: GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM");
+            "Function 'NONSENSE' nahi pata. Ye chalte hain: "
+            "GINO, KUL, AUSAT, NYUNTAM, ADHIKTAM, PEHLA, IFNULL, UPPER, LOWER, LENGTH, CHAR_LENGTH, TRIM, LTRIM, RTRIM, SUBSTRING, SUBSTR, CONCAT, REPLACE, LEFT, RIGHT, ROUND, FLOOR, CEIL, CEILING, ABS, MOD, POWER, POW, SQRT, NOW, CURDATE, CURRENT_DATE, YEAR, MONTH, DAY, DATEDIFF, DATE_FORMAT, NULLIF, CAST");
 }
 
 TEST_CASE("canonicalName rejects X(*) for anything but GINO", "[aggregates]") {

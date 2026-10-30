@@ -299,7 +299,12 @@ inline const Transcript* all(int& count) {
         "",
         "meradb:main> [Execution Galti] Table 'gayab' exist nahi karta\n"
         "\n"
-        "meradb:main> [Parser Galti] 'SE' expected tha, par ';' mila (line 1, col 9)\n"
+        "meradb:main> +---+\n"      // DIKHAO 1; has no SE and now answers (it used to be a parse error)
+        "| 1 |\n"
+        "+---+\n"
+        "| 1 |\n"
+        "+---+\n"
+        "1 row(s)\n"
         "\n"
         "meradb:main>       ...> [Parser Galti] table ka naam expected tha, par 'BANAO' mila (line 2, col 1)\n"
         "\n"

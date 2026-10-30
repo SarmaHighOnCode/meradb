@@ -101,7 +101,7 @@ std::vector<uint8_t> encodeRow(const std::vector<Value>& values, const std::vect
             if (std::holds_alternative<bool>(d)) out.push_back(std::get<bool>(d) ? 1 : 0);
             else if (std::holds_alternative<int64_t>(d)) out.push_back(std::get<int64_t>(d) != 0 ? 1 : 0);
             else wrongValue(type, v);
-        } else if (type == "TEXT") {
+        } else if (type == "TEXT" || type == "DATETIME") {  // DATETIME is canonical text on disk
             if (!std::holds_alternative<std::string>(d)) wrongValue(type, v);
             const std::string& s = std::get<std::string>(d);
             putU32(out, static_cast<uint32_t>(s.size()));
@@ -141,7 +141,7 @@ std::vector<Value> decodeRow(const std::vector<uint8_t>& payload, const std::vec
             need(1);
             values.emplace_back(payload[i] == 1);
             i += 1;
-        } else if (type == "TEXT") {
+        } else if (type == "TEXT" || type == "DATETIME") {
             need(4);
             uint32_t len = getU32(&payload[i]);
             i += 4;

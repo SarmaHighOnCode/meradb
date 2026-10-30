@@ -92,6 +92,17 @@ class CppServer:
             self.proc.kill()
 
 
+# C++ only: a simple one-table view is updatable (DAALO/BADLO/MITAO are rewritten onto its base table), where the
+# Python engine refuses every view. examples/demo.mdb inserts into such a view on purpose; map the C++ answer back.
+KNOWN_CPP_ONLY = [("[Execution Galti] Column 'id' ZAROORI hai, KHALI nahi ho sakta", "[Execution Galti] 'delhi_students' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte")]
+
+
+def known_cpp_only(text: str) -> str:
+    for cpp_wording, python_wording in KNOWN_CPP_ONLY:
+        text = text.replace(cpp_wording, python_wording)
+    return text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("script")
@@ -110,6 +121,7 @@ def main() -> int:
         else:
             cpp_out, _, cpp_code = run([str(args.cli), "run", args.script, "--local", "--data", cpp_dir])
 
+    cpp_out = known_cpp_only(cpp_out)
     label = "via server" if args.via_server else "local"
     # Compare raw text (CRLF already normalised) so trailing-newline differences are not hidden.
     if py_out == cpp_out and py_code == cpp_code:

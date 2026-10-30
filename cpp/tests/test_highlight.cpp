@@ -76,3 +76,15 @@ TEST_CASE("highlight rich styles are the Dracula table of highlight.py", "[highl
     CHECK(richStyle(Kind::ConstantBuiltin).italic);
     CHECK(richStyle(Kind::Function).rgb == 0x50fa7b);
 }
+
+TEST_CASE("highlight knows the scalar functions and the batch-1 words", "[highlight]") {
+    CHECK(render("UPPER(x)") == "0,5,function;5,6,punctuation.bracket;7,8,punctuation.bracket");
+    CHECK(render("upper") == "");  // a function name only counts before a bracket
+    CHECK(render("NOW ()") == "0,3,function;4,5,punctuation.bracket;5,6,punctuation.bracket");
+    CHECK(render("a || b") == "2,4,operator");
+    CHECK(render("OFFSET USING") == "0,6,keyword;7,12,keyword");
+    CHECK(render("EXISTS (") == "0,6,keyword;7,8,punctuation.bracket");
+    CHECK(render("> ANY (") == "0,1,operator;2,5,keyword;6,7,punctuation.bracket");
+    CHECK(render("CAST(x KAHO ANK)") == "0,4,function;4,5,punctuation.bracket;7,11,keyword;12,15,type;15,16,punctuation.bracket");
+    CHECK(render("year = 5") == "5,6,operator;7,8,number");  // a column called year is not a function
+}
