@@ -1,7 +1,7 @@
 // Palantir lab -> ERDPlus. Open https://erdplus.com/trial (or your own diagram), press F12, Console, paste this whole file,
 // Enter, then click the "Restore" button in ERDPlus. It writes the diagram in the same format the "Save" button uses.
-// Unique = primary key (ticked), Optional = may be KHALI/NULL. Relationships are not here: the trial editor has no
-// Relationship tool, so draw the relationships listed in erdplus_relationships.txt by hand.
+// Unique = primary key (ticked), Optional = may be KHALI/NULL. The relationship diamonds (with min/max cardinality) are
+// created too; they are the foreign keys of the lab: parent -> child.
 (() => {
   // [table, x, y, [[column, isPrimaryKey, isOptional], ...]]
   const T = [
@@ -20,10 +20,22 @@
     ['hours_check', 3800, 300, [['emp_id',0,1],['project_id',0,1],['hours',0,1]]],
     ['contract_flat', 3800, 1150, [['contract_id',1,0],['client_id',0,1],['client_name',0,1],['sector',0,1],['product_id',0,1],['value_musd',0,1]]],
   ];
+  // [parent, child, label, parent end is optional?]  -- the child end is always "Optional, Many"
+  const R = [
+    ['departments', 'employees', 'has', 1],
+    ['employees', 'employees', 'manages', 1],
+    ['clients', 'contracts', 'signs', 0],
+    ['products', 'contracts', 'sold in', 0],
+    ['contracts', 'projects', 'delivers', 1],
+    ['employees', 'projects', 'leads', 1],
+    ['employees', 'assignments', 'works as', 0],
+    ['projects', 'assignments', 'staffed by', 0],
+  ];
   const id = () => crypto.randomUUID();
-  const nodes = [], edges = [];
+  const nodes = [], edges = [], ent = {};
   for (const [name, x, y, cols] of T) {
     const eid = id();
+    ent[name] = { id: eid, x, y };
     nodes.push({ id: eid, type: 'Entity', position: { x, y }, data: { label: name, type: 'Regular', isConnectable: false, isSelected: false } });
     cols.forEach(([col, pk, opt], i) => {
       const aid = id(), ang = (2 * Math.PI * i) / cols.length - Math.PI / 2, r = 170 + 14 * cols.length;
@@ -34,6 +46,15 @@
       edges.push({ id: id(), type: 'Attribute', source: eid, target: aid });
     });
   }
+  for (const [p, c, label, opt] of R) {
+    const rid = id(), a = ent[p], b = ent[c];
+    const x = p === c ? a.x + 320 : Math.round((a.x + b.x) / 2), y = p === c ? a.y - 330 : Math.round((a.y + b.y) / 2);
+    nodes.push({ id: rid, type: 'Relationship', position: { x, y }, data: { label, isSelected: false,
+      sourceEntityDetails: { id: a.id, minCardinality: opt ? 'Optional' : 'Mandatory', maxCardinality: 'One' },
+      targetEntityDetails: { id: b.id, minCardinality: 'Optional', maxCardinality: 'Many' } }, measured: { width: 100, height: 50 } });
+    edges.push({ id: `${rid}->${a.id};${a.id}->${b.id}`, type: 'Relationship', source: rid, target: a.id });
+    edges.push({ id: `${rid}->${b.id};${a.id}->${b.id}${p === c ? ':2' : ''}`, type: 'Relationship', source: rid, target: b.id });
+  }
   localStorage.setItem('flow', JSON.stringify({ nodes, edges, viewport: { x: 0, y: 0, zoom: 0.2 } }));
-  console.log(T.length + ' entities written. Now click "Restore" in ERDPlus.');
+  console.log(T.length + ' entities and ' + R.length + ' relationships written. Now click "Restore" in ERDPlus.');
 })();

@@ -1,4 +1,4 @@
-Relationships to draw by hand in ERDPlus (the free trial editor has no Relationship tool).
+The relationships erdplus_import.js draws (listed here for reference; no need to draw them by hand).
 Format: parent  (cardinality)  child   -- foreign key
 
 departments   1 : N  employees     employees.dept_id    -> departments.dept_id   (a department has many employees; an employee may have none)
