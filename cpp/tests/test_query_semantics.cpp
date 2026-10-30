@@ -200,3 +200,13 @@ TEST_CASE("CAST of a too-big text to INT is an error, not the largest INT", "[se
     REQUIRE(q(e, "DIKHAO CAST('9223372036854775807' AS INT), CAST('-9223372036854775808' AS INT), CAST(' 12 ' AS INT);") ==
             "9223372036854775807|-9223372036854775808|12");
 }
+
+TEST_CASE("SIRF and OFFSET bigger than an int do not wrap around", "[semantics][limit]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 4294967297;") == "1;2;3;4;5");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 3000000000;") == "1;2;3;4;5");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 1 OFFSET 4294967297;") == "");
+    REQUIRE(q(e, "DIKHAO id SE t KRAM id SIRF 4294967297, 1;") == "");
+}

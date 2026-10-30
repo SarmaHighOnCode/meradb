@@ -8,6 +8,7 @@
 #include "meradb/scalar_funcs.h"
 #include "meradb/stack_guard.h"
 #include <algorithm>
+#include <limits>
 #include <cctype>
 
 namespace meradb {
@@ -1680,7 +1681,8 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
             const Token& t = peek();
             if (t.type != TokenType::Number || t.isFloat) error(std::string(what) + " ke baad ek whole number expected tha");
             advance();
-            return static_cast<int>(t.intValue);
+            // no result has more rows than an int can count, so a bigger number means the same as the largest int
+            return static_cast<int>(std::min<int64_t>(t.intValue, std::numeric_limits<int>::max()));
         };
         int first = wholeNumber("SIRF");
         if (matchSymbol(",")) {
