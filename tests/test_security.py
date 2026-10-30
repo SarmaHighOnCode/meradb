@@ -234,6 +234,15 @@ class PathTests(ServerCase):
                 catalog.table_path(name)
 
 
+class UsersFileTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_users_file_is_readable_by_its_owner_only(self):
+        directory = tempfile.mkdtemp()
+        users = UserStore(directory)
+        users.create("ravi", "pw")
+        self.assertEqual(os.stat(users.path).st_mode & 0o077, 0)
+
+
 class DeviceNameTests(unittest.TestCase):
     def test_windows_device_names_cannot_be_created(self):
         directory = tempfile.mkdtemp()

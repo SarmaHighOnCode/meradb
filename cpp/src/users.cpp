@@ -189,6 +189,9 @@ void UserStore::saveLocked() {
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
     std::error_code ec;
+    // Password hashes: owner only on POSIX. (On Windows this does not change the ACL: the file inherits the data
+    // folder's, see docs/SERVER.md.)
+    fs::permissions(pathOf(tmp), fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) {
         std::error_code ignored;

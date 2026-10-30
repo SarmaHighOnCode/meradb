@@ -67,6 +67,9 @@ class UserStore:
         with self._save_lock:
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
+                # Password hashes: owner only on POSIX. (On Windows this does not change the ACL: the file inherits the
+                # data folder's, see docs/SERVER.md.)
+                os.chmod(tmp, 0o600)
                 json.dump(self.users, f, indent=2)
             os.replace(tmp, self.path)
 

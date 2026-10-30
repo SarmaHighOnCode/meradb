@@ -266,6 +266,16 @@ TEST_CASE("security passwords in queries never reach the server log", "[security
     CHECK(server.logContains("nothing_here"));
 }
 
+#ifndef _WIN32
+TEST_CASE("security users.json is readable by its owner only", "[security][passwords]") {
+    TempDir dir;
+    UserStore users(dir.str());
+    users.create("ravi", "pw");
+    const auto perms = std::filesystem::status(dir.path() / "users.json").permissions();
+    CHECK((perms & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) == std::filesystem::perms::none);
+}
+#endif
+
 // ---- strangers: a peer that has not logged in must not be able to use the server up ----
 
 namespace {
