@@ -1,5 +1,5 @@
 // Palantir lab -> ERDPlus. Open https://erdplus.com/trial (or your own diagram), press F12, Console, paste this whole file,
-// Enter, then click the "Restore" button in ERDPlus. It writes the diagram in the same format the "Save" button uses.
+// Enter (the script clicks "Restore" for you; if the old diagram is still there, click Restore again). It writes the diagram in the same format the "Save" button uses.
 // Unique = primary key (ticked), Optional = may be KHALI/NULL. The relationship diamonds (with min/max cardinality) are
 // created too; they are the foreign keys of the lab: parent -> child.
 (() => {
@@ -56,5 +56,10 @@
     edges.push({ id: `${rid}->${b.id};${a.id}->${b.id}${p === c ? ':2' : ''}`, type: 'Relationship', source: rid, target: b.id });
   }
   localStorage.setItem('flow', JSON.stringify({ nodes, edges, viewport: { x: 0, y: 0, zoom: 0.2 } }));
-  console.log(T.length + ' entities and ' + R.length + ' relationships written. Now click "Restore" in ERDPlus.');
+  const restore = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Restore');
+  if (restore) restore.click();
+  setTimeout(() => console.log('written: ' + T.length + ' entities, ' + R.length + ' relationships. On screen now: ' +
+    document.querySelectorAll('.react-flow__node-Entity').length + ' entities, ' +
+    document.querySelectorAll('.react-flow__node-Relationship').length + ' relationships' +
+    (restore ? '' : ' (no Restore button found: click it yourself)')), 1500);
 })();
