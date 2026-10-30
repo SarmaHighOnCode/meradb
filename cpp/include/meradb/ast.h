@@ -58,6 +58,7 @@ struct IsNull : Expr {
 struct FuncCall : Expr {
     std::string name;          // aggregate name, upper-case
     std::unique_ptr<Expr> arg; // Star for "*"
+    bool distinct = false;     // GINO(ALAG x): each different value counts once
 };
 
 struct Select;  // forward decl — Subquery wraps a full Select statement

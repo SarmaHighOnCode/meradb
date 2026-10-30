@@ -374,6 +374,13 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             }
             auto fc = std::make_unique<FuncCall>();
             fc->name = upper;
+            // ALAG / DISTINCT. A column may be called distinct: only a value right after it makes it the soft word.
+            const bool softDistinct = isSoftWord(0, "distinct") && (peek(1).type != TokenType::Symbol || peek(1).textValue == "(" || peek(1).textValue == "*");
+            if (softDistinct) advance();
+            if (softDistinct || matchKeyword("ALAG")) {
+                fc->distinct = true;
+                if (checkSymbol("*")) error("ALAG ke baad column chahiye -- " + upper + "(ALAG *) nahi chalta");
+            }
             if (checkSymbol("*")) { advance(); fc->arg = std::make_unique<Star>(); }
             else fc->arg = parseOr();
             expectSymbol(")");

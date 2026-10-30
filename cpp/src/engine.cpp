@@ -2959,6 +2959,7 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
         auto out = std::make_unique<FuncCall>();
         out->name = f->name;
         out->arg = rec(f->arg.get());
+        out->distinct = f->distinct;
         return out;
     }
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {

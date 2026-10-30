@@ -145,6 +145,13 @@ Value computeAggregate(const FuncCall& func, const std::vector<Row>& groupRows) 
         Value v = evaluate(*func.arg, row);
         if (!v.isNull()) values.push_back(std::move(v));
     }
+    if (func.distinct) {  // the first copy of each different value stays
+        std::unordered_set<Value, PyValueHash, PyValueEq> seen;
+        std::vector<Value> different;
+        for (auto& v : values)
+            if (seen.insert(v).second) different.push_back(std::move(v));
+        values = std::move(different);
+    }
 
     if (name == "GINO") return Value(static_cast<int64_t>(values.size()));
     if (values.empty()) return Value();

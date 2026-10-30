@@ -654,7 +654,7 @@ std::string exprLabel(const Expr& expr) {
     if (auto* isn = dynamic_cast<const IsNull*>(&expr))
         return exprLabel(*isn->expr) + " HAI " + (isn->negated ? "NAHI " : "") + "KHALI";
     if (auto* f = dynamic_cast<const FuncCall*>(&expr))
-        return f->name + "(" + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
+        return f->name + "(" + (f->distinct ? "ALAG " : "") + (f->arg ? exprLabel(*f->arg) : std::string()) + ")";
     if (auto* s = dynamic_cast<const Star*>(&expr)) return s->table ? *s->table + ".*" : "*";
     if (auto* co = dynamic_cast<const Coalesce*>(&expr)) {
         std::string out = "PEHLA(";
