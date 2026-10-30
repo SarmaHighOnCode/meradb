@@ -101,3 +101,35 @@ TEST_CASE("SHOW CREATE TABLE keeps every digit of a FLOAT default", "[gaps][show
     REQUIRE_THAT(text, ContainsSubstring("WARNA 0.12345678901234"));
     REQUIRE_THAT(text, ContainsSubstring("WARNA -2.5"));
 }
+
+TEST_CASE("Numbers can be written with an exponent", "[gaps][literal]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO 1e5, 2.5E-1, 1E+2, -1e2;") == "100000.0|0.25|100.0|-100.0");
+    REQUIRE(run(e, "DIKHAO 1e5;").columns[0] == "100000.0");
+    run(e, "BANAO TABLE t (e5 INT, x FLOAT);");
+    run(e, "DAALO MEIN t MAAN (7, 1e2);");
+    REQUIRE(q(e, "DIKHAO e5, x SE t;") == "7|100.0");
+    REQUIRE(q(e, "DIKHAO 2 * x, 1e2 = x SE t;") == "200.0|SACH");
+    // `1e` is not an exponent: the number 1 and then a name, as before
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1e;"), ContainsSubstring("SE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1e999;"), ContainsSubstring("FLOAT"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t SIRF 1e2;"), ContainsSubstring("whole number"));
+}
+
+TEST_CASE("The smallest INT can be written as a literal", "[gaps][literal]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO -9223372036854775808, - 9223372036854775808;") == "-9223372036854775808|-9223372036854775808");
+    REQUIRE(q(e, "DIKHAO -9223372036854775808 + 1;") == "-9223372036854775807");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 9223372036854775808;"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 1 - 9223372036854775808;"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO -(-9223372036854775808);"), ContainsSubstring("8-byte"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO - -9223372036854775808;"), ContainsSubstring("8-byte"));
+    run(e, "BANAO TABLE t (a INT WARNA -9223372036854775808, b INT);");
+    run(e, "DAALO MEIN t (b) MAAN (-9223372036854775808);");
+    REQUIRE(q(e, "DIKHAO a = b SE t;") == "SACH");
+    // a prepared statement sends this value back through the parser
+    run(e, "PREPARE p FROM 'DIKHAO ?';");
+    REQUIRE(q(e, "EXECUTE p USING -9223372036854775808;") == "-9223372036854775808");
+}

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <cctype>
+#include <cmath>
 
 namespace meradb {
 
@@ -253,11 +254,16 @@ std::unique_ptr<Expr> Parser::parseUnary() {
     if (checkSymbol("-")) {
         advance();
         spend();
+        if (peek().type == TokenType::Number && peek().minimumInt) {  // -9223372036854775808: the one INT whose digits alone do not fit
+            advance();
+            return std::make_unique<Literal>(Value(std::numeric_limits<int64_t>::min()));
+        }
         auto operand = parseUnary();
         // Fold unary minus directly on a numeric literal at parse time
         // (matches Python's parser-time fold in _parse_unary).
         if (auto* lit = dynamic_cast<Literal*>(operand.get())) {
-            if (std::holds_alternative<int64_t>(lit->value.data))
+            if (std::holds_alternative<int64_t>(lit->value.data) &&
+                std::get<int64_t>(lit->value.data) != std::numeric_limits<int64_t>::min())  // -(-9223372036854775808) overflows when evaluated
                 return std::make_unique<Literal>(Value(-std::get<int64_t>(lit->value.data)));
             if (std::holds_alternative<double>(lit->value.data))
                 return std::make_unique<Literal>(Value(-std::get<double>(lit->value.data)));
@@ -274,6 +280,8 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     guardStack();
     const Token& t = peek();
     if (t.type == TokenType::Number) {
+        if (t.isFloat && std::isinf(t.doubleValue)) error("Ye number FLOAT ke liye bahut bada hai");
+        if (t.minimumInt) error("Ye number INT ke liye bahut bada hai (8-byte limit)");
         advance();
         return std::make_unique<Literal>(t.isFloat ? Value(t.doubleValue) : Value(t.intValue));
     }
