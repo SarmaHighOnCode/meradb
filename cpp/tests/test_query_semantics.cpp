@@ -68,3 +68,49 @@ TEST_CASE("IN over a large subquery keeps its NULL rules", "[semantics][null]") 
     REQUIRE(q(e, "DIKHAO 5 MEIN (DIKHAO v SE big), 500 MEIN (DIKHAO v SE big), 5.0 MEIN (DIKHAO v SE big), 5 NAHI MEIN (DIKHAO v SE big), 500 NAHI MEIN (DIKHAO v SE big);") ==
             "SACH|KHALI|SACH|JHOOTH|KHALI");
 }
+
+TEST_CASE("An error in a trigger undoes the whole statement, not only SIGNAL", "[semantics][trigger]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (id INT MUKHYA KUNJI, v INT);");
+    run(e, "BANAO TABLE lg (id INT MUKHYA KUNJI);");
+    run(e, "BANAO TRIGGER a1 BAAD DAALO PAR t SHURU DAALO MEIN lg MAAN (NAYA.v); KHATAM;");
+    // the 3rd row's trigger hits a duplicate in lg
+    REQUIRE_THROWS_WITH(e.execute("DAALO MEIN t MAAN (1, 1), (2, 2), (3, 1);"), ContainsSubstring("Duplicate"));
+    REQUIRE(q(e, "DIKHAO GINO(*) SE t;") == "0");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE lg;") == "0");
+
+    run(e, "HATAO TRIGGER a1;");
+    run(e, "DAALO MEIN t MAAN (1, 1), (2, 2);");
+    run(e, "BANAO TRIGGER a2 BAAD BADLO PAR t SHURU DIKHAO 1 / 0; KHATAM;");
+    REQUIRE_THROWS_WITH(e.execute("BADLO t RAKHO v = 50;"), ContainsSubstring("Zero se divide"));
+    REQUIRE(q(e, "DIKHAO v SE t KRAM id;") == "1;2");
+    run(e, "HATAO TRIGGER a2;");
+    run(e, "BANAO TRIGGER a3 PEHLE MITAO PAR t SHURU DAALO MEIN lg MAAN (77); DAALO MEIN lg MAAN (77); KHATAM;");
+    REQUIRE_THROWS_WITH(e.execute("MITAO SE t;"), ContainsSubstring("Duplicate"));
+    REQUIRE(q(e, "DIKHAO GINO(*) SE lg;") == "0");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE t;") == "2");
+}
+
+TEST_CASE("A runaway trigger leaves nothing behind", "[semantics][trigger]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE lg (msg TEXT);");
+    run(e, "BANAO TRIGGER r1 BAAD DAALO PAR lg SHURU DAALO MEIN lg MAAN ('x'); KHATAM;");
+    REQUIRE_THROWS(e.execute("DAALO MEIN lg MAAN ('start');"));
+    REQUIRE(q(e, "DIKHAO GINO(*) SE lg;") == "0");
+}
+
+TEST_CASE("A failed statement inside a transaction undoes only itself", "[semantics][trigger][txn]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (id INT MUKHYA KUNJI, v INT);");
+    run(e, "BANAO TABLE lg (id INT MUKHYA KUNJI);");
+    run(e, "BANAO TRIGGER a1 BAAD DAALO PAR t SHURU DAALO MEIN lg MAAN (NAYA.v); KHATAM;");
+    run(e, "SHURU;");
+    run(e, "DAALO MEIN t MAAN (1, 1);");
+    REQUIRE_THROWS(e.execute("DAALO MEIN t MAAN (2, 1);"));
+    run(e, "PAKKA;");
+    REQUIRE(q(e, "DIKHAO id SE t;") == "1");
+    REQUIRE(q(e, "DIKHAO id SE lg;") == "1");
+}

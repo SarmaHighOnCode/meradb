@@ -1292,8 +1292,9 @@ Result Engine::execReleaseSavepoint(const ast::ReleaseSavepoint& stmt) {
     return messageResult("Savepoint '" + stmt.name + "' hata diya (changes jaise ke taise rahe)");
 }
 
-// A trigger's SIGNAL undoes the whole DAALO / BADLO / MITAO that fired it: the statement runs between two copies of the
-// database folder, and a SignalError puts the copy back. Only the outermost statement does this (a nested one would
+// A statement that fires triggers is all or nothing: ANY error that stops it (a SIGNAL, a duplicate key or a division by
+// zero inside a body, the depth limit...) undoes its rows and whatever the bodies wrote. The statement runs between two
+// copies of the database folder, and the error puts the copy back. Only the outermost statement does this (a nested one would
 // pull the files out from under the statements around it), and only when the database has triggers at all.
 Result Engine::guardSignal(const std::function<Result()>& run) {
     if (bodyDepth_ > 0 || functionDepth_ > 0 || catalog().triggers.empty()) return run();
@@ -1303,14 +1304,11 @@ Result Engine::guardSignal(const std::function<Result()>& run) {
         Result r = run();
         instance_->dropCopy(db, "stmt");
         return r;
-    } catch (const SignalError&) {
+    } catch (...) {
         try {
             instance_->restoreCopy(db, "stmt");
         } catch (const std::exception&) {
         }
-        instance_->dropCopy(db, "stmt");
-        throw;
-    } catch (...) {
         instance_->dropCopy(db, "stmt");
         throw;
     }
