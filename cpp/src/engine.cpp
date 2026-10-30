@@ -3759,7 +3759,7 @@ std::string sqlLiteral(const Value& v) {
     if (isIntValue(v)) return std::to_string(std::get<int64_t>(v.data));
     if (isDateValue(v)) return sqlQuote(std::get<Date>(v.data).isoFormat());
     if (isTextValue(v)) return sqlQuote(std::get<std::string>(v.data));
-    return formatValue(v);
+    return pyReprFloat(std::get<double>(v.data));  // every digit, so the default reads back as the same number
 }
 
 bool isAutoFkName(const std::string& name) {  // <table>_ibfk_<n>

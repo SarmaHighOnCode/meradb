@@ -92,3 +92,12 @@ TEST_CASE("MEIN over a subquery matches a DATE with its text", "[gaps][date]") {
     REQUIRE(q(e, "DIKHAO id SE d JAHAN s MEIN (DIKHAO day SE d) KRAM id;") == "1");
     REQUIRE(q(e, "DIKHAO id SE d JAHAN day NAHI MEIN (DIKHAO '2024-02-29');") == "2");
 }
+
+TEST_CASE("SHOW CREATE TABLE keeps every digit of a FLOAT default", "[gaps][show]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE f (a FLOAT WARNA 0.12345678901234, b FLOAT WARNA -2.5);");
+    const std::string text = formatValue(run(e, "SHOW CREATE TABLE f;").rows[0][1]);
+    REQUIRE_THAT(text, ContainsSubstring("WARNA 0.12345678901234"));
+    REQUIRE_THAT(text, ContainsSubstring("WARNA -2.5"));
+}
