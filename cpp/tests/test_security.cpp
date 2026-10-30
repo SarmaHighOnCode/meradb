@@ -124,6 +124,22 @@ TEST_CASE("security a database name can never leave the data folder", "[security
     CHECK(isSafeFileName("my-db"));
 }
 
+TEST_CASE("security Windows device names cannot be used for new databases and tables", "[security][paths]") {
+    TempDir dir;
+    Engine e(dir.str());
+    runLast(e, "BANAO TABLE ok_table (id INT);");
+    for (const char* name : {"nul", "NUL", "con", "prn", "aux", "com1", "Com9", "lpt1", "LPT9"}) {
+        CAPTURE(name);
+        for (const std::string& sql : {std::string("BANAO DATABASE ") + name + ";", std::string("BANAO TABLE ") + name + " (id INT);",
+                                       std::string("SUDHARO TABLE ok_table NAYA_NAAM ") + name + ";"})
+            CHECK(runLast(e, sql).error.find("reserved") != std::string::npos);
+    }
+    // only the exact names: these are ordinary
+    for (const char* name : {"console", "auxiliary", "com", "com10", "lpt0", "nullable"})
+        CHECK(runLast(e, std::string("BANAO TABLE ") + name + " (id INT);").error.empty());
+    CHECK_FALSE(isReservedDeviceName("com0"));
+}
+
 TEST_CASE("security a table name in catalog.json can never leave the database folder", "[security][paths]") {
     TempDir dir;
     std::filesystem::create_directories(dir.path() / "main");

@@ -37,6 +37,14 @@ def is_safe_file_name(name: str) -> bool:
     return not any(ord(c) < 0x20 or ord(c) == 0x7F or c in '/\\:*?"<>|' for c in name)
 
 
+def is_reserved_device_name(name: str) -> bool:
+    """CON, NUL, COM1, ... are devices on Windows in every folder and with any extension. Refused when something is
+    created, on every platform so that a data folder stays portable. (Not in is_safe_file_name: an old database that
+    already has such a name must still open.)"""
+    upper = name.upper()
+    return upper in ("CON", "PRN", "AUX", "NUL") or (len(upper) == 4 and upper[:3] in ("COM", "LPT") and upper[3] in "123456789")
+
+
 @dataclass
 class Column:
     name: str

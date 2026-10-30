@@ -32,6 +32,17 @@ inline bool isSafeFileName(const std::string& name) {
     return true;
 }
 
+// CON, NUL, COM1, ... are devices on Windows in every folder and with any extension: writing "nul.tbl" stores nothing
+// and reports success. Refused when something is created, on every platform so that a data folder stays portable.
+// (Not in isSafeFileName: an old database that already has such a name must still open.)
+inline bool isReservedDeviceName(const std::string& name) {
+    std::string upper;
+    for (char c : name) upper += static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+    if (upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL") return true;
+    return upper.size() == 4 && (upper.compare(0, 3, "COM") == 0 || upper.compare(0, 3, "LPT") == 0) && upper[3] >= '1' &&
+           upper[3] <= '9';
+}
+
 // os.path.abspath: relative to the working directory, "" and "." mean the working directory itself,
 // "." and ".." parts and doubled separators are folded away and a trailing separator is dropped
 // (except on a root). Returns the input unchanged if the working directory cannot be read.

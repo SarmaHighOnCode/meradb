@@ -1127,6 +1127,7 @@ void Engine::noTransaction(const std::string& command) const {
 
 Result Engine::execCreateDatabase(const ast::CreateDatabase& stmt) {
     noTransaction("BANAO DATABASE");
+    if (isReservedDeviceName(stmt.name)) throw ExecutionError("'" + stmt.name + "' Windows ka reserved naam hai -- koi aur naam chuno");
     fs::path path = pathOf(instance_->dbDir(stmt.name));
     if (fs::is_directory(path)) {
         if (stmt.ifNotExists) return messageResult("Database '" + stmt.name + "' pehle se hai -- kuch nahi badla");
@@ -1493,6 +1494,7 @@ void Engine::checkShartExpr(const Column& col, const TableSchema& schema) const 
 }
 
 Result Engine::execCreateTable(const ast::CreateTable& stmt) {
+    if (isReservedDeviceName(stmt.name)) throw ExecutionError("'" + stmt.name + "' Windows ka reserved naam hai -- koi aur naam chuno");
     Catalog& cat = catalog();
     if (cat.find(stmt.name)) {
         if (stmt.ifNotExists) return messageResult("Table '" + stmt.name + "' pehle se hai -- kuch nahi badla");
@@ -2132,6 +2134,7 @@ Result Engine::execAlterDropForeignKey(const ast::AlterDropForeignKey& stmt) {
 }
 
 Result Engine::execRenameTable(const ast::RenameTable& stmt) {
+    if (isReservedDeviceName(stmt.newName)) throw ExecutionError("'" + stmt.newName + "' Windows ka reserved naam hai -- koi aur naam chuno");
     Catalog& cat = catalog();
     TableSchema schema = cat.get(stmt.table);  // raises if it doesn't exist
     if (stmt.newName == stmt.table) throw ExecutionError("Naya naam purane naam '" + stmt.table + "' jaisa hi hai");

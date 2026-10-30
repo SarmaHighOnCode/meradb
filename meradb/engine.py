@@ -70,7 +70,7 @@ from typing import Optional
 from . import aggregates
 from . import ast_nodes as ast
 from . import planner
-from .catalog import Catalog, Column, TableSchema, is_safe_file_name
+from .catalog import Catalog, Column, TableSchema, is_reserved_device_name, is_safe_file_name
 from .datatypes import coerce, format_value
 from .errors import ExecutionError, MeraDBError
 from .evaluator import (
@@ -449,6 +449,8 @@ class Engine:
     # ------------------------------------------------------------------
     def _exec_CreateDatabase(self, stmt: ast.CreateDatabase) -> Result:
         self._no_transaction("BANAO DATABASE")
+        if is_reserved_device_name(stmt.name):
+            raise ExecutionError(f"'{stmt.name}' Windows ka reserved naam hai -- koi aur naam chuno")
         path = self.instance.db_dir(stmt.name)
         if os.path.isdir(path):
             raise ExecutionError(f"Database '{stmt.name}' pehle se hai")
@@ -758,6 +760,8 @@ class Engine:
         )
 
     def _exec_CreateTable(self, stmt: ast.CreateTable) -> Result:
+        if is_reserved_device_name(stmt.name):
+            raise ExecutionError(f"'{stmt.name}' Windows ka reserved naam hai -- koi aur naam chuno")
         if self.catalog.find(stmt.name):
             raise ExecutionError(f"Table '{stmt.name}' pehle se hai")
         if stmt.name in self.catalog.views:
@@ -1004,6 +1008,8 @@ class Engine:
         return Result(message=f"Column '{stmt.column}' '{schema.name}' se hata diya")
 
     def _exec_RenameTable(self, stmt: ast.RenameTable) -> Result:
+        if is_reserved_device_name(stmt.new_name):
+            raise ExecutionError(f"'{stmt.new_name}' Windows ka reserved naam hai -- koi aur naam chuno")
         schema = self.catalog.get(stmt.table)  # raises if it doesn't exist
         if stmt.new_name == stmt.table:
             raise ExecutionError(f"Naya naam purane naam '{stmt.table}' jaisa hi hai")

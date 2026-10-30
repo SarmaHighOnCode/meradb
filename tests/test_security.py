@@ -234,6 +234,19 @@ class PathTests(ServerCase):
                 catalog.table_path(name)
 
 
+class DeviceNameTests(unittest.TestCase):
+    def test_windows_device_names_cannot_be_created(self):
+        directory = tempfile.mkdtemp()
+        engine = Engine(directory)
+        engine.execute("BANAO TABLE ok_table (id INT);")
+        for name in ["nul", "NUL", "con", "prn", "aux", "com1", "Com9", "lpt1", "LPT9"]:
+            for sql in [f"BANAO DATABASE {name};", f"BANAO TABLE {name} (id INT);", f"SUDHARO TABLE ok_table NAYA_NAAM {name};"]:
+                with self.subTest(sql=sql), self.assertRaises(ExecutionError):
+                    engine.execute(sql)
+        engine.execute("BANAO TABLE console (id INT);")
+        engine.execute("BANAO TABLE com10 (id INT);")
+
+
 class PrivilegeTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
