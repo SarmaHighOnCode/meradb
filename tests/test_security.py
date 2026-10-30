@@ -15,7 +15,7 @@ from meradb.catalog import Catalog
 from meradb.engine import Engine
 from meradb.errors import ExecutionError, StorageError
 from meradb.protocol import MAX_HELLO_BYTES
-from meradb.server import MeraDBServer
+from meradb.server import MeraDBServer, serve
 from meradb.users import PBKDF2_ITERATIONS, PBKDF2_LEGACY_ITERATIONS, UserStore
 
 
@@ -232,6 +232,14 @@ class PathTests(ServerCase):
         for name in ["../../evil", "t:stream", "..", ""]:
             with self.subTest(name=name), self.assertRaises(StorageError):
                 catalog.table_path(name)
+
+
+class NetworkBindTests(unittest.TestCase):
+    def test_no_password_on_a_network_address_is_refused_before_binding(self):
+        directory = tempfile.mkdtemp()
+        os.environ.pop("MERADB_ALLOW_NO_PASSWORD", None)
+        self.assertEqual(serve(directory, host="0.0.0.0", port=0), 1)
+        self.assertFalse(os.path.exists(os.path.join(directory, "meradb.pid")))
 
 
 class UsersFileTests(unittest.TestCase):

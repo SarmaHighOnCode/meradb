@@ -405,6 +405,17 @@ TEST_CASE("security guessing the shared password is locked out too", "[security]
     CHECK_FALSE(attempt("s3cret"));
 }
 
+TEST_CASE("security a server without a password will not open to the network", "[security][server]") {
+    // serve() refuses before binding, so nothing here ever listens on a non-loopback address
+    TempDir dir;
+    ServerOptions options;
+    options.dataDir = dir.str();
+    options.host = "0.0.0.0";
+    options.port = 0;
+    CHECK(serve(options) == 1);
+    CHECK_FALSE(std::filesystem::exists(dir.path() / "meradb.pid"));
+}
+
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 TEST_CASE("security a restricted user cannot shut the server down", "[security][server]") {

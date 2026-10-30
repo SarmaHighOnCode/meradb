@@ -292,6 +292,12 @@ def serve(data_dir: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
         print(f"Is data folder ka server pehle se chal raha hai: {existing['host']}:{existing['port']} "
               f"(pid {existing['pid']})", file=sys.stderr)
         return 1
+    # Without a password a connection is a superuser, so this would open the whole data folder to the network. Refused
+    # before anything is bound.
+    if not password and host not in LOOPBACK and os.environ.get("MERADB_ALLOW_NO_PASSWORD") != "1":
+        print(f"Server start nahi hua: bina password ke network par ({host}) nahi khol sakte -- --password ya "
+              "MERADB_PASSWORD do (sach mein aisa hi chahiye to MERADB_ALLOW_NO_PASSWORD=1 set karo)", file=sys.stderr)
+        return 1
     try:
         server = MeraDBServer(data_dir, host, port, password, verbose)
     except OSError as e:

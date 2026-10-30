@@ -472,6 +472,15 @@ int serve(ServerOptions options) {
         }
     }
 
+    // Without a password a connection is a superuser (see the login code), so this would open the whole data folder to
+    // the network. Refused before anything is bound.
+    if (options.password.empty() && !isLoopback(options.host) && sys::getEnv("MERADB_ALLOW_NO_PASSWORD").value_or("") != "1") {
+        std::cerr << "Server start nahi hua: bina password ke network par (" << options.host
+                  << ") nahi khol sakte -- --password ya MERADB_PASSWORD do "
+                     "(sach mein aisa hi chahiye to MERADB_ALLOW_NO_PASSWORD=1 set karo)\n";
+        return 1;
+    }
+
     std::unique_ptr<Server> server;
     try {
         server = std::make_unique<Server>(options);
