@@ -92,10 +92,18 @@ bool compareNumbers(const std::string& op, const Value& a, const Value& b) {
 
 Value compare(const std::string& op, Value left, Value right) {
     // `JAHAN dob > '2005-01-01'` -- a string compared to a DATE is parsed first.
-    if (std::holds_alternative<Date>(left.data) && isText(right))
-        right = Value(parseDate(std::get<std::string>(right.data)));
-    else if (std::holds_alternative<Date>(right.data) && isText(left))
-        left = Value(parseDate(std::get<std::string>(left.data)));
+    // Text with a time part ('2005-01-01 10:00:00', what NOW() gives): the DATE means midnight of its day.
+    auto dateAgainstText = [](Value& dateSide, Value& textSide) {
+        const std::string& text = std::get<std::string>(textSide.data);
+        if (text.size() > 10) {
+            textSide = Value(parseDateTime(text));
+            dateSide = Value(std::get<Date>(dateSide.data).isoFormat() + " 00:00:00");
+        } else {
+            textSide = Value(parseDate(text));
+        }
+    };
+    if (std::holds_alternative<Date>(left.data) && isText(right)) dateAgainstText(left, right);
+    else if (std::holds_alternative<Date>(right.data) && isText(left)) dateAgainstText(right, left);
     // DATETIME values are 'YYYY-MM-DD HH:MM:SS' text; a date-only 'YYYY-MM-DD' next to one means midnight of that day
     if (isText(left) && isText(right)) {
         std::string& a = std::get<std::string>(left.data);

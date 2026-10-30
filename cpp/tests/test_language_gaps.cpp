@@ -69,3 +69,15 @@ TEST_CASE("CAST and stored functions take decimal text only", "[gaps][cast]") {
     REQUIRE_THROWS(e.execute("DIKHAO samef('0x10');"));
     REQUIRE(q(e, "DIKHAO same('12'), samef('1.5'), samef(2);") == "12|1.5|2.0");
 }
+
+TEST_CASE("A DATE compares with text that has a time", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE d (id INT, day DATE, at DATETIME);");
+    run(e, "DAALO MEIN d MAAN (1, '2024-02-29', '2024-02-29 10:00:00'), (2, '2024-03-01', '2024-02-29 23:00:00');");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day < '2024-02-29 12:00:00' KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN at > day KRAM id;") == "1");
+    REQUIRE(q(e, "DIKHAO GINO(*) SE d JAHAN day < NOW();") == "2");
+    REQUIRE(q(e, "DIKHAO id SE d JAHAN day = '2024-03-01 00:00:00';") == "2");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE d JAHAN day < '2024-02-29 xx';"), ContainsSubstring("valid DATETIME"));
+}
