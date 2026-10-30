@@ -6,6 +6,7 @@
 #include "meradb/wb_session.h"
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 using namespace meradb::wb;
 using wbtest::FakeBackend;
@@ -54,6 +55,20 @@ TEST_CASE("QueryStore skips damaged lines and never throws", "[wb][querystore]")
     CHECK(QueryStore::nowStamp().size() == 19);
 }
 
+TEST_CASE("A query holding a password is not kept on disk", "[wb][querystore]") {
+    TempDir dir;
+    QueryStore store(dir.path.string());
+    store.append("d", {"BANAO USER ravi GUPT 'hunter2';", "t"});
+    store.append("d", {"banao user ravi gupt\n'hunter2';", "t"});
+    store.append("d", {"CREATE USER ravi IDENTIFIED BY 'hunter2';", "t"});
+    store.append("d", {"DIKHAO user SE logins;", "t"});   // a column called user holds no password
+    const auto kept = store.load("d");
+    REQUIRE(kept.size() == 1);
+    CHECK(kept[0].text == "DIKHAO user SE logins;");
+    std::ifstream in(store.fileFor("d"), std::ios::binary);
+    const std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(all.find("hunter2") == std::string::npos);
+}
 TEST_CASE("Session saves every run per database and reloads them", "[wb][querystore]") {
     TempDir dir;
     auto make = [&](ManualPoster& poster, FakeBackend*& fake) {

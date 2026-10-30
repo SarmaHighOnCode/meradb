@@ -1,5 +1,6 @@
 // cpp/src/wb_querystore.cpp -- see include/meradb/wb_querystore.h
 #include "meradb/wb_querystore.h"
+#include <cctype>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <ctime>
@@ -59,8 +60,23 @@ std::vector<SavedQuery> QueryStore::load(const std::string& db) const {
     return out;
 }
 
+// BANAO USER naam GUPT '...' (or a typo of it, or PREPARE's quoted text): the password must not sit in a plain file.
+// USER alone is not enough, a column can be called that.
+static bool holdsPassword(const std::string& text) {
+    std::string word;
+    for (const char c : text + " ") {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        } else {
+            if (word == "GUPT" || word == "IDENTIFIED") return true;
+            word.clear();
+        }
+    }
+    return false;
+}
+
 void QueryStore::append(const std::string& db, const SavedQuery& query) const {
-    if (!enabled()) return;
+    if (!enabled() || holdsPassword(query.text)) return;
     try {
         fs::create_directories(fs::u8path(dataDir_) / ".history");
         nlohmann::json j = {{"q", query.text}, {"t", query.when}};
