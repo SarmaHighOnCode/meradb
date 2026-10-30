@@ -284,9 +284,11 @@ void HeapFile::rewrite(const std::vector<std::vector<uint8_t>>& payloads) {
         out.flush();
         if (!out) throw StorageError(tmp + " mein likh nahi paaye");
     }
+    if (!syncFile(tmp)) throw StorageError(tmp + " disk par pakki nahi hui");
     std::error_code ec;
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " rewrite nahi hua: " + ec.message());
+    syncFolderOf(path_);
 }
 
 void HeapFile::compact() {

@@ -16,6 +16,15 @@
 using namespace meradb;
 using namespace meradb_test;
 
+TEST_CASE("syncFile reports whether the file reached the disk", "[security][durability]") {
+    TempDir dir;
+    const std::string file = dir.str() + "/f.txt";
+    CHECK_FALSE(syncFile(file));
+    { std::ofstream(pathOf(file)) << "x"; }
+    CHECK(syncFile(file));
+    syncFolderOf(file);   // must not throw
+}
+
 namespace {
 
 struct SecFixture {

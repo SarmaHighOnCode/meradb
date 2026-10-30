@@ -43,6 +43,12 @@ inline bool isReservedDeviceName(const std::string& name) {
            upper[3] <= '9';
 }
 
+// Force a written file to the disk, so a rename right after cannot, after a power cut, leave an empty or half-written
+// file in place of the old one. False if it could not be done.
+bool syncFile(const std::string& utf8);
+// Force a rename inside this folder to the disk (POSIX; NTFS journals the rename itself, so it does nothing on Windows).
+void syncFolderOf(const std::string& utf8);
+
 // os.path.abspath: relative to the working directory, "" and "." mean the working directory itself,
 // "." and ".." parts and doubled separators are folded away and a trailing separator is dropped
 // (except on a root). Returns the input unchanged if the working directory cannot be read.

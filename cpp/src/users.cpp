@@ -188,6 +188,7 @@ void UserStore::saveLocked() {
         out.flush();
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
+    if (!syncFile(tmp)) throw StorageError(tmp + " disk par pakki nahi hui");
     std::error_code ec;
     // Password hashes: owner only on POSIX. (On Windows this does not change the ACL: the file inherits the data
     // folder's, see docs/SERVER.md.)
@@ -198,6 +199,7 @@ void UserStore::saveLocked() {
         fs::remove(pathOf(tmp), ignored);  // don't leave a stale .tmp behind
         throw StorageError(path_ + " save nahi hua: " + ec.message());
     }
+    syncFolderOf(path_);
 }
 
 // Runs `change` on the in-memory store, then saves. On ANY failure (a malformed hand-edited
