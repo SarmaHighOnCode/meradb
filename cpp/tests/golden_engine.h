@@ -287,7 +287,7 @@ inline const std::vector<Script>& scripts() {
             {R"MDB(DIKHAO id % 0 SE students;)MDB", R"MDB(C: R: M: E:[Execution Galti] Zero se divide nahi kar sakte)MDB"},
             {R"MDB(DIKHAO naam SE students KRAM naam;)MDB", R"MDB(C:naam R:Aman;Priya;Ravi;Zoya;ravi M:5 row(s) E:)MDB"},
             {R"MDB(DIKHAO naam KAHO n SE students KRAM n;)MDB", R"MDB(C:n R:Aman;Priya;Ravi;Zoya;ravi M:5 row(s) E:)MDB"},
-            {R"MDB(DIKHAO naam KAHO id SE students KRAM id ULTA;)MDB", R"MDB(C:id R:ravi;Zoya;Aman;Priya;Ravi M:5 row(s) E:)MDB"},
+            {R"MDB(DIKHAO naam KAHO id SE students KRAM id ULTA;)MDB", R"MDB(C:id R:ravi;Zoya;Ravi;Priya;Aman M:5 row(s) E:)MDB"},  // C++ only: ORDER BY looks at the output columns first (standard SQL, MySQL); Python sorts by the column
             {R"MDB(DIKHAO * SE courses KRAM title ULTA;)MDB", R"MDB(C:id,title R:20|OS;30|Networks;10|DBMS M:3 row(s) E:)MDB"},
             {R"MDB(DIKHAO id, id SE courses;)MDB", R"MDB(C:id,id R:10|10;20|20;30|30 M:3 row(s) E:)MDB"},
         }},

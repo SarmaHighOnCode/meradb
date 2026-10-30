@@ -124,3 +124,26 @@ TEST_CASE("TAKRAAV PAR BADLO cannot create a duplicate key", "[semantics][upsert
     REQUIRE_THROWS_WITH(e.execute("DAALO MEIN u MAAN (1, 0), (2, 0) TAKRAAV PAR BADLO id = 2;"), ContainsSubstring("Duplicate"));
     REQUIRE(q(e, "DIKHAO id SE u KRAM id;") == "1");
 }
+
+TEST_CASE("JINKA and SAMOOH can name a KAHO alias", "[semantics][group]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    REQUIRE(q(e, "DIKHAO a, GINO(*) KAHO c SE t SAMOOH a JINKA c > 1;") == "10|2");
+    REQUIRE(q(e, "DIKHAO a + 1 KAHO x, GINO(*) SE t SAMOOH x KRAM x;") == "KHALI|1;11|2;21|1;31|1");
+    REQUIRE(q(e, "DIKHAO b, KUL(a) KAHO s SE t SAMOOH b JINKA s > 10 AUR s < 25 KRAM s;") == "x|20;z|20");
+    // a real column keeps winning in SAMOOH and JINKA
+    REQUIRE(q(e, "DIKHAO id KAHO a, GINO(*) KAHO n SE t JAHAN id = 1 SAMOOH id, a JINKA a = 10;") == "1|1");
+    // JAHAN runs before the output list exists, so an alias is still unknown there
+    REQUIRE_THROWS(e.execute("DIKHAO a KAHO x SE t JAHAN x = 10;"));
+}
+
+TEST_CASE("KRAM prefers an output alias over a column of the same name", "[semantics][order]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    // id KAHO a: `a` in KRAM is the output column (the id), not the table's a
+    REQUIRE(q(e, "DIKHAO id KAHO a SE t KRAM a ULTA;") == "5;4;3;2;1");
+    // a qualified name is always the table's column
+    REQUIRE(q(e, "DIKHAO id KAHO a SE t KRAM t.a, id;") == "2;1;4;5;3");
+}

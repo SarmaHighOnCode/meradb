@@ -2989,6 +2989,37 @@ std::unique_ptr<ast::Expr> correlateExpr(const ast::Expr& expr, const Scope& sub
     throw ExecutionError("Unknown expression");
 }
 
+// Replaces the column references `pick` chooses with a copy of the expression it returns. Does not enter subqueries:
+// they have names of their own. Used for KAHO aliases in JINKA.
+void replaceRefs(std::unique_ptr<ast::Expr>& expr, const std::function<const ast::Expr*(const ast::ColumnRef&)>& pick) {
+    using namespace ast;
+    if (!expr) return;
+    requireStack();
+    Expr* node = expr.get();
+    if (auto* ref = dynamic_cast<ColumnRef*>(node)) {
+        if (const Expr* replacement = pick(*ref)) expr = cloneExpr(*replacement);
+    } else if (auto* b = dynamic_cast<BinaryOp*>(node)) {
+        replaceRefs(b->left, pick);
+        replaceRefs(b->right, pick);
+    } else if (auto* u = dynamic_cast<UnaryOp*>(node)) {
+        replaceRefs(u->operand, pick);
+    } else if (auto* isn = dynamic_cast<IsNull*>(node)) {
+        replaceRefs(isn->expr, pick);
+    } else if (auto* co = dynamic_cast<Coalesce*>(node)) {
+        for (auto& e : co->args) replaceRefs(e, pick);
+    } else if (auto* sf = dynamic_cast<ScalarFunc*>(node)) {
+        for (auto& e : sf->args) replaceRefs(e, pick);
+    } else if (auto* cw = dynamic_cast<CaseWhen*>(node)) {
+        for (auto& branch : cw->branches) {
+            replaceRefs(branch.first, pick);
+            replaceRefs(branch.second, pick);
+        }
+        replaceRefs(cw->elseExpr, pick);
+    } else if (auto* in = dynamic_cast<InSubquery*>(node)) {
+        replaceRefs(in->left, pick);
+    }
+}
+
 // Scalar context (Subquery): exactly 1 column, 0 or 1 row. List context
 // (InSubquery): exactly 1 column, any number of rows.
 SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result) {
@@ -3104,10 +3135,9 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
     plan->scope = std::make_unique<Scope>(selectSourcesScope(stmt, &plan->tables));
     const Scope& scope = *plan->scope;
 
-    // KAHO: an output alias becomes the column header, and (only) KRAM may
-    // refer back to it by name -- JAHAN/JINKA do not (standard SQL: they run
-    // before the output list exists). We collect {alias: unbound expr} here so
-    // KRAM can be rewritten to that expr BEFORE binding.
+    // KAHO: an output alias becomes the column header, and KRAM, SAMOOH and JINKA may refer back to it by name -- JAHAN
+    // does not (it runs before the output list exists). We collect {alias: unbound expr} here so they can be rewritten
+    // to that expr BEFORE binding.
     std::unordered_map<std::string, const ast::Expr*> aliasExprs;
 
     // MILAO ... USING (c): an unqualified c means the shared column (see Scope::declareUsing), and an unqualified
@@ -3157,20 +3187,31 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
         }
         return false;
     };
-    // a bare `naam` in KRAM that matches an alias (and isn't a real column)
-    // means the output expression, not a column lookup
-    auto orderExpr = [&](const ast::Expr& e) -> const ast::Expr& {
-        if (auto* ref = dynamic_cast<const ast::ColumnRef*>(&e)) {
-            auto it = aliasExprs.find(ref->name);
-            if (!ref->table.has_value() && it != aliasExprs.end() && !isRealColumn(ref->name)) return *it->second;
-        }
-        return e;
+    // A bare name in KRAM that matches an alias means the output expression, even when a column has that name too
+    // (standard SQL: ORDER BY looks at the output columns first). SAMOOH and JINKA look at the table's columns first and
+    // fall back to an alias, like MySQL.
+    auto aliasOf = [&](const ast::Expr& e, bool columnsFirst) -> const ast::Expr* {
+        auto* ref = dynamic_cast<const ast::ColumnRef*>(&e);
+        if (ref == nullptr || ref->table.has_value()) return nullptr;
+        auto it = aliasExprs.find(ref->name);
+        if (it == aliasExprs.end() || (columnsFirst && isRealColumn(ref->name))) return nullptr;
+        return it->second;
     };
 
     plan->where = bind(stmt.where.get(), scope);
-    for (const auto& g : stmt.groupBy) plan->groupBy.push_back(bind(*g, scope));
-    plan->having = bind(stmt.having.get(), scope);
-    for (const auto& o : stmt.orderBy) plan->orderBy.emplace_back(bind(orderExpr(*o.expr), scope), o.descending);
+    for (const auto& g : stmt.groupBy) {
+        const ast::Expr* alias = aliasOf(*g, true);
+        plan->groupBy.push_back(bind(alias ? *alias : *g, scope));
+    }
+    if (stmt.having) {
+        auto having = cloneExpr(*stmt.having);
+        replaceRefs(having, [&](const ast::ColumnRef& ref) { return aliasOf(ref, true); });
+        plan->having = bind(having.get(), scope);
+    }
+    for (const auto& o : stmt.orderBy) {
+        const ast::Expr* alias = aliasOf(*o.expr, false);
+        plan->orderBy.emplace_back(bind(alias ? *alias : *o.expr, scope), o.descending);
+    }
 
     // every distinct aggregate call, in first-seen order
     std::vector<const ast::Expr*> aggSources;
