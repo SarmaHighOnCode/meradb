@@ -191,16 +191,26 @@ char32_t foldCase(char32_t c) {
 
 // naam JAISA 'R%' -- % = any characters (even none), _ = exactly one
 // character; case-insensitive, whole-string match.
-bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8) {
-    std::u32string text = decodeUtf8(textUtf8), pattern = decodeUtf8(patternUtf8);
+// `escape` (when not 0) makes the character after it stand for itself: '10!%' ESCAPE '!' is the text 10%.
+bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8, char32_t escape = 0) {
+    constexpr char32_t kAny = 0x110000, kOne = 0x110001;  // past the last Unicode character, so no text can hold them
+    std::u32string text = decodeUtf8(textUtf8), written = decodeUtf8(patternUtf8), pattern;
     for (auto& c : text) c = foldCase(c);
-    for (auto& c : pattern) c = foldCase(c);
+    for (size_t i = 0; i < written.size(); ++i) {
+        const char32_t c = written[i];
+        if (escape != 0 && c == escape) {
+            if (++i == written.size()) throw ExecutionError("JAISA pattern ESCAPE character par khatam nahi ho sakta");
+            pattern += foldCase(written[i]);
+        } else {
+            pattern += c == U'%' ? kAny : c == U'_' ? kOne : foldCase(c);
+        }
+    }
     size_t t = 0, p = 0, starP = std::u32string::npos, starT = 0;
     while (t < text.size()) {
-        if (p < pattern.size() && pattern[p] == U'%') {
+        if (p < pattern.size() && pattern[p] == kAny) {
             starP = p++;
             starT = t;
-        } else if (p < pattern.size() && (pattern[p] == U'_' || pattern[p] == text[t])) {
+        } else if (p < pattern.size() && (pattern[p] == kOne || pattern[p] == text[t])) {
             ++p;
             ++t;
         } else if (starP != std::u32string::npos) {
@@ -210,13 +220,19 @@ bool likeMatch(const std::string& textUtf8, const std::string& patternUtf8) {
             return false;
         }
     }
-    while (p < pattern.size() && pattern[p] == U'%') ++p;
+    while (p < pattern.size() && pattern[p] == kAny) ++p;
     return p == pattern.size();
 }
 
-Value like(const Value& text, const Value& pattern) {
+Value like(const Value& text, const Value& pattern, const Value* escape = nullptr) {
     if (!isText(text) || !isText(pattern)) throw ExecutionError("JAISA sirf TEXT ke saath chalta hai");
-    return Value(likeMatch(std::get<std::string>(text.data), std::get<std::string>(pattern.data)));
+    char32_t escapeChar = 0;
+    if (escape != nullptr) {
+        const std::u32string written = isText(*escape) ? decodeUtf8(std::get<std::string>(escape->data)) : std::u32string();
+        if (written.size() != 1) throw ExecutionError("ESCAPE ko bilkul ek character chahiye");
+        escapeChar = written[0];
+    }
+    return Value(likeMatch(std::get<std::string>(text.data), std::get<std::string>(pattern.data), escapeChar));
 }
 
 // ----------------------------------------------------------- arithmetic ----
@@ -563,6 +579,11 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
             return host->callFunction(sf->name, args);
         }
         if (sf->name == "CAST") return castValue(args.at(0), sf->castType);
+        if (sf->name == "JAISA") {  // x JAISA pattern ESCAPE c
+            for (const auto& a : args)
+                if (a.isNull()) return Value();
+            return like(args[0], args[1], &args[2]);
+        }
         if (sf->name == "MOD") {
             if (args[0].isNull() || args[1].isNull()) return Value();
             // MySQL's MOD: the sign follows the dividend (MOD(-7, 3) = -1). The % operator keeps the engine's own rule

@@ -220,3 +220,33 @@ TEST_CASE("A column is only as grouped as what SAMOOH named", "[gaps][group]") {
     REQUIRE(q(e, "DIKHAO a + 1 KAHO x, GINO(*) SE t SAMOOH x KRAM x;") == "2|2;4|1");
     REQUIRE(q(e, "DIKHAO AGAR a > 1 TAB 'big' WARNA 'small' KHATAM, GINO(*) SE t SAMOOH a KRAM 1;") == "big|1;small|2");
 }
+
+TEST_CASE("Comparisons chain to the left", "[gaps][grammar]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO 1 < 2 = SACH, 2 < 1 = SACH, 1 = 1 = SACH, 1 < 2 != JHOOTH;") == "SACH|JHOOTH|SACH|SACH");
+    REQUIRE(q(e, "DIKHAO 1 HAI KHALI = JHOOTH, 'a' JAISA 'a' = SACH, 2 BEECH 1 AUR 3 = SACH;") == "SACH|SACH|SACH");
+    REQUIRE_THROWS(e.execute("DIKHAO 1 < 2 < 3;"));  // SACH < 3: a BOOL is not a number here
+}
+
+TEST_CASE("JAISA can name an escape character", "[gaps][like]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (s TEXT);");
+    run(e, "DAALO MEIN t MAAN ('10%'), ('100'), ('a_b'), ('axb'), ('x!'), (KHALI);");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA '10!%' ESCAPE '!';") == "10%");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'a!_b' ESCAPE '!';") == "a_b");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'x!!' ESCAPE '!';") == "x!");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'A!_%' ESCAPE '!';") == "a_b");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s NAHI JAISA '1%' ESCAPE '!' KRAM s;") == "a_b;axb;x!");
+    REQUIRE(q(e, "DIKHAO s SE t JAHAN s JAISA 'a#_b' escape '#';") == "a_b");
+    REQUIRE(q(e, "DIKHAO KHALI JAISA 'a' ESCAPE '!', 'a' JAISA KHALI ESCAPE '!', 'a' JAISA 'a' ESCAPE KHALI;") == "KHALI|KHALI|KHALI");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a' ESCAPE '!!';"), ContainsSubstring("ESCAPE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a' ESCAPE '';"), ContainsSubstring("ESCAPE"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO 'a' JAISA 'a!' ESCAPE '!';"), ContainsSubstring("ESCAPE"));
+    REQUIRE(run(e, "DIKHAO s JAISA 'a!_' ESCAPE '!' SE t;").columns[0] == "s JAISA 'a!_' ESCAPE '!'");
+    // not a word in the plain form: a column can still be called escape
+    run(e, "BANAO TABLE u (escape TEXT);");
+    run(e, "DAALO MEIN u MAAN ('a');");
+    REQUIRE(q(e, "DIKHAO escape SE u JAHAN escape JAISA 'a';") == "a");
+}

@@ -123,7 +123,16 @@ std::unique_ptr<Expr> Parser::parseNot() {
 
 std::unique_ptr<Expr> Parser::parseComparison() {
     auto left = parseAdditive();
+    // Comparison operators chain to the left: 1 < 2 = SACH reads (1 < 2) = SACH
+    while (auto next = parseComparisonStep(left)) {
+        left = std::move(next);
+        spend();
+    }
+    return left;
+}
 
+// One comparison with `left` on its left side, or nullptr (`left` untouched) when none follows.
+std::unique_ptr<Expr> Parser::parseComparisonStep(std::unique_ptr<Expr>& left) {
     // x HAI KHALI  /  x HAI NAHI KHALI
     if (matchKeyword("HAI")) {
         bool negated = matchKeyword("NAHI");
@@ -168,7 +177,7 @@ std::unique_ptr<Expr> Parser::parseComparison() {
                 advance();
                 spend();
                 auto sub = std::make_unique<Subquery>();
-                sub->statement = parseSelectBody();
+                sub->statement = parseSubqueryBody();
                 expectSymbol(")");
                 auto quantified = std::make_unique<InSubquery>();
                 quantified->left = std::move(left);
@@ -180,12 +189,22 @@ std::unique_ptr<Expr> Parser::parseComparison() {
             return std::make_unique<BinaryOp>(op, std::move(left), parseAdditive());
         }
     }
-    return left;
+    return nullptr;
 }
 
 std::unique_ptr<Expr> Parser::parsePatternRangeOrList(std::unique_ptr<Expr>& left) {
     if (matchKeyword("JAISA")) {
-        return std::make_unique<BinaryOp>("JAISA", std::move(left), parseAdditive());
+        auto pattern = parseAdditive();
+        if (isSoftWord(0, "escape")) {  // x JAISA '10!%' ESCAPE '!'
+            advance();
+            auto withEscape = std::make_unique<ScalarFunc>();
+            withEscape->name = "JAISA";
+            withEscape->args.push_back(std::move(left));
+            withEscape->args.push_back(std::move(pattern));
+            withEscape->args.push_back(parseAdditive());
+            return withEscape;
+        }
+        return std::make_unique<BinaryOp>("JAISA", std::move(left), std::move(pattern));
     }
     if (matchKeyword("BEECH")) {
         auto lo = parseAdditive();  // additive stops before AUR, so this is safe

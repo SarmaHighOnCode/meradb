@@ -58,6 +58,7 @@ private:
     std::unique_ptr<ast::Expr> parseAnd();
     std::unique_ptr<ast::Expr> parseNot();
     std::unique_ptr<ast::Expr> parseComparison();
+    std::unique_ptr<ast::Expr> parseComparisonStep(std::unique_ptr<ast::Expr>& left);
     // Handles JAISA/BEECH/MEIN. Only consumes (moves out of) `left` when one
     // of those keywords actually matches; returns nullptr and leaves `left`
     // untouched otherwise, so the caller can fall through to plain
