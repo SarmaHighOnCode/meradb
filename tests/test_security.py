@@ -75,5 +75,35 @@ class PathTests(ServerCase):
                 catalog.table_path(name)
 
 
+class RestrictedRequestTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.server.instance.users.create("ravi", "pw")
+        self.admin = self.client()
+        self.assertTrue(self.admin.request(type="hello").get("ok"))
+        self.ravi = self.client()
+        self.assertTrue(self.ravi.request(type="hello", user="ravi", password="pw").get("ok"))
+
+    def test_restricted_user_cannot_shut_the_server_down(self):
+        self.assertFalse(self.ravi.request(type="shutdown").get("ok"))
+        self.assertTrue(self.ravi.request(type="ping").get("ok"))
+
+    def test_restricted_user_does_not_get_status_details(self):
+        reply = self.ravi.request(type="status")
+        self.assertTrue(reply.get("ok"))
+        for key in ["data_dir", "databases", "pid", "sessions", "started"]:
+            self.assertNotIn(key, reply)
+        self.assertIn("databases", self.admin.request(type="status"))
+
+    def test_schema_shows_a_restricted_user_only_what_it_was_granted(self):
+        self.admin.request(type="query", text="BANAO TABLE topsecret (salary INT); BANAO TABLE mine (id INT);"
+                                              "ADHIKAR DO DAALO PAR mine KO ravi; BANAO DATABASE otherdb;")
+        tree = json.dumps(self.ravi.request(type="schema"))
+        self.assertIn("mine", tree)
+        for hidden in ["topsecret", "salary", "otherdb"]:
+            self.assertNotIn(hidden, tree)
+        self.assertIn("topsecret", json.dumps(self.admin.request(type="schema")))
+
+
 if __name__ == "__main__":
     unittest.main()

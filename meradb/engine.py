@@ -88,7 +88,7 @@ from .planner import Scope, bind, natural_join_condition
 from .protocol import default_data_dir, running_server
 from .storage import HeapFile, encode_row
 from .table import MaterializedTable, Table
-from .users import UserStore
+from .users import ALL_PRIVILEGES, UserStore
 
 DEFAULT_DATABASE = "main"
 SNAPSHOT_DIR = ".wapas"  # where transactions keep their "before" copy
@@ -374,17 +374,24 @@ class Engine:
     def schema_tree(self) -> list[dict]:
         """Every database -> table -> column, as plain dicts (sent as JSON by the server)."""
         with self._locked(timeout=2.0):
-            return [
-                {
+            tree = []
+            for db in self.instance.databases():
+                catalog = self.instance.catalog(db)
+                # a restricted user sees only what a grant lets it name
+                names = [n for n in sorted(catalog.tables) if self.user is None or self._holds_any_privilege(db, n)]
+                if self.user is not None and not names and db != self.current_db:
+                    continue
+                tree.append({
                     "name": db,
                     "current": db == self.current_db,
                     "tables": [
-                        {"name": t.name, "columns": [c.to_dict() for c in t.columns]}
-                        for t in (self.instance.catalog(db).tables[n] for n in sorted(self.instance.catalog(db).tables))
+                        {"name": n, "columns": [c.to_dict() for c in catalog.tables[n].columns]} for n in names
                     ],
-                }
-                for db in self.instance.databases()
-            ]
+                })
+            return tree
+
+    def _holds_any_privilege(self, db: str, table: str) -> bool:
+        return any(self.instance.users.has_privilege(self.user, db, table, p) for p in ALL_PRIVILEGES)
 
     def close(self) -> None:
         """End the session. An unfinished transaction is rolled back (standard database behaviour)."""

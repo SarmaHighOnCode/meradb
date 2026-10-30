@@ -142,3 +142,69 @@ TEST_CASE("security the hello message cannot choose a database outside the data 
     std::error_code ignored;
     std::filesystem::remove_all(outside, ignored);
 }
+
+// ---- requests that are not statements: nothing in checkPrivileges looks at them ----
+
+namespace {
+protocol::Json requestOf(const char* type) {
+    protocol::Json message = protocol::Json::object();
+    message["type"] = type;
+    return message;
+}
+}  // namespace
+
+TEST_CASE("security a restricted user cannot shut the server down", "[security][server]") {
+    RunningServer server;
+    server.instance().users().create("ravi", "pw");
+    RawClient ravi(server.port());
+    REQUIRE(ravi.hello("pw", nullptr, "ravi").value("ok", false));
+    CHECK_FALSE(ravi.request(requestOf("shutdown")).value("ok", true));
+    sleepMs(300);
+    CHECK_FALSE(server.stopped());
+    RawClient admin(server.port());  // the superuser session `meradb stop` uses still can
+    REQUIRE(admin.hello().value("ok", false));
+    CHECK(admin.request(requestOf("shutdown")).value("ok", false));
+    CHECK(waitFor([&] { return server.stopped(); }));
+}
+
+TEST_CASE("security a restricted user does not get the server's status details", "[security][server]") {
+    RunningServer server;
+    server.instance().users().create("ravi", "pw");
+    RawClient ravi(server.port());
+    REQUIRE(ravi.hello("pw", nullptr, "ravi").value("ok", false));
+    auto reply = ravi.request(requestOf("status"));
+    CHECK(reply.value("ok", false));
+    for (const char* key : {"data_dir", "databases", "pid", "sessions", "started"}) CHECK_FALSE(reply.contains(key));
+    RawClient admin(server.port());
+    REQUIRE(admin.hello().value("ok", false));
+    CHECK(admin.request(requestOf("status")).contains("databases"));
+}
+
+TEST_CASE("security the schema request shows a restricted user only what it was granted", "[security][server]") {
+    RunningServer server;
+    server.instance().users().create("ravi", "pw");
+    RawClient admin(server.port());
+    REQUIRE(admin.hello().value("ok", false));
+    admin.query("BANAO TABLE topsecret (salary INT);"
+                "BANAO TABLE mine (id INT, note TEXT);"
+                "BANAO TABLE partly (id INT, hiddencol INT);"
+                "ADHIKAR DO DAALO PAR mine KO ravi;"
+                "ADHIKAR DO DIKHAO (id) PAR partly KO ravi;"
+                "BANAO DATABASE otherdb;"
+                "ISTEMAL otherdb;"
+                "BANAO TABLE elsewhere (a INT);");
+    RawClient ravi(server.port());
+    REQUIRE(ravi.hello("pw", nullptr, "ravi").value("ok", false));
+    const std::string tree = ravi.request(requestOf("schema")).dump();
+    for (const char* hidden : {"topsecret", "salary", "otherdb", "elsewhere", "hiddencol"}) {
+        INFO(hidden);
+        CHECK(tree.find(hidden) == std::string::npos);
+    }
+    for (const char* shown : {"mine", "note", "partly"}) {
+        INFO(shown);
+        CHECK(tree.find(shown) != std::string::npos);
+    }
+    const std::string full = admin.request(requestOf("schema")).dump();
+    CHECK(full.find("topsecret") != std::string::npos);
+    CHECK(full.find("otherdb") != std::string::npos);
+}

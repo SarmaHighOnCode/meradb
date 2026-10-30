@@ -342,6 +342,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "status") {
         Json reply = success();
         reply["server"] = protocol::kServerName;
+        if (session.user) return reply;  // the folder, the pid and every database name are for a superuser
         reply["pid"] = static_cast<std::int64_t>(sys::processId());
         reply["data_dir"] = instance_->dataDir();
         reply["started"] = started_;
@@ -355,6 +356,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "ping") return success();
 
     if (type == "shutdown") {
+        if (session.user) return failure("Shutdown sirf superuser (bina username connect kiya session) kar sakta hai");
         if (!isLoopback(peerIp))
             return failure("Shutdown sirf usi computer se ho sakta hai jahan server chal raha hai");
         log(peer + "  shutdown requested");

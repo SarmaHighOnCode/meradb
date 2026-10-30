@@ -174,6 +174,8 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 return {"ok": False, "error": e.message}, False  # see note above: schema_tree() also wraps in ConnectionFailed
 
         if kind == "status":
+            if session.user is not None:  # the folder, the pid and every database name are for a superuser
+                return {"ok": True, "server": f"MeraDB {__version__}"}, False
             return {
                 "ok": True,
                 "server": f"MeraDB {__version__}",
@@ -188,6 +190,8 @@ class ClientHandler(socketserver.StreamRequestHandler):
             return {"ok": True}, False
 
         if kind == "shutdown":
+            if session.user is not None:
+                return {"ok": False, "error": "Shutdown sirf superuser (bina username connect kiya session) kar sakta hai"}, False
             if self.client_address[0] not in LOOPBACK:
                 return {"ok": False, "error": "Shutdown sirf usi computer se ho sakta hai jahan server chal raha hai"}, False
             server.log(f"{peer}  shutdown requested")

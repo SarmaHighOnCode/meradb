@@ -472,6 +472,10 @@ std::unique_lock<std::recursive_timed_mutex> Engine::acquireLock(double timeoutS
 nlohmann::ordered_json Engine::schemaTree() {
     using nlohmann::ordered_json;
     auto guard = acquireLock(2.0);
+    if (user && !rolesInit_) {  // the same start as executeStatement: this may be the session's first request
+        rolesInit_ = true;
+        if (auto defaults = instance_->users().defaultRoles(*user)) activeRoles = std::set<std::string>(defaults->begin(), defaults->end());
+    }
     ordered_json tree = ordered_json::array();
     for (const auto& db : instance_->databases()) {
         Catalog& cat = instance_->catalog(db);
@@ -480,13 +484,26 @@ nlohmann::ordered_json Engine::schemaTree() {
         std::sort(names.begin(), names.end());  // Python: sorted(catalog.tables)
         ordered_json tables = ordered_json::array();
         for (const auto& name : names) {
+            // A restricted user sees only what a grant lets it name: the tables it holds a privilege on, and on a
+            // column-limited table only those columns.
+            Access held;
+            if (user) {
+                for (const auto& privilege : allPrivileges()) {
+                    Access one = instance_->users().access(*user, activeRoles, db, name, privilege);
+                    held.full = held.full || one.full;
+                    held.columns.insert(one.columns.begin(), one.columns.end());
+                }
+                if (!held.any()) continue;
+            }
             ordered_json columns = ordered_json::array();
-            for (const auto& col : cat.tables.at(name).columns) columns.push_back(col.toJson());
+            for (const auto& col : cat.tables.at(name).columns)
+                if (!user || held.covers(col.name)) columns.push_back(col.toJson());
             ordered_json table = ordered_json::object();
             table["name"] = name;
             table["columns"] = std::move(columns);
             tables.push_back(std::move(table));
         }
+        if (user && tables.empty() && db != currentDb) continue;  // not even the name of a database it has nothing in
         ordered_json entry = ordered_json::object();
         entry["name"] = db;
         entry["current"] = (db == currentDb);
