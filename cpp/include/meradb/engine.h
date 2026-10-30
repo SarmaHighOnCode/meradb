@@ -204,7 +204,7 @@ private:
     static bool startsTransaction(const ast::Statement& stmt);
     static bool isReadOnlyStatement(const ast::Statement& stmt);
     // Runs a DAALO / BADLO / MITAO; if a trigger raises SIGNAL the whole statement is undone.
-    Result guardSignal(const std::function<Result()>& run);
+    Result guardSignal(const std::string& table, const std::function<Result()>& run);
 
     // ---- session variables and prepared statements ----
     std::unordered_map<std::string, Value> userVars_;        // "@name" -> value

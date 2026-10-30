@@ -434,9 +434,9 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const CreateFunction*>(&stmt)) return execCreateFunction(*s);
     if (auto* s = dynamic_cast<const DropFunction*>(&stmt)) return execDropFunction(*s);
     if (auto* s = dynamic_cast<const ShowFunctions*>(&stmt)) return execShowFunctions(*s);
-    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return guardSignal([&] { return execInsert(*s); });
-    if (auto* s = dynamic_cast<const Update*>(&stmt)) return guardSignal([&] { return execUpdate(*s); });
-    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return guardSignal([&] { return execDelete(*s); });
+    if (auto* s = dynamic_cast<const Insert*>(&stmt)) return guardSignal(s->table, [&] { return execInsert(*s); });
+    if (auto* s = dynamic_cast<const Update*>(&stmt)) return guardSignal(s->table, [&] { return execUpdate(*s); });
+    if (auto* s = dynamic_cast<const Delete*>(&stmt)) return guardSignal(s->table, [&] { return execDelete(*s); });
     if (auto* s = dynamic_cast<const Select*>(&stmt)) return execSelect(*s);
     if (auto* s = dynamic_cast<const SetOp*>(&stmt)) return execSetOp(*s);
     if (auto* s = dynamic_cast<const CreateView*>(&stmt)) return execCreateView(*s);
@@ -1308,9 +1308,17 @@ Result Engine::execReleaseSavepoint(const ast::ReleaseSavepoint& stmt) {
 // A statement that fires triggers is all or nothing: ANY error that stops it (a SIGNAL, a duplicate key or a division by
 // zero inside a body, the depth limit...) undoes its rows and whatever the bodies wrote. The statement runs between two
 // copies of the database folder, and the error puts the copy back. Only the outermost statement does this (a nested one would
-// pull the files out from under the statements around it), and only when the database has triggers at all.
-Result Engine::guardSignal(const std::function<Result()>& run) {
-    if (bodyDepth_ > 0 || functionDepth_ > 0 || catalog().triggers.empty()) return run();
+// pull the files out from under the statements around it), and only when this statement can fire one: a trigger on its
+// table (FK cascades fire none). A view stands for a base table not known here, and a stored function called by the
+// statement may write anywhere, so with either of those any trigger in the database counts.
+Result Engine::guardSignal(const std::string& table, const std::function<Result()>& run) {
+    if (bodyDepth_ > 0 || functionDepth_ > 0) return run();
+    Catalog& cat = catalog();
+    const bool anyTriggerCounts = cat.find(table) == nullptr || !cat.functions.empty();
+    bool mayFire = false;
+    for (auto it = cat.triggers.begin(); it != cat.triggers.end() && !mayFire; ++it)
+        mayFire = anyTriggerCounts || it.value().value("table", "") == table;
+    if (!mayFire) return run();
     const std::string db = currentDb;
     instance_->takeCopy(db, "stmt");
     try {
