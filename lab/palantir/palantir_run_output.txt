@@ -1,0 +1,1611 @@
+Database 'palantir' ban gaya
+
+Ab database 'palantir' istemal ho raha hai
+
+Table 'departments' ban gaya (4 columns)
+
+Table 'employees' ban gaya (9 columns)
+
+Table 'products' ban gaya (4 columns)
+
+Table 'clients' ban gaya (4 columns)
+
+Table 'contracts' ban gaya (7 columns)
+
+Table 'projects' ban gaya (5 columns)
+
+Table 'assignments' ban gaya (4 columns)
+
+Table 'salary_grades' ban gaya (3 columns)
+
++---------------+
+| table         |
++---------------+
+| assignments   |
+| clients       |
+| contracts     |
+| departments   |
+| employees     |
+| products      |
+| projects      |
+| salary_grades |
++---------------+
+8 table(s) in 'palantir'
+
++------------+----------+----------------------------------------------------------------------+
+| column     | type     | constraints                                                          |
++------------+----------+----------------------------------------------------------------------+
+| emp_id     | INT      | MUKHYA KUNJI                                                         |
+| emp_name   | TEXT(40) | ZAROORI                                                              |
+| email      | TEXT(60) | ANOKHA                                                               |
+| job_title  | TEXT(40) |                                                                      |
+| dept_id    | INT      | SANDARBH departments(dept_id)                                        |
+| manager_id | INT      | SANDARBH employees(emp_id)                                           |
+| salary_k   | FLOAT    | SHART (salary_k > 0)                                                 |
+| hire_date  | DATE     |                                                                      |
+| clearance  | TEXT(10) | WARNA 'NONE' SHART (clearance MEIN ('NONE', 'SECRET', 'TOP SECRET')) |
++------------+----------+----------------------------------------------------------------------+
+Table 'employees'
+
+Column 'phone' 'employees' mein jod diya
+
+Column 'office' 'employees' mein jod diya
+
+Column 'phone' ka naam ab 'mobile' hai
+
+Column 'mobile' 'employees' se hata diya
+
+Table 'temp_notes' ban gaya (2 columns)
+
+2 row(s) daal di
+
+Table 'temp_notes' ka naam ab 'meeting_notes' hai
+
+Table 'meeting_notes' saaf -- 2 row(s) hataye
+
++---------+
+| GINO(*) |
++---------+
+| 0       |
++---------+
+1 row(s)
+
+Table 'meeting_notes' hata diya
+
+5 row(s) daal di
+
+1 row(s) daal di
+
+1 row(s) daal di
+
+4 row(s) daal di
+
+5 row(s) daal di
+
+1 row(s) daal di
+
+1 row(s) daal di
+
+4 row(s) daal di
+
+6 row(s) daal di
+
+8 row(s) daal di
+
+6 row(s) daal di
+
+13 row(s) daal di
+
+4 row(s) daal di
+
+[Execution Galti] Duplicate value 101 column 'emp_id' mein -- is column mein har value alag honi chahiye
+
+[Execution Galti] Column 'emp_name' ZAROORI hai, KHALI nahi ho sakta
+
+[Execution Galti] Duplicate value 'ananya.rao@pltr.example' column 'email' mein -- is column mein har value alag honi chahiye
+
+[Execution Galti] Column 'dept_id': value 99 table 'departments' ke column 'dept_id' mein nahi mila (SANDARBH)
+
+[Execution Galti] SHART toot gayi: (salary_k > 0) -- column 'salary_k'
+
+[Execution Galti] SHART toot gayi: (clearance MEIN ('NONE', 'SECRET', 'TOP SECRET')) -- column 'clearance'
+
+[Execution Galti] SHART toot gayi: (end_date >= start_date) -- column 'end_date'
+
+[Execution Galti] Duplicate value (201, 2) columns ['client_id', 'product_id'] mein -- ye combination alag hona chahiye
+
+[Execution Galti] Duplicate value (107, 401) columns ['emp_id', 'project_id'] mein -- ye combination alag hona chahiye
+
+[Execution Galti] Table 'departments' mein ye value(s) hata/badal nahi sakte -- table 'employees' ka column 'dept_id' (SANDARBH departments.dept_id) abhi bhi inhe use karta hai
+
+Table 'projects' mein ANOKHA (project_name, contract_id) jod diya
+
+Table 'contracts_archive' ban gaya (5 columns)
+
+Table 'active_pipeline' ban gaya (3 columns)
+
+3 row(s) daal di
+
+5 row(s) daal di
+
+Table 'client_updates' ban gaya (4 columns)
+
+2 row(s) daal di
+
+1 row(s) daali, 1 row(s) TAKRAAV par badli
+
++-----------+------------------+---------------------+-----------+
+| client_id | client_name      | sector              | country   |
++-----------+------------------+---------------------+-----------+
+| 201       | Aurora Airlines  | Aviation            | USA       |
+| 202       | Northwind Health | Healthcare          | UK        |
+| 203       | Helix Energy     | Energy              | Germany   |
+| 204       | Orion Bank       | Banking and Finance | India     |
+| 205       | Vega Motors      | Automotive          | Japan     |
+| 206       | Lotus Retail     | Retail              | India     |
+| 207       | Kestrel Shipping | Logistics           | Singapore |
++-----------+------------------+---------------------+-----------+
+7 row(s)
+
+1 row(s) badal di
+
+6 row(s) badal di
+
+1 row(s) badal di
+
+2 row(s) badal di
+
+1 row(s) daal di
+
+1 row(s) mita di
+
+2 row(s) mita di
+
++---------+------------------------------+---------------+----------+
+| dept_id | dept_name                    | location      | budget_k |
++---------+------------------------------+---------------+----------+
+| 30      | Product                      | Palo Alto     | 400.0    |
+| 40      | Sales and Partnerships       | New York      | 350.0    |
+| 50      | Legal and Compliance         | Washington DC | 150.0    |
+| 60      | Research                     | Denver        | 200.0    |
+| 10      | Engineering                  | Palo Alto     | 990.0    |
+| 20      | Forward Deployed Engineering | Denver        | 770.0    |
++---------+------------------------------+---------------+----------+
+6 row(s)
+
++---------------+---------------------------+
+| emp_name      | job_title                 |
++---------------+---------------------------+
+| Daniel Brooks | Head of Deployment        |
+| Kabir Singh   | Sales Director            |
+| Elena Petrova | Legal Counsel             |
+| Priya Nair    | Forward Deployed Engineer |
+| Omar Haddad   | Forward Deployed Engineer |
+| Sofia Rossi   | Product Lead              |
+| Ananya Rao    | Software Engineer         |
+| Lucas Weber   | Software Engineer         |
+| Grace Kim     | Product Manager           |
+| Arjun Das     | Data Scientist            |
+| Meera Iyer    | Chief Engineer            |
+| Rohan Gupta   | Senior Account Executive  |
++---------------+---------------------------+
+12 row(s)
+
++---------------+------------+
+| emp_name      | annual_usd |
++---------------+------------+
+| Daniel Brooks | 310000.0   |
+| Kabir Singh   | 240000.0   |
+| Elena Petrova | 210000.0   |
+| Priya Nair    | 175000.0   |
+| Omar Haddad   | 170000.0   |
+| Sofia Rossi   | 260000.0   |
+| Ananya Rao    | 165000.0   |
+| Lucas Weber   | 158000.0   |
+| Grace Kim     | 190000.0   |
+| Arjun Das     | KHALI      |
+| Meera Iyer    | 420000.0   |
+| Rohan Gupta   | 140000.0   |
++---------------+------------+
+12 row(s)
+
++--------------------------------------------+
+| contact                                    |
++--------------------------------------------+
+| Daniel Brooks <daniel.brooks@pltr.example> |
+| Kabir Singh <kabir.singh@pltr.example>     |
+| Elena Petrova <elena.petrova@pltr.example> |
+| Priya Nair <priya.nair@pltr.example>       |
+| Omar Haddad <omar.haddad@pltr.example>     |
+| Sofia Rossi <sofia.rossi@pltr.example>     |
+| Ananya Rao <ananya.rao@pltr.example>       |
+| Lucas Weber <lucas.weber@pltr.example>     |
+| Grace Kim <grace.kim@pltr.example>         |
+| Arjun Das <arjun.das@pltr.example>         |
+| Meera Iyer <meera.iyer@pltr.example>       |
+| Rohan Gupta <rohan.gupta@pltr.example>     |
++--------------------------------------------+
+12 row(s)
+
++---------------+------------+
+| emp_name      | hire_date  |
++---------------+------------+
+| Meera Iyer    | 2012-03-15 |
+| Daniel Brooks | 2014-07-01 |
+| Kabir Singh   | 2015-05-20 |
++---------------+------------+
+3 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Daniel Brooks |
+| Priya Nair    |
+| Omar Haddad   |
++---------------+
+3 row(s)
+
++---------------+------------+
+| emp_name      | clearance  |
++---------------+------------+
+| Daniel Brooks | SECRET     |
+| Elena Petrova | SECRET     |
+| Priya Nair    | TOP SECRET |
+| Omar Haddad   | SECRET     |
+| Sofia Rossi   | SECRET     |
+| Ananya Rao    | SECRET     |
+| Meera Iyer    | TOP SECRET |
++---------------+------------+
+7 row(s)
+
++---------------+----------+
+| emp_name      | salary_k |
++---------------+----------+
+| Daniel Brooks | 310.0    |
+| Kabir Singh   | 240.0    |
+| Elena Petrova | 210.0    |
+| Sofia Rossi   | 260.0    |
+| Meera Iyer    | 420.0    |
++---------------+----------+
+5 row(s)
+
++---------------+------------+
+| emp_name      | hire_date  |
++---------------+------------+
+| Daniel Brooks | 2014-07-01 |
+| Kabir Singh   | 2015-05-20 |
+| Meera Iyer    | 2012-03-15 |
++---------------+------------+
+3 row(s)
+
++-------------+----------+
+| emp_name    | salary_k |
++-------------+----------+
+| Priya Nair  | 175.0    |
+| Omar Haddad | 170.0    |
+| Ananya Rao  | 165.0    |
+| Lucas Weber | 158.0    |
+| Grace Kim   | 190.0    |
++-------------+----------+
+5 row(s)
+
++------------------+---------+
+| client_name      | country |
++------------------+---------+
+| Northwind Health | UK      |
+| Lotus Retail     | India   |
+| Orion Bank       | India   |
++------------------+---------+
+3 row(s)
+
++------------+
+| emp_name   |
++------------+
+| Ananya Rao |
+| Arjun Das  |
++------------+
+2 row(s)
+
++-------------+---------------------------+
+| emp_name    | job_title                 |
++-------------+---------------------------+
+| Priya Nair  | Forward Deployed Engineer |
+| Omar Haddad | Forward Deployed Engineer |
+| Ananya Rao  | Software Engineer         |
+| Lucas Weber | Software Engineer         |
+| Meera Iyer  | Chief Engineer            |
++-------------+---------------------------+
+5 row(s)
+
++--------------+
+| product_name |
++--------------+
+| Apollo       |
++--------------+
+1 row(s)
+
++-----------+
+| emp_name  |
++-----------+
+| Arjun Das |
++-----------+
+1 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Kabir Singh   |
+| Elena Petrova |
+| Sofia Rossi   |
+| Grace Kim     |
+| Rohan Gupta   |
++---------------+
+5 row(s)
+
++---------------+
+| location      |
++---------------+
+| Palo Alto     |
+| New York      |
+| Washington DC |
+| Denver        |
++---------------+
+4 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Daniel Brooks |
+| Priya Nair    |
+| Ananya Rao    |
+| Lucas Weber   |
+| Arjun Das     |
+| Meera Iyer    |
++---------------+
+6 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Daniel Brooks |
+| Priya Nair    |
+| Meera Iyer    |
++---------------+
+3 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Daniel Brooks |
+| Elena Petrova |
+| Priya Nair    |
+| Omar Haddad   |
+| Sofia Rossi   |
+| Ananya Rao    |
+| Meera Iyer    |
++---------------+
+7 row(s)
+
++---------------+---------+----------+
+| emp_name      | dept_id | salary_k |
++---------------+---------+----------+
+| Meera Iyer    | 10      | 420.0    |
+| Ananya Rao    | 10      | 165.0    |
+| Lucas Weber   | 10      | 158.0    |
+| Arjun Das     | 10      | KHALI    |
+| Daniel Brooks | 20      | 310.0    |
+| Priya Nair    | 20      | 175.0    |
+| Omar Haddad   | 20      | 170.0    |
+| Sofia Rossi   | 30      | 260.0    |
+| Grace Kim     | 30      | 190.0    |
+| Kabir Singh   | 40      | 240.0    |
+| Rohan Gupta   | 40      | 140.0    |
+| Elena Petrova | 50      | 210.0    |
++---------------+---------+----------+
+12 row(s)
+
++---------------+----------+
+| emp_name      | yearly_k |
++---------------+----------+
+| Meera Iyer    | 5040.0   |
+| Daniel Brooks | 3720.0   |
+| Sofia Rossi   | 3120.0   |
+| Kabir Singh   | 2880.0   |
+| Elena Petrova | 2520.0   |
++---------------+----------+
+5 row(s)
+
++-------+------+-----------+-------------+-------+-------+
+| staff | paid | payroll_k | avg_k       | min_k | max_k |
++-------+------+-----------+-------------+-------+-------+
+| 12    | 11   | 2438.0    | 221.6363636 | 140.0 | 420.0 |
++-------+------+-----------+-------------+-------+-------+
+1 row(s)
+
++------------+-------------+
+| first_hire | latest_hire |
++------------+-------------+
+| 2012-03-15 | 2024-01-08  |
++------------+-------------+
+1 row(s)
+
++---------------+----------+
+| emp_name      | salary_k |
++---------------+----------+
+| Daniel Brooks | 310.0    |
+| Kabir Singh   | 240.0    |
+| Elena Petrova | 210.0    |
+| Priya Nair    | 175.0    |
+| Omar Haddad   | 170.0    |
+| Sofia Rossi   | 260.0    |
+| Ananya Rao    | 165.0    |
+| Lucas Weber   | 158.0    |
+| Grace Kim     | 190.0    |
+| Arjun Das     | 0        |
+| Meera Iyer    | 420.0    |
+| Rohan Gupta   | 140.0    |
++---------------+----------+
+12 row(s)
+
++---------------+------------------+
+| avg_skip_null | avg_null_as_zero |
++---------------+------------------+
+| 221.6363636   | 203.1666667      |
++---------------+------------------+
+1 row(s)
+
++---------------+-----------+
+| emp_name      | band      |
++---------------+-----------+
+| Daniel Brooks | Executive |
+| Kabir Singh   | Senior    |
+| Elena Petrova | Senior    |
+| Priya Nair    | Staff     |
+| Omar Haddad   | Staff     |
+| Sofia Rossi   | Senior    |
+| Ananya Rao    | Staff     |
+| Lucas Weber   | Staff     |
+| Grace Kim     | Senior    |
+| Arjun Das     | Pending   |
+| Meera Iyer    | Executive |
+| Rohan Gupta   | Staff     |
++---------------+-----------+
+12 row(s)
+
++---------+-------+-------------+
+| dept_id | staff | avg_k       |
++---------+-------+-------------+
+| 10      | 4     | 247.6666667 |
+| 20      | 3     | 218.3333333 |
+| 30      | 2     | 225.0       |
+| 40      | 2     | 190.0       |
+| 50      | 1     | 210.0       |
++---------+-------+-------------+
+5 row(s)
+
++---------+-------+-----------+
+| dept_id | staff | payroll_k |
++---------+-------+-----------+
+| 30      | 2     | 450.0     |
+| 40      | 2     | 380.0     |
+| 20      | 2     | 345.0     |
+| 10      | 3     | 323.0     |
++---------+-------+-----------+
+4 row(s)
+
++-----------+-------+------------+
+| status    | deals | total_musd |
++-----------+-------+------------+
+| Completed | 3     | 36.5       |
+| Active    | 5     | 50.0       |
++-----------+-------+------------+
+2 row(s)
+
+View 'paying_clients_v' ban gaya
+
++----------------+
+| paying_clients |
++----------------+
+| 5              |
++----------------+
+1 row(s)
+
++----------------+---------+
+| p.product_name | g.grade |
++----------------+---------+
+| Gotham         | L1      |
+| Gotham         | L2      |
+| Gotham         | L3      |
+| Gotham         | L4      |
+| Foundry        | L1      |
+| Foundry        | L2      |
+| Foundry        | L3      |
+| Foundry        | L4      |
+| Apollo         | L1      |
+| Apollo         | L2      |
+| Apollo         | L3      |
+| Apollo         | L4      |
+| AIP            | L1      |
+| AIP            | L2      |
+| AIP            | L3      |
+| AIP            | L4      |
++----------------+---------+
+16 row(s)
+
++---------------+------------------------------+
+| emp_name      | dept_name                    |
++---------------+------------------------------+
+| Daniel Brooks | Forward Deployed Engineering |
+| Kabir Singh   | Sales and Partnerships       |
+| Elena Petrova | Legal and Compliance         |
+| Priya Nair    | Forward Deployed Engineering |
+| Omar Haddad   | Forward Deployed Engineering |
+| Sofia Rossi   | Product                      |
+| Ananya Rao    | Engineering                  |
+| Lucas Weber   | Engineering                  |
+| Grace Kim     | Product                      |
+| Arjun Das     | Engineering                  |
+| Meera Iyer    | Engineering                  |
+| Rohan Gupta   | Sales and Partnerships       |
++---------------+------------------------------+
+12 row(s)
+
++---------------+------------------------------+---------------+
+| e.emp_name    | d.dept_name                  | d.location    |
++---------------+------------------------------+---------------+
+| Daniel Brooks | Forward Deployed Engineering | Denver        |
+| Kabir Singh   | Sales and Partnerships       | New York      |
+| Elena Petrova | Legal and Compliance         | Washington DC |
+| Priya Nair    | Forward Deployed Engineering | Denver        |
+| Omar Haddad   | Forward Deployed Engineering | Denver        |
+| Sofia Rossi   | Product                      | Palo Alto     |
+| Ananya Rao    | Engineering                  | Palo Alto     |
+| Lucas Weber   | Engineering                  | Palo Alto     |
+| Grace Kim     | Product                      | Palo Alto     |
+| Arjun Das     | Engineering                  | Palo Alto     |
+| Meera Iyer    | Engineering                  | Palo Alto     |
+| Rohan Gupta   | Sales and Partnerships       | New York      |
++---------------+------------------------------+---------------+
+12 row(s)
+
++------------------+----------------+--------------+-----------+
+| cl.client_name   | p.product_name | c.value_musd | c.status  |
++------------------+----------------+--------------+-----------+
+| Northwind Health | Foundry        | 20.0         | Completed |
+| Helix Energy     | Foundry        | 15.0         | Active    |
+| Aurora Airlines  | Foundry        | 12.5         | Completed |
+| Vega Motors      | AIP            | 11.0         | Active    |
+| Orion Bank       | AIP            | 9.5          | Active    |
+| Aurora Airlines  | AIP            | 8.0          | Active    |
+| Northwind Health | Apollo         | 6.5          | Active    |
+| Vega Motors      | Apollo         | 4.0          | Completed |
++------------------+----------------+--------------+-----------+
+8 row(s)
+
++---------------+-----------------+-----------------------+------------------+
+| e.emp_name    | a.role          | pr.project_name       | cl.client_name   |
++---------------+-----------------+-----------------------+------------------+
+| Priya Nair    | Lead            | Factory Rollout       | Vega Motors      |
+| Lucas Weber   | Engineer        | Factory Rollout       | Vega Motors      |
+| Priya Nair    | Lead            | Fleet Optimisation    | Aurora Airlines  |
+| Ananya Rao    | Engineer        | Fleet Optimisation    | Aurora Airlines  |
+| Lucas Weber   | Engineer        | Fleet Optimisation    | Aurora Airlines  |
+| Ananya Rao    | Lead            | Fraud Detection       | Orion Bank       |
+| Arjun Das     | Data Scientist  | Fraud Detection       | Orion Bank       |
+| Omar Haddad   | Lead            | Hospital Bed Planning | Northwind Health |
+| Grace Kim     | Product Manager | Hospital Bed Planning | Northwind Health |
+| Daniel Brooks | Lead            | Supply Chain Twin     | Helix Energy     |
+| Ananya Rao    | Engineer        | Supply Chain Twin     | Helix Energy     |
++---------------+-----------------+-----------------------+------------------+
+11 row(s)
+
++---------------+---------------+
+| employee      | manager       |
++---------------+---------------+
+| Daniel Brooks | Meera Iyer    |
+| Kabir Singh   | Meera Iyer    |
+| Elena Petrova | Meera Iyer    |
+| Priya Nair    | Daniel Brooks |
+| Omar Haddad   | Daniel Brooks |
+| Sofia Rossi   | Meera Iyer    |
+| Ananya Rao    | Meera Iyer    |
+| Lucas Weber   | Meera Iyer    |
+| Grace Kim     | Sofia Rossi   |
+| Arjun Das     | Meera Iyer    |
+| Rohan Gupta   | Kabir Singh   |
++---------------+---------------+
+11 row(s)
+
++---------------+------------+---------+
+| e.emp_name    | e.salary_k | g.grade |
++---------------+------------+---------+
+| Daniel Brooks | 310.0      | L4      |
+| Kabir Singh   | 240.0      | L3      |
+| Elena Petrova | 210.0      | L3      |
+| Priya Nair    | 175.0      | L2      |
+| Omar Haddad   | 170.0      | L2      |
+| Sofia Rossi   | 260.0      | L3      |
+| Ananya Rao    | 165.0      | L2      |
+| Lucas Weber   | 158.0      | L2      |
+| Grace Kim     | 190.0      | L2      |
+| Meera Iyer    | 420.0      | L4      |
+| Rohan Gupta   | 140.0      | L1      |
++---------------+------------+---------+
+11 row(s)
+
++------------------------------+---------------+
+| d.dept_name                  | e.emp_name    |
++------------------------------+---------------+
+| Product                      | Sofia Rossi   |
+| Product                      | Grace Kim     |
+| Sales and Partnerships       | Kabir Singh   |
+| Sales and Partnerships       | Rohan Gupta   |
+| Legal and Compliance         | Elena Petrova |
+| Research                     | KHALI         |
+| Engineering                  | Ananya Rao    |
+| Engineering                  | Lucas Weber   |
+| Engineering                  | Arjun Das     |
+| Engineering                  | Meera Iyer    |
+| Forward Deployed Engineering | Daniel Brooks |
+| Forward Deployed Engineering | Priya Nair    |
+| Forward Deployed Engineering | Omar Haddad   |
++------------------------------+---------------+
+13 row(s)
+
++---------------+------------------+
+| c.contract_id | cl.client_name   |
++---------------+------------------+
+| 301           | Aurora Airlines  |
+| 302           | Aurora Airlines  |
+| 303           | Northwind Health |
+| 304           | Northwind Health |
+| 305           | Helix Energy     |
+| 307           | Vega Motors      |
+| 308           | Vega Motors      |
+| KHALI         | Lotus Retail     |
+| 306           | Orion Bank       |
+| KHALI         | Kestrel Shipping |
++---------------+------------------+
+10 row(s)
+
++----------------+---------------+
+| p.product_name | c.contract_id |
++----------------+---------------+
+| Gotham         | KHALI         |
+| Foundry        | 301           |
+| Foundry        | 303           |
+| Foundry        | 305           |
+| Apollo         | 304           |
+| Apollo         | 307           |
+| AIP            | 302           |
+| AIP            | 306           |
+| AIP            | 308           |
++----------------+---------------+
+9 row(s)
+
++------------------+
+| cl.client_name   |
++------------------+
+| Lotus Retail     |
+| Kestrel Shipping |
++------------------+
+2 row(s)
+
++----------------+-------+------------+
+| p.product_name | deals | total_musd |
++----------------+-------+------------+
+| Foundry        | 3     | 47.5       |
+| AIP            | 3     | 28.5       |
+| Apollo         | 2     | 10.5       |
++----------------+-------+------------+
+3 row(s)
+
++---------------+----------+
+| emp_name      | salary_k |
++---------------+----------+
+| Daniel Brooks | 310.0    |
+| Kabir Singh   | 240.0    |
+| Sofia Rossi   | 260.0    |
+| Meera Iyer    | 420.0    |
++---------------+----------+
+4 row(s)
+
++------------------+--------------+
+| cl.client_name   | c.value_musd |
++------------------+--------------+
+| Northwind Health | 20.0         |
++------------------+--------------+
+1 row(s)
+
++------------------+
+| client_name      |
++------------------+
+| Aurora Airlines  |
+| Northwind Health |
+| Helix Energy     |
+| Vega Motors      |
+| Orion Bank       |
++------------------+
+5 row(s)
+
++--------------+
+| product_name |
++--------------+
+| Gotham       |
++--------------+
+1 row(s)
+
++------------+
+| emp_name   |
++------------+
+| Ananya Rao |
+| Arjun Das  |
++------------+
+2 row(s)
+
++---------------+-----------+------------+
+| e.emp_name    | e.dept_id | e.salary_k |
++---------------+-----------+------------+
+| Daniel Brooks | 20        | 310.0      |
+| Kabir Singh   | 40        | 240.0      |
+| Sofia Rossi   | 30        | 260.0      |
+| Meera Iyer    | 10        | 420.0      |
++---------------+-----------+------------+
+4 row(s)
+
++---------------+----------+
+| e.emp_name    | projects |
++---------------+----------+
+| Daniel Brooks | 1        |
+| Kabir Singh   | 0        |
+| Elena Petrova | 0        |
+| Priya Nair    | 2        |
+| Omar Haddad   | 1        |
+| Sofia Rossi   | 0        |
+| Ananya Rao    | 3        |
+| Lucas Weber   | 2        |
+| Grace Kim     | 2        |
+| Arjun Das     | 2        |
+| Meera Iyer    | 0        |
+| Rohan Gupta   | 0        |
++---------------+----------+
+12 row(s)
+
++---------+-------------+
+| dept_id | avg_k       |
++---------+-------------+
+| 30      | 225.0       |
+| 10      | 247.6666667 |
++---------+-------------+
+2 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Daniel Brooks |
+| Priya Nair    |
+| Omar Haddad   |
+| Ananya Rao    |
+| Arjun Das     |
++---------------+
+5 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Kabir Singh   |
+| Elena Petrova |
+| Sofia Rossi   |
+| Meera Iyer    |
+| Rohan Gupta   |
++---------------+
+5 row(s)
+
++------------+
+| emp_name   |
++------------+
+| Meera Iyer |
++------------+
+1 row(s)
+
++----------+
+| lead_emp |
++----------+
+| 107      |
+| 108      |
+| 102      |
+| 105      |
+| 112      |
+| 101      |
+| 103      |
+| 104      |
++----------+
+8 row(s)
+
++----------+
+| lead_emp |
++----------+
+| 102      |
++----------+
+1 row(s)
+
++----------+
+| lead_emp |
++----------+
+| 107      |
+| 108      |
+| 105      |
+| 112      |
++----------+
+4 row(s)
+
++-----------+--------------+---------------------+---------+
+| client_id | client_name  | sector              | country |
++-----------+--------------+---------------------+---------+
+| 206       | Lotus Retail | Retail              | India   |
+| 204       | Orion Bank   | Banking and Finance | India   |
++-----------+--------------+---------------------+---------+
+2 row(s)
+
++---------------------+
+| sector              |
++---------------------+
+| Aviation            |
+| Healthcare          |
+| Energy              |
+| Automotive          |
+| Retail              |
+| Banking and Finance |
+| Logistics           |
++---------------------+
+7 row(s)
+
++---------------+-------+
+| name          | pay   |
++---------------+-------+
+| Daniel Brooks | 310.0 |
+| Kabir Singh   | 240.0 |
+| Elena Petrova | 210.0 |
+| Priya Nair    | 175.0 |
+| Omar Haddad   | 170.0 |
+| Sofia Rossi   | 260.0 |
+| Ananya Rao    | 165.0 |
+| Lucas Weber   | 158.0 |
+| Grace Kim     | 190.0 |
+| Arjun Das     | KHALI |
+| Meera Iyer    | 420.0 |
+| Rohan Gupta   | 140.0 |
++---------------+-------+
+12 row(s)
+
++--------+
+| emp_id |
++--------+
+| 107    |
+| 106    |
++--------+
+2 row(s)
+
++----------+
+| emp_name |
++----------+
++----------+
+0 row(s)
+
++-----------+
+| emp_name  |
++-----------+
+| Arjun Das |
++-----------+
+1 row(s)
+
++-----------------------+---------------+
+| p.project_name        | c.contract_id |
++-----------------------+---------------+
+| Fleet Optimisation    | 302           |
+| Hospital Bed Planning | 303           |
+| Supply Chain Twin     | 305           |
+| Fraud Detection       | 306           |
+| Factory Rollout       | 308           |
++-----------------------+---------------+
+5 row(s)
+
++-----------------------+---------------+
+| p.project_name        | c.contract_id |
++-----------------------+---------------+
+| Fleet Optimisation    | 302           |
+| Hospital Bed Planning | 303           |
+| Supply Chain Twin     | 305           |
+| Fraud Detection       | 306           |
+| Factory Rollout       | 308           |
+| Model Evaluation      | KHALI         |
++-----------------------+---------------+
+6 row(s)
+
+Table 'contract_flat' ban gaya (6 columns)
+
+8 row(s) daal di
+
++------------------+--------+
+| client_name      | copies |
++------------------+--------+
+| Aurora Airlines  | 2      |
+| Northwind Health | 2      |
+| Vega Motors      | 2      |
++------------------+--------+
+3 row(s)
+
++-------------+-----------+-------------+--------+------------+------------+
+| contract_id | client_id | client_name | sector | product_id | value_musd |
++-------------+-----------+-------------+--------+------------+------------+
++-------------+-----------+-------------+--------+------------+------------+
+0 row(s)
+
++---------------+-------------+----------------+-----------+--------------+--------------+
+| c.contract_id | c.client_id | cl.client_name | cl.sector | c.product_id | c.value_musd |
++---------------+-------------+----------------+-----------+--------------+--------------+
++---------------+-------------+----------------+-----------+--------------+--------------+
+0 row(s)
+
+View 'active_contracts_v' ban gaya
+
+View 'dept_summary_v' ban gaya
+
+View 'staff_directory_v' ban gaya
+
++-------------+------------------+--------------+------------+------------+
+| contract_id | client_name      | product_name | value_musd | end_date   |
++-------------+------------------+--------------+------------+------------+
+| 305         | Helix Energy     | Foundry      | 15.0       | 2026-08-31 |
+| 308         | Vega Motors      | AIP          | 11.0       | 2028-03-31 |
+| 306         | Orion Bank       | AIP          | 9.5        | 2027-12-31 |
+| 302         | Aurora Airlines  | AIP          | 8.0        | 2026-02-28 |
+| 304         | Northwind Health | Apollo       | 6.5        | 2027-01-14 |
++-------------+------------------+--------------+------------+------------+
+5 row(s)
+
++------------------------------+-------+-----------+
+| dept_name                    | staff | payroll_k |
++------------------------------+-------+-----------+
+| Engineering                  | 4     | 743.0     |
+| Forward Deployed Engineering | 3     | 655.0     |
+| Product                      | 2     | 450.0     |
+| Sales and Partnerships       | 2     | 380.0     |
+| Legal and Compliance         | 1     | 210.0     |
+| Research                     | 0     | KHALI     |
++------------------------------+-------+-----------+
+6 row(s)
+
+1 row(s) badal di
+
++-------------+-----------------+--------------+------------+------------+
+| contract_id | client_name     | product_name | value_musd | end_date   |
++-------------+-----------------+--------------+------------+------------+
+| 302         | Aurora Airlines | AIP          | 9.0        | 2026-02-28 |
++-------------+-----------------+--------------+------------+------------+
+1 row(s)
+
+[Execution Galti] 'active_contracts_v' ek VIEW hai, table nahi -- isme DAALO/BADLO/MITAO nahi kar sakte
+
++--------------------+
+| view               |
++--------------------+
+| active_contracts_v |
+| dept_summary_v     |
+| paying_clients_v   |
+| staff_directory_v  |
++--------------------+
+4 view(s) in 'palantir'
+
++---------------------------------------------------------+
+| definition                                              |
++---------------------------------------------------------+
+| DIKHAO emp_id, emp_name, job_title, office SE employees |
++---------------------------------------------------------+
+VIEW 'staff_directory_v'
+
+View 'paying_clients_v' hata diya
+
++-------------------------------------------------------------------------------------------------------------+
+| plan                                                                                                        |
++-------------------------------------------------------------------------------------------------------------+
+| 1. INDEX LOOKUP employees PAR emp_id = 107  [hash index, MUKHYA KUNJI]                                      |
+| 2. FILTER  JAHAN emp_id = 107                                                                               |
+| 3. PROJECT  emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance, office |
++-------------------------------------------------------------------------------------------------------------+
+Query plan (query chalayi nahi gayi)
+
++---------------------------------------------------------------------------------------+
+| plan                                                                                  |
++---------------------------------------------------------------------------------------+
+| 1. INDEX LOOKUP employees PAR email = 'priya.nair@pltr.example'  [hash index, ANOKHA] |
+| 2. FILTER  JAHAN email = 'priya.nair@pltr.example'                                    |
+| 3. PROJECT  emp_name                                                                  |
++---------------------------------------------------------------------------------------+
+Query plan (query chalayi nahi gayi)
+
++-------------------------------------------------------------------------------------------------------------+
+| plan                                                                                                        |
++-------------------------------------------------------------------------------------------------------------+
+| 1. FULL SCAN employees                                                                                      |
+| 2. FILTER  JAHAN salary_k > 200                                                                             |
+| 3. PROJECT  emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance, office |
++-------------------------------------------------------------------------------------------------------------+
+Query plan (query chalayi nahi gayi)
+
++------------------------------------------------------+
+| plan                                                 |
++------------------------------------------------------+
+| 1. FULL SCAN employees e                             |
+| 2. HASH JOIN departments d PAR e.dept_id = d.dept_id |
+| 3. PROJECT  e.emp_name, d.dept_name                  |
++------------------------------------------------------+
+Query plan (query chalayi nahi gayi)
+
+User 'analyst' ban gaya
+
+User 'intern' ban gaya
+
+'analyst' ko 'palantir.employees' par DIKHAO ka adhikar mil gaya
+
+'analyst' ko 'palantir.contracts' par DIKHAO, DAALO ka adhikar mil gaya
+
+'analyst' ko 'palantir.projects' par DIKHAO, DAALO, BADLO, MITAO ka adhikar mil gaya
+
+'intern' ko 'palantir.staff_directory_v' par DIKHAO ka adhikar mil gaya
+
+'intern' ko 'palantir.active_contracts_v' par DIKHAO ka adhikar mil gaya
+
+'analyst' se 'palantir.contracts' par DAALO ka adhikar wapas le liya
+
+'analyst' se 'palantir.projects' par BADLO, MITAO ka adhikar wapas le liya
+
+User 'contractor' ban gaya
+
+User 'contractor' hata diya
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
+1 row(s) badal di
+
+1 row(s) badal di
+
+Transaction PAKKA -- saare changes save ho gaye
+
++---------+------------------------+----------+
+| dept_id | dept_name              | budget_k |
++---------+------------------------+----------+
+| 40      | Sales and Partnerships | 300.0    |
+| 60      | Research               | 250.0    |
++---------+------------------------+----------+
+2 row(s)
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
+13 row(s) mita di
+
++------------+
+| inside_txn |
++------------+
+| 0          |
++------------+
+1 row(s)
+
+Transaction WAPAS -- saare changes undo ho gaye
+
++----------------+
+| after_rollback |
++----------------+
+| 13             |
++----------------+
+1 row(s)
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
+1 row(s) badal di
+
+Transaction PAKKA -- saare changes save ho gaye
+
+Transaction SHURU. PAKKA se save karo, WAPAS se sab undo.
+
+1 row(s) badal di
+
+Transaction WAPAS -- saare changes undo ho gaye
+
++------------+----------+
+| project_id | budget_k |
++------------+----------+
+| 402        | 1500.0   |
+| 401        | 1000.0   |
++------------+----------+
+2 row(s)
+
+Table 'salary_audit' ban gaya (3 columns)
+
+Trigger 'trg_salary_audit' ban gaya (BAAD BADLO PAR employees)
+
+Table 'hours_check' ban gaya (3 columns)
+
+Trigger 'trg_hours_limit' ban gaya (PEHLE DAALO PAR assignments)
+
+Trigger 'trg_contract_archive' ban gaya (BAAD MITAO PAR contracts)
+
+1 row(s) badal di
+
+1 row(s) daal di
+
+[Execution Galti] SHART toot gayi: (hours <= 500) -- column 'hours'
+
++---------------+
+| rejected_rows |
++---------------+
+| 0             |
++---------------+
+1 row(s)
+
+1 row(s) daal di
+
+1 row(s) mita di
+
++-------------+-----------+------------+------------+-----------+
+| contract_id | client_id | product_id | value_musd | status    |
++-------------+-----------+------------+------------+-----------+
+| 310         | 206       | 1          | 2.0        | Cancelled |
++-------------+-----------+------------+------------+-----------+
+1 row(s)
+
+Procedure 'give_raise' ban gaya (2 parameter(s))
+
+Procedure 'staff_project' ban gaya (4 parameter(s))
+
+Procedure 'give_raise' chal gaya (1 statement(s)): 3 row(s) badal di
+
+Procedure 'staff_project' chal gaya (1 statement(s)): 1 row(s) daal di
+
++--------+--------------+--------------+
+| emp_id | old_salary_k | new_salary_k |
++--------+--------------+--------------+
+| 107    | 175.0        | 180.0        |
+| 102    | 310.0        | 325.5        |
+| 108    | 170.0        | 178.5        |
+| 107    | 180.0        | 189.0        |
++--------+--------------+--------------+
+4 row(s)
+
++--------+------------+-------------------+-------+
+| emp_id | project_id | role              | hours |
++--------+------------+-------------------+-------+
+| 111    | 404        | Compliance Review | 60    |
++--------+------------+-------------------+-------+
+1 row(s)
+
++-------------------+
+| total_active_musd |
++-------------------+
+| 51.0              |
++-------------------+
+1 row(s)
+
+Procedure 'set_office' ban gaya (2 parameter(s))
+
+Procedure 'set_office' chal gaya (1 statement(s)): 1 row(s) badal di
+
+Procedure 'set_office' chal gaya (1 statement(s)): 2 row(s) badal di
+
++---------------+---------------+
+| emp_name      | office        |
++---------------+---------------+
+| Daniel Brooks | Denver        |
+| Omar Haddad   | Denver        |
+| Priya Nair    | Denver        |
+| Kabir Singh   | New York      |
+| Rohan Gupta   | New York      |
+| Ananya Rao    | Palo Alto     |
+| Arjun Das     | Palo Alto     |
+| Grace Kim     | Palo Alto     |
+| Lucas Weber   | Palo Alto     |
+| Meera Iyer    | Palo Alto     |
+| Sofia Rossi   | Palo Alto     |
+| Elena Petrova | Washington DC |
++---------------+---------------+
+12 row(s)
+
++---------------+----------+-----------+
+| emp_name      | salary_k | pay_band  |
++---------------+----------+-----------+
+| Meera Iyer    | 420.0    | Executive |
+| Daniel Brooks | 325.5    | Executive |
+| Sofia Rossi   | 260.0    | Senior    |
+| Kabir Singh   | 240.0    | Senior    |
+| Elena Petrova | 210.0    | Senior    |
+| Grace Kim     | 190.0    | Senior    |
+| Priya Nair    | 189.0    | Senior    |
+| Omar Haddad   | 178.5    | Staff     |
+| Ananya Rao    | 165.0    | Staff     |
+| Lucas Weber   | 158.0    | Staff     |
+| Rohan Gupta   | 140.0    | Staff     |
+| Arjun Das     | KHALI    | Staff     |
++---------------+----------+-----------+
+12 row(s)
+
++-----------------+------------------+------------------------+----------------------------------------+
+| UPPER(emp_name) | LENGTH(emp_name) | SUBSTRING(email, 1, 4) | CONCAT(emp_name, ' <', email, '>')     |
++-----------------+------------------+------------------------+----------------------------------------+
+| SOFIA ROSSI     | 11               | sofi                   | Sofia Rossi <sofia.rossi@pltr.example> |
+| ANANYA RAO      | 10               | anan                   | Ananya Rao <ananya.rao@pltr.example>   |
+| LUCAS WEBER     | 11               | luca                   | Lucas Weber <lucas.weber@pltr.example> |
++-----------------+------------------+------------------------+----------------------------------------+
+3 row(s)
+
++----------------+--------------+----------------------------+---------------------+----------------------+
+| TRIM('  hi  ') | LOWER('ABC') | REPLACE('a-b-c', '-', '+') | LEFT('palantir', 3) | RIGHT('palantir', 3) |
++----------------+--------------+----------------------------+---------------------+----------------------+
+| hi             | abc          | a+b+c                      | pal                 | tir                  |
++----------------+--------------+----------------------------+---------------------+----------------------+
+1 row(s)
+
++------------------------+------------------+---------+------------+-----------+--------------+----------+
+| ROUND(salary_k / 7, 2) | MOD(salary_k, 7) | ABS(-5) | FLOOR(2.7) | CEIL(2.1) | POWER(2, 10) | SQRT(16) |
++------------------------+------------------+---------+------------+-----------+--------------+----------+
+| 37.14                  | 1.0              | 5       | 2          | 3         | 1024         | 4.0      |
+| 23.57                  | 4.0              | 5       | 2          | 3         | 1024         | 4.0      |
+| 22.57                  | 4.0              | 5       | 2          | 3         | 1024         | 4.0      |
++------------------------+------------------+---------+------------+-----------+--------------+----------+
+3 row(s)
+
++-------------+-----------------+-----------+------------------------------------+
+| emp_name    | YEAR(hire_date) | days_here | DATE_FORMAT(hire_date, '%d %M %Y') |
++-------------+-----------------+-----------+------------------------------------+
+| Sofia Rossi | 2016            | 3945      | 11 January 2016                    |
+| Ananya Rao  | 2021            | 1915      | 02 August 2021                     |
+| Lucas Weber | 2022            | 1719      | 14 February 2022                   |
++-------------+-----------------+-----------+------------------------------------+
+3 row(s)
+
++---------------------+------------+
+| NOW()               | CURDATE()  |
++---------------------+------------+
+| 2026-10-30 08:46:30 | 2026-10-30 |
++---------------------+------------+
+1 row(s)
+
++-------------+----------------------+---------------------------+--------------------------+------------------------+
+| emp_name    | PEHLA(manager_id, 0) | NULLIF(clearance, 'NONE') | PEHLA(email, 'no email') | CAST(salary_k AS TEXT) |
++-------------+----------------------+---------------------------+--------------------------+------------------------+
+| Sofia Rossi | 101                  | SECRET                    | sofia.rossi@pltr.example | 260.0                  |
+| Ananya Rao  | 101                  | SECRET                    | ananya.rao@pltr.example  | 165.0                  |
+| Lucas Weber | 101                  | KHALI                     | lucas.weber@pltr.example | 158.0                  |
++-------------+----------------------+---------------------------+--------------------------+------------------------+
+3 row(s)
+
++--------+-------------+
+| emp_id | emp_name    |
++--------+-------------+
+| 103    | Sofia Rossi |
+| 104    | Kabir Singh |
+| 105    | Ananya Rao  |
++--------+-------------+
+3 row(s)
+
++---------------+------------------------------+
+| emp_name      | dept_name                    |
++---------------+------------------------------+
+| Meera Iyer    | Engineering                  |
+| Daniel Brooks | Forward Deployed Engineering |
+| Sofia Rossi   | Product                      |
+| Kabir Singh   | Sales and Partnerships       |
++---------------+------------------------------+
+4 row(s)
+
++---------+------------+---------+
+| dept_id | clearance  | GINO(*) |
++---------+------------+---------+
+| 10      | NONE       | 2       |
+| 10      | SECRET     | 1       |
+| 10      | TOP SECRET | 1       |
+| 20      | SECRET     | 2       |
+| 20      | TOP SECRET | 1       |
+| 30      | NONE       | 1       |
+| 30      | SECRET     | 1       |
+| 40      | NONE       | 2       |
+| 50      | SECRET     | 1       |
++---------+------------+---------+
+9 row(s)
+
++------------------------------+
+| dept_name                    |
++------------------------------+
+| Product                      |
+| Legal and Compliance         |
+| Engineering                  |
+| Forward Deployed Engineering |
+| Sales and Partnerships       |
++------------------------------+
+5 row(s)
+
++-----------+
+| dept_name |
++-----------+
+| Research  |
++-----------+
+1 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Meera Iyer    |
+| Daniel Brooks |
++---------------+
+2 row(s)
+
++---------------+
+| emp_name      |
++---------------+
+| Sofia Rossi   |
+| Meera Iyer    |
+| Daniel Brooks |
+| Elena Petrova |
+| Kabir Singh   |
++---------------+
+5 row(s)
+
++-----------+-----+
+| x.dept_id | x.n |
++-----------+-----+
+| 10        | 4   |
+| 20        | 3   |
+| 30        | 2   |
+| 40        | 2   |
+| 50        | 1   |
++-----------+-----+
+5 row(s)
+
+Table 'x_tickets' ban gaya (4 columns)
+
+2 row(s) daal di
+
++-----------+-----------------+----------+---------------------+
+| ticket_id | title           | severity | opened_at           |
++-----------+-----------------+----------+---------------------+
+| 1         | Login page down | high     | 2026-10-30 08:46:30 |
+| 2         | Typo in report  | low      | 2026-10-30 09:15:00 |
++-----------+-----------------+----------+---------------------+
+2 row(s)
+
+[Execution Galti] Column 'severity' ENUM('low', 'medium', 'high') hai, par value 'urgent' mili -- sirf inhi mein se ek chalegi
+
+Table 'x_big_earners' ban gaya (3 columns, 10 row(s) daali)
+
++--------+---------------+----------+
+| emp_id | emp_name      | salary_k |
++--------+---------------+----------+
+| 101    | Meera Iyer    | 420.0    |
+| 102    | Daniel Brooks | 325.5    |
+| 103    | Sofia Rossi   | 260.0    |
+| 104    | Kabir Singh   | 240.0    |
+| 105    | Ananya Rao    | 165.0    |
+| 106    | Lucas Weber   | 158.0    |
+| 107    | Priya Nair    | 189.0    |
+| 108    | Omar Haddad   | 178.5    |
+| 109    | Grace Kim     | 190.0    |
+| 111    | Elena Petrova | 210.0    |
++--------+---------------+----------+
+10 row(s)
+
+Table 'x_departments_copy' ban gaya ('departments' jaisa, 4 columns, 0 rows)
+
++-----------+----------+----------------------+
+| column    | type     | constraints          |
++-----------+----------+----------------------+
+| dept_id   | INT      | MUKHYA KUNJI         |
+| dept_name | TEXT(40) | ZAROORI ANOKHA       |
+| location  | TEXT(30) | WARNA 'Denver'       |
+| budget_k  | FLOAT    | SHART (budget_k > 0) |
++-----------+----------+----------------------+
+Table 'x_departments_copy'
+
+Table 'x_parent' ban gaya (2 columns)
+
+Table 'x_child_cascade' ban gaya (2 columns)
+
+Table 'x_child_null' ban gaya (2 columns)
+
+2 row(s) daal di
+
+3 row(s) daal di
+
+2 row(s) daal di
+
+1 row(s) mita di
+
++----+-----------+
+| id | parent_id |
++----+-----------+
+| 12 | 2         |
++----+-----------+
+1 row(s)
+
++----+-----------+
+| id | parent_id |
++----+-----------+
+| 20 | KHALI     |
+| 21 | 2         |
++----+-----------+
+2 row(s)
+
+Column 'owner' 'x_tickets' mein jod diya
+
+Column 'owner' ab 'assigned_to' TEXT hai (2 row(s) check ki)
+
+Column 'title' ab TEXT hai (2 row(s) check ki)
+
++-------------+-----------------------------+-------------------------------------+
+| column      | type                        | constraints                         |
++-------------+-----------------------------+-------------------------------------+
+| ticket_id   | INT                         | MUKHYA KUNJI ZAROORI AUTO_INCREMENT |
+| title       | TEXT(80)                    | ZAROORI                             |
+| assigned_to | TEXT(40)                    |                                     |
+| severity    | ENUM('low','medium','high') | WARNA 'low'                         |
+| opened_at   | DATETIME                    |                                     |
++-------------+-----------------------------+-------------------------------------+
+Table 'x_tickets'
+
+3 row(s) affected (2 daali, 1 purani row(s) replace hui)
+
++----+----------------+
+| id | name           |
++----+----------------+
+| 2  | two (replaced) |
+| 3  | three          |
++----+----------------+
+2 row(s)
+
+View 'x_high_tickets' ban gaya
+
+1 row(s) daal di
+
+1 row(s) badal di
+
++-----------+--------------------------+----------+
+| ticket_id | title                    | severity |
++-----------+--------------------------+----------+
+| 1         | Login page down          | high     |
+| 3         | Database offline (paged) | high     |
++-----------+--------------------------+----------+
+2 row(s)
+
+[Execution Galti] View 'x_high_tickets' ki WITH CHECK OPTION ke karan row reject: ye row view ki JAHAN shart poori nahi karti
+
+Role 'x_reader' ban gaya
+
+'x_reader' ko 'palantir.employees' par DIKHAO ka adhikar mil gaya
+
+Role x_reader ab 'analyst' ko mil gaya
+
++------------------------------------------------------+
+| Grants for analyst                                   |
++------------------------------------------------------+
+| GRANT SELECT ON palantir.employees TO analyst        |
+| GRANT SELECT ON palantir.contracts TO analyst        |
+| GRANT SELECT, INSERT ON palantir.projects TO analyst |
+| GRANT x_reader TO analyst                            |
++------------------------------------------------------+
+4 grant(s)
+
++--------------------+
+| table              |
++--------------------+
+| active_pipeline    |
+| assignments        |
+| client_updates     |
+| clients            |
+| contract_flat      |
+| contracts          |
+| contracts_archive  |
+| departments        |
+| employees          |
+| hours_check        |
+| products           |
+| projects           |
+| salary_audit       |
+| salary_grades      |
+| x_big_earners      |
+| x_child_cascade    |
+| x_child_null       |
+| x_departments_copy |
+| x_parent           |
+| x_tickets          |
++--------------------+
+20 table(s) in 'palantir'
+
++-----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| table     | create_table                                                                                                                                                                                                   |
++-----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| x_tickets | BANAO TABLE x_tickets (
+    ticket_id INT AUTO_INCREMENT MUKHYA KUNJI,
+    title TEXT(80) ZAROORI,
+    assigned_to TEXT(40),
+    severity ENUM('low', 'medium', 'high') WARNA 'low',
+    opened_at DATETIME
+); |
++-----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+Table 'x_tickets'
+
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+| trigger              | timing | event | table       | body                                                                                                                           |
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+| trg_salary_audit     | BAAD   | BADLO | employees   | DAALO MEIN salary_audit MAAN (NAYA.emp_id, PURANA.salary_k, NAYA.salary_k);                                                    |
+| trg_hours_limit      | PEHLE  | DAALO | assignments | DAALO MEIN hours_check MAAN (NAYA.emp_id, NAYA.project_id, NAYA.hours);                                                        |
+| trg_contract_archive | BAAD   | MITAO | contracts   | DAALO MEIN contracts_archive MAAN (PURANA.contract_id, PURANA.client_id, PURANA.product_id, PURANA.value_musd, PURANA.status); |
++----------------------+--------+-------+-------------+--------------------------------------------------------------------------------------------------------------------------------+
+3 trigger(s) in 'palantir'
+
++---------------+----------+---------------------+
+| name          | database | created             |
++---------------+----------+---------------------+
+| give_raise    | palantir | 2026-10-30 08:46:30 |
+| staff_project | palantir | 2026-10-30 08:46:30 |
+| set_office    | palantir | 2026-10-30 08:46:30 |
++---------------+----------+---------------------+
+3 procedure(s)
+
+View 'x_high_tickets' hata diya
+
+Table 'x_tickets' hata diya
+
+Table 'x_big_earners' hata diya
+
+Table 'x_departments_copy' hata diya
+
+Table 'x_child_cascade' hata diya
+
+Table 'x_child_null' hata diya
+
+Table 'x_parent' hata diya
+
+Role 'x_reader' hata diya
+
++-------------------+
+| table             |
++-------------------+
+| active_pipeline   |
+| assignments       |
+| client_updates    |
+| clients           |
+| contract_flat     |
+| contracts         |
+| contracts_archive |
+| departments       |
+| employees         |
+| hours_check       |
+| products          |
+| projects          |
+| salary_audit      |
+| salary_grades     |
++-------------------+
+14 table(s) in 'palantir'
+
++--------------------+
+| view               |
++--------------------+
+| active_contracts_v |
+| dept_summary_v     |
+| staff_directory_v  |
++--------------------+
+3 view(s) in 'palantir'
+
++-------------------+-----------+
+| tbl               | row_count |
++-------------------+-----------+
+| departments       | 6         |
+| employees         | 12        |
+| products          | 4         |
+| clients           | 7         |
+| contracts         | 8         |
+| projects          | 6         |
+| assignments       | 15        |
+| contracts_archive | 4         |
+| salary_audit      | 7         |
++-------------------+-----------+
+9 row(s)
+

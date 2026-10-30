@@ -1,0 +1,1432 @@
+-- ============================================================================
+-- PALANTIR TECHNOLOGIES -- company database, built in MeraDB (Hinglish SQL)
+-- Covers every SQL topic of the RDBMS Lab handout (CSC2131, Labs 1-12) and the
+-- SQL / design / transaction topics of the Theory handout (CSC2103, L11-L46).
+--
+-- Every MeraDB (Hinglish) statement has the MySQL statement for the same job
+-- written just above it, in a comment that starts with "-- MySQL:".
+--
+-- Run:      meradb_cli run lab\palantir\palantir_lab.mdb
+-- Re-run:   meradb_cli run lab\palantir\palantir_reset.mdb   (wipes it first)
+--
+-- Lines marked "EXPECTED ERROR" fail ON PURPOSE: they prove that a constraint,
+-- a foreign key, a trigger or a view really blocks bad data.
+--
+-- The company, products and cities are real public facts; every employee,
+-- client, contract and number below is made-up sample data for the lab.
+-- ============================================================================
+
+
+-- ============================================================================
+-- LAB 1 + THEORY L11-L13 : ER diagram -> relational model
+-- ----------------------------------------------------------------------------
+-- Entities      : Department, Employee, Product, Client, Contract, Project
+-- Relationships :
+--   Department 1 : N Employee            (FK employees.dept_id)
+--   Employee   1 : N Employee (manages)  (FK employees.manager_id, SELF reference)
+--   Client     M : N Product  via CONTRACT   (bridge table, 2 FKs)
+--   Contract   1 : N Project             (FK projects.contract_id)
+--   Employee   M : N Project  via ASSIGNMENT (bridge table, composite PK)
+-- Every entity becomes a table, every attribute a column, every 1:N a foreign
+-- key on the N side, every M:N a bridge table holding both primary keys.
+-- ============================================================================
+
+
+-- ============================================================================
+-- LAB 2 + LAB 3 : DDL -- create the database, tables and data types
+-- ============================================================================
+
+-- MySQL: CREATE DATABASE palantir;
+BANAO DATABASE palantir;
+
+-- MySQL: USE palantir;
+ISTEMAL palantir;
+
+-- LAB 4 : CONSTRAINTS are declared inside CREATE TABLE
+--   MUKHYA KUNJI = PRIMARY KEY   ZAROORI = NOT NULL   ANOKHA = UNIQUE
+--   SANDARBH     = FOREIGN KEY   SHART   = CHECK      WARNA  = DEFAULT
+
+-- MySQL: CREATE TABLE departments (
+--          dept_id   INT PRIMARY KEY,
+--          dept_name VARCHAR(40) NOT NULL UNIQUE,
+--          location  VARCHAR(30) DEFAULT 'Denver',
+--          budget_k  DECIMAL(10,2) CHECK (budget_k > 0)
+--        );
+BANAO TABLE departments (
+    dept_id   INT          MUKHYA KUNJI,
+    dept_name VARCHAR(40)  ZAROORI ANOKHA,
+    location  VARCHAR(30)  WARNA 'Denver',
+    budget_k  NUMBER(10,2) SHART (budget_k > 0)
+);
+
+-- MySQL: CREATE TABLE employees (
+--          emp_id     INT PRIMARY KEY,
+--          emp_name   VARCHAR(40) NOT NULL,
+--          email      VARCHAR(60) UNIQUE,
+--          job_title  VARCHAR(40),
+--          dept_id    INT,
+--          manager_id INT,
+--          salary_k   DECIMAL(8,2) CHECK (salary_k > 0),
+--          hire_date  DATE,
+--          clearance  VARCHAR(10) DEFAULT 'NONE' CHECK (clearance IN ('NONE','SECRET','TOP SECRET')),
+--          FOREIGN KEY (dept_id)    REFERENCES departments(dept_id),
+--          FOREIGN KEY (manager_id) REFERENCES employees(emp_id)      -- self reference
+--        );
+BANAO TABLE employees (
+    emp_id     INT          MUKHYA KUNJI,
+    emp_name   VARCHAR(40)  ZAROORI,
+    email      VARCHAR(60)  ANOKHA,
+    job_title  VARCHAR(40),
+    dept_id    INT          SANDARBH departments(dept_id),
+    manager_id INT          SANDARBH employees(emp_id),
+    salary_k   NUMBER(8,2)  SHART (salary_k > 0),
+    hire_date  DATE,
+    clearance  VARCHAR(10)  WARNA 'NONE' SHART (clearance MEIN ('NONE', 'SECRET', 'TOP SECRET'))
+);
+
+-- MySQL: CREATE TABLE products (
+--          product_id   INT PRIMARY KEY,
+--          product_name VARCHAR(30) NOT NULL UNIQUE,
+--          launch_year  INT CHECK (launch_year BETWEEN 2003 AND 2030),
+--          category     VARCHAR(30)
+--        );
+BANAO TABLE products (
+    product_id   INT         MUKHYA KUNJI,
+    product_name VARCHAR(30) ZAROORI ANOKHA,
+    launch_year  INT         SHART (launch_year BEECH 2003 AUR 2030),
+    category     VARCHAR(30)
+);
+
+-- MySQL: CREATE TABLE clients (
+--          client_id   INT PRIMARY KEY,
+--          client_name VARCHAR(40) NOT NULL UNIQUE,
+--          sector      VARCHAR(30),
+--          country     VARCHAR(30)
+--        );
+BANAO TABLE clients (
+    client_id   INT         MUKHYA KUNJI,
+    client_name VARCHAR(40) ZAROORI ANOKHA,
+    sector      VARCHAR(30),
+    country     VARCHAR(30)
+);
+
+-- Bridge table for Client M:N Product, with a composite UNIQUE key and a
+-- CHECK that compares two columns of the same row.
+-- MySQL: CREATE TABLE contracts (
+--          contract_id INT PRIMARY KEY,
+--          client_id   INT NOT NULL,
+--          product_id  INT NOT NULL,
+--          start_date  DATE NOT NULL,
+--          end_date    DATE CHECK (end_date >= start_date),
+--          value_musd  DECIMAL(8,2) CHECK (value_musd > 0),
+--          status      VARCHAR(12) DEFAULT 'Active' CHECK (status IN ('Active','Completed','Cancelled')),
+--          UNIQUE (client_id, product_id),
+--          FOREIGN KEY (client_id)  REFERENCES clients(client_id),
+--          FOREIGN KEY (product_id) REFERENCES products(product_id)
+--        );
+BANAO TABLE contracts (
+    contract_id INT          MUKHYA KUNJI,
+    client_id   INT          ZAROORI SANDARBH clients(client_id),
+    product_id  INT          ZAROORI SANDARBH products(product_id),
+    start_date  DATE         ZAROORI,
+    end_date    DATE         SHART (end_date >= start_date),
+    value_musd  NUMBER(8,2)  SHART (value_musd > 0),
+    status      VARCHAR(12)  WARNA 'Active' SHART (status MEIN ('Active', 'Completed', 'Cancelled')),
+    ANOKHA (client_id, product_id)
+);
+
+-- MySQL: CREATE TABLE projects (
+--          project_id   INT PRIMARY KEY,
+--          project_name VARCHAR(40) NOT NULL,
+--          contract_id  INT,
+--          lead_emp     INT,
+--          budget_k     DECIMAL(10,2) CHECK (budget_k > 0),
+--          FOREIGN KEY (contract_id) REFERENCES contracts(contract_id),
+--          FOREIGN KEY (lead_emp)    REFERENCES employees(emp_id)
+--        );
+BANAO TABLE projects (
+    project_id   INT          MUKHYA KUNJI,
+    project_name VARCHAR(40)  ZAROORI,
+    contract_id  INT          SANDARBH contracts(contract_id),
+    lead_emp     INT          SANDARBH employees(emp_id),
+    budget_k     NUMBER(10,2) SHART (budget_k > 0)
+);
+
+-- Bridge table for Employee M:N Project, with a COMPOSITE PRIMARY KEY.
+-- MySQL: CREATE TABLE assignments (
+--          emp_id     INT,
+--          project_id INT,
+--          role       VARCHAR(30),
+--          hours      INT CHECK (hours >= 0),
+--          PRIMARY KEY (emp_id, project_id),
+--          FOREIGN KEY (emp_id)     REFERENCES employees(emp_id),
+--          FOREIGN KEY (project_id) REFERENCES projects(project_id)
+--        );
+BANAO TABLE assignments (
+    emp_id     INT          SANDARBH employees(emp_id),
+    project_id INT          SANDARBH projects(project_id),
+    role       VARCHAR(30),
+    hours      INT          SHART (hours >= 0),
+    MUKHYA KUNJI (emp_id, project_id)
+);
+
+-- Lookup table for the NON-EQUI join in Lab 8.
+-- MySQL: CREATE TABLE salary_grades (grade CHAR(2) PRIMARY KEY, min_k INT, max_k INT);
+BANAO TABLE salary_grades (
+    grade CHAR(2) MUKHYA KUNJI,
+    min_k INT,
+    max_k INT
+);
+
+-- MySQL: SHOW TABLES;
+DIKHAO TABLES;
+
+-- MySQL: DESC employees;
+BATAO employees;
+
+
+-- ============================================================================
+-- LAB 3 : MODIFYING A TABLE (ALTER / RENAME / TRUNCATE / DROP)
+-- ============================================================================
+
+-- MySQL: ALTER TABLE employees ADD phone VARCHAR(15);
+SUDHARO TABLE employees JODO phone VARCHAR(15);
+
+-- MySQL: ALTER TABLE employees ADD office VARCHAR(20) DEFAULT 'Denver';
+SUDHARO TABLE employees JODO COLUMN office VARCHAR(20) WARNA 'Denver';
+
+-- MySQL: ALTER TABLE employees RENAME COLUMN phone TO mobile;
+SUDHARO TABLE employees COLUMN phone NAYA_NAAM mobile;
+
+-- MySQL: ALTER TABLE employees DROP COLUMN mobile;
+SUDHARO TABLE employees HATAO COLUMN mobile;
+
+-- A scratch table to show rename, truncate and drop without touching real data.
+-- MySQL: CREATE TABLE temp_notes (note_id INT PRIMARY KEY, note TEXT);
+BANAO TABLE temp_notes (note_id INT MUKHYA KUNJI, note TEXT);
+
+-- MySQL: INSERT INTO temp_notes VALUES (1, 'kickoff'), (2, 'review');
+DAALO MEIN temp_notes MAAN (1, 'kickoff'), (2, 'review');
+
+-- MySQL: RENAME TABLE temp_notes TO meeting_notes;     (or ALTER TABLE temp_notes RENAME TO meeting_notes;)
+SUDHARO TABLE temp_notes NAYA_NAAM meeting_notes;
+
+-- MySQL: TRUNCATE TABLE meeting_notes;      -- all rows gone, structure kept
+SAAF TABLE meeting_notes;
+
+-- MySQL: SELECT COUNT(*) FROM meeting_notes;
+DIKHAO GINO(*) SE meeting_notes;
+
+-- MySQL: DROP TABLE meeting_notes;          -- rows AND structure gone
+HATAO TABLE meeting_notes;
+
+-- MySQL: ALTER TABLE employees MODIFY job_title VARCHAR(60);
+--   (No MeraDB command: a column's type cannot be changed in place.
+--    The MeraDB way is ADD a new column, copy with UPDATE, DROP the old one.)
+
+
+-- ============================================================================
+-- LAB 5 : DML -- INSERT (named columns, all columns, multi-row, DEFAULT)
+-- ============================================================================
+
+-- MySQL: INSERT INTO departments (dept_id, dept_name, location, budget_k) VALUES
+--          (10,'Engineering','Palo Alto',900), (20,'Forward Deployed Engineering','Denver',700),
+--          (30,'Product','Palo Alto',400),     (40,'Sales and Partnerships','New York',350),
+--          (50,'Legal and Compliance','Washington DC',150);
+DAALO MEIN departments (dept_id, dept_name, location, budget_k) MAAN
+    (10, 'Engineering',                  'Palo Alto',     900),
+    (20, 'Forward Deployed Engineering', 'Denver',        700),
+    (30, 'Product',                      'Palo Alto',     400),
+    (40, 'Sales and Partnerships',       'New York',      350),
+    (50, 'Legal and Compliance',         'Washington DC', 150);
+
+-- DEFAULT value: location is left out, so it becomes 'Denver'.
+-- MySQL: INSERT INTO departments (dept_id, dept_name, budget_k) VALUES (60, 'Research', 200);
+DAALO MEIN departments (dept_id, dept_name, budget_k) MAAN (60, 'Research', 200);
+
+-- Managers first (an employee's manager_id must already exist: foreign key).
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance)
+--        VALUES (101,'Meera Iyer','meera.iyer@pltr.example','Chief Engineer',10,NULL,420,'2012-03-15','TOP SECRET');
+DAALO MEIN employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) MAAN
+    (101, 'Meera Iyer', 'meera.iyer@pltr.example', 'Chief Engineer', 10, KHALI, 420, '2012-03-15', 'TOP SECRET');
+
+-- Multi-row insert.
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) VALUES
+--          (102,'Daniel Brooks',...), (103,'Sofia Rossi',...), (104,'Kabir Singh',...), (111,'Elena Petrova',...);
+DAALO MEIN employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) MAAN
+    (102, 'Daniel Brooks', 'daniel.brooks@pltr.example', 'Head of Deployment', 20, 101, 310, '2014-07-01', 'SECRET'),
+    (103, 'Sofia Rossi',   'sofia.rossi@pltr.example',   'Product Lead',       30, 101, 260, '2016-01-11', 'SECRET'),
+    (104, 'Kabir Singh',   'kabir.singh@pltr.example',   'Sales Director',     40, 101, 240, '2015-05-20', 'NONE'),
+    (111, 'Elena Petrova', 'elena.petrova@pltr.example', 'Legal Counsel',      50, 101, 210, '2017-03-30', 'SECRET');
+
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) VALUES
+--          (105,...), (106,...), (107,...), (108,...), (109,...);
+DAALO MEIN employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) MAAN
+    (105, 'Ananya Rao',  'ananya.rao@pltr.example',  'Software Engineer',         10, 101, 165, '2021-08-02', 'SECRET'),
+    (106, 'Lucas Weber', 'lucas.weber@pltr.example', 'Software Engineer',         10, 101, 158, '2022-02-14', 'NONE'),
+    (107, 'Priya Nair',  'priya.nair@pltr.example',  'Forward Deployed Engineer', 20, 102, 175, '2020-09-07', 'TOP SECRET'),
+    (108, 'Omar Haddad', 'omar.haddad@pltr.example', 'Forward Deployed Engineer', 20, 102, 170, '2019-04-22', 'SECRET'),
+    (109, 'Grace Kim',   'grace.kim@pltr.example',   'Product Manager',           30, 103, 190, '2018-10-01', 'NONE');
+
+-- DEFAULT again: clearance is left out, so it becomes 'NONE'.
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date)
+--        VALUES (110,'Rohan Gupta','rohan.gupta@pltr.example','Account Executive',40,104,140,'2023-06-12');
+DAALO MEIN employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date) MAAN
+    (110, 'Rohan Gupta', 'rohan.gupta@pltr.example', 'Account Executive', 40, 104, 140, '2023-06-12');
+
+-- NULL on purpose: the salary offer is still pending (used for NVL/COALESCE later).
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance)
+--        VALUES (112,'Arjun Das','arjun.das@pltr.example','Data Scientist',10,101,NULL,'2024-01-08','NONE');
+DAALO MEIN employees (emp_id, emp_name, email, job_title, dept_id, manager_id, salary_k, hire_date, clearance) MAAN
+    (112, 'Arjun Das', 'arjun.das@pltr.example', 'Data Scientist', 10, 101, KHALI, '2024-01-08', 'NONE');
+
+-- INSERT without a column list = every column, in table order (id, name, ..., office).
+-- MySQL: INSERT INTO products VALUES (1,'Gotham',2008,'Defence and Intelligence'), (2,'Foundry',2016,'Commercial Analytics'),
+--                                   (3,'Apollo',2021,'Software Deployment'),     (4,'AIP',2023,'Artificial Intelligence');
+DAALO MEIN products MAAN
+    (1, 'Gotham',  2008, 'Defence and Intelligence'),
+    (2, 'Foundry', 2016, 'Commercial Analytics'),
+    (3, 'Apollo',  2021, 'Software Deployment'),
+    (4, 'AIP',     2023, 'Artificial Intelligence');
+
+-- MySQL: INSERT INTO clients VALUES (201,'Aurora Airlines','Aviation','USA'), ... (206,'Lotus Retail','Retail','India');
+DAALO MEIN clients MAAN
+    (201, 'Aurora Airlines',  'Aviation',   'USA'),
+    (202, 'Northwind Health', 'Healthcare', 'UK'),
+    (203, 'Helix Energy',     'Energy',     'Germany'),
+    (204, 'Orion Bank',       'Finance',    'India'),
+    (205, 'Vega Motors',      'Automotive', 'Japan'),
+    (206, 'Lotus Retail',     'Retail',     'India');
+
+-- MySQL: INSERT INTO contracts VALUES (301,201,2,'2022-01-01','2024-12-31',12.5,'Completed'), ... ;
+DAALO MEIN contracts MAAN
+    (301, 201, 2, '2022-01-01', '2024-12-31', 12.5, 'Completed'),
+    (302, 201, 4, '2024-03-01', '2026-02-28',  8.0, 'Active'),
+    (303, 202, 2, '2021-06-01', '2025-05-31', 20.0, 'Completed'),
+    (304, 202, 3, '2023-01-15', '2027-01-14',  6.5, 'Active'),
+    (305, 203, 2, '2023-09-01', '2026-08-31', 15.0, 'Active'),
+    (306, 204, 4, '2025-01-01', '2027-12-31',  9.5, 'Active'),
+    (307, 205, 3, '2024-07-01', '2025-06-30',  4.0, 'Completed'),
+    (308, 205, 4, '2025-04-01', '2028-03-31', 11.0, 'Active');
+
+-- MySQL: INSERT INTO projects VALUES (401,'Fleet Optimisation',302,107,900), ... (406,'Model Evaluation',NULL,112,300);
+DAALO MEIN projects MAAN
+    (401, 'Fleet Optimisation',    302,   107,  900),
+    (402, 'Hospital Bed Planning', 303,   108, 1500),
+    (403, 'Supply Chain Twin',     305,   102, 1200),
+    (404, 'Fraud Detection',       306,   105,  800),
+    (405, 'Factory Rollout',       308,   107,  700),
+    (406, 'Model Evaluation',      KHALI, 112,  300);
+
+-- MySQL: INSERT INTO assignments VALUES (107,401,'Lead',320), (105,401,'Engineer',200), ... ;
+DAALO MEIN assignments MAAN
+    (107, 401, 'Lead',           320),
+    (105, 401, 'Engineer',       200),
+    (106, 401, 'Engineer',       150),
+    (108, 402, 'Lead',           400),
+    (109, 402, 'Product Manager',120),
+    (102, 403, 'Lead',           250),
+    (105, 403, 'Engineer',       180),
+    (105, 404, 'Lead',           300),
+    (112, 404, 'Data Scientist', 220),
+    (107, 405, 'Lead',           160),
+    (106, 405, 'Engineer',       140),
+    (112, 406, 'Lead',            90),
+    (109, 406, 'Product Manager', 40);
+
+-- MySQL: INSERT INTO salary_grades VALUES ('L1',0,150), ('L2',151,200), ('L3',201,300), ('L4',301,1000);
+DAALO MEIN salary_grades MAAN ('L1', 0, 150), ('L2', 151, 200), ('L3', 201, 300), ('L4', 301, 1000);
+
+
+-- ============================================================================
+-- LAB 4 + THEORY L21 : CONSTRAINTS AND INTEGRITY -- each line below must FAIL
+-- ============================================================================
+
+-- EXPECTED ERROR (PRIMARY KEY: emp_id 101 already exists)
+-- MySQL: INSERT INTO employees (emp_id, emp_name) VALUES (101, 'Duplicate Person');
+DAALO MEIN employees (emp_id, emp_name) MAAN (101, 'Duplicate Person');
+
+-- EXPECTED ERROR (NOT NULL: emp_name missing)
+-- MySQL: INSERT INTO employees (emp_id) VALUES (150);
+DAALO MEIN employees (emp_id) MAAN (150);
+
+-- EXPECTED ERROR (UNIQUE: this email belongs to 105)
+-- MySQL: INSERT INTO employees (emp_id, emp_name, email) VALUES (151, 'Copy Cat', 'ananya.rao@pltr.example');
+DAALO MEIN employees (emp_id, emp_name, email) MAAN (151, 'Copy Cat', 'ananya.rao@pltr.example');
+
+-- EXPECTED ERROR (FOREIGN KEY: department 99 does not exist -- referential integrity)
+-- MySQL: INSERT INTO employees (emp_id, emp_name, dept_id) VALUES (152, 'Lost Person', 99);
+DAALO MEIN employees (emp_id, emp_name, dept_id) MAAN (152, 'Lost Person', 99);
+
+-- EXPECTED ERROR (CHECK: salary must be > 0)
+-- MySQL: INSERT INTO employees (emp_id, emp_name, salary_k) VALUES (153, 'Negative Pay', -5);
+DAALO MEIN employees (emp_id, emp_name, salary_k) MAAN (153, 'Negative Pay', -5);
+
+-- EXPECTED ERROR (CHECK with IN list: 'ULTRA' is not a clearance level -- domain constraint)
+-- MySQL: INSERT INTO employees (emp_id, emp_name, clearance) VALUES (154, 'Spy Novel', 'ULTRA');
+DAALO MEIN employees (emp_id, emp_name, clearance) MAAN (154, 'Spy Novel', 'ULTRA');
+
+-- EXPECTED ERROR (CHECK across two columns: contract ends before it starts)
+-- MySQL: INSERT INTO contracts VALUES (390, 206, 1, '2025-01-01', '2024-01-01', 3.0, 'Active');
+DAALO MEIN contracts MAAN (390, 206, 1, '2025-01-01', '2024-01-01', 3.0, 'Active');
+
+-- EXPECTED ERROR (composite UNIQUE: client 201 already has product 2)
+-- MySQL: INSERT INTO contracts VALUES (391, 201, 2, '2026-01-01', '2026-12-31', 1.0, 'Active');
+DAALO MEIN contracts MAAN (391, 201, 2, '2026-01-01', '2026-12-31', 1.0, 'Active');
+
+-- EXPECTED ERROR (composite PRIMARY KEY: 107 is already on project 401)
+-- MySQL: INSERT INTO assignments VALUES (107, 401, 'Lead', 10);
+DAALO MEIN assignments MAAN (107, 401, 'Lead', 10);
+
+-- EXPECTED ERROR (FOREIGN KEY on delete = RESTRICT: department 10 still has employees)
+-- MySQL: DELETE FROM departments WHERE dept_id = 10;      -- MySQL: ERROR 1451 (RESTRICT / NO ACTION)
+MITAO SE departments JAHAN dept_id = 10;
+
+-- MANAGING CONSTRAINTS: add a constraint to an existing table.
+-- MySQL: ALTER TABLE projects ADD CONSTRAINT uq_proj UNIQUE (project_name, contract_id);
+SUDHARO TABLE projects JODO ANOKHA (project_name, contract_id);
+
+-- MySQL: ALTER TABLE projects DROP INDEX uq_proj;   /   ALTER TABLE t DROP CONSTRAINT name;
+--   (No MeraDB command to drop a single constraint; recreate the table instead.)
+-- MySQL: ... FOREIGN KEY ... ON DELETE CASCADE
+--   (MeraDB foreign keys are always RESTRICT -- shown by the failing DELETE above.)
+
+
+-- ============================================================================
+-- LAB 5 (continued) : INSERT ... SELECT, MULTI-TABLE INSERT, MERGE, UPDATE, DELETE
+-- ============================================================================
+
+-- MySQL: CREATE TABLE contracts_archive (contract_id INT PRIMARY KEY, client_id INT, product_id INT,
+--                                        value_musd DECIMAL(8,2), status VARCHAR(12));
+BANAO TABLE contracts_archive (
+    contract_id INT MUKHYA KUNJI,
+    client_id   INT,
+    product_id  INT,
+    value_musd  NUMBER(8,2),
+    status      VARCHAR(12)
+);
+
+-- MySQL: CREATE TABLE active_pipeline (contract_id INT PRIMARY KEY, client_id INT, value_musd DECIMAL(8,2));
+BANAO TABLE active_pipeline (
+    contract_id INT MUKHYA KUNJI,
+    client_id   INT,
+    value_musd  NUMBER(8,2)
+);
+
+-- INSERT ... SELECT: copy rows from a query instead of typing VALUES.
+-- MySQL: INSERT INTO contracts_archive (contract_id, client_id, product_id, value_musd, status)
+--        SELECT contract_id, client_id, product_id, value_musd, status FROM contracts WHERE status = 'Completed';
+DAALO MEIN contracts_archive (contract_id, client_id, product_id, value_musd, status)
+    DIKHAO contract_id, client_id, product_id, value_musd, status SE contracts JAHAN status = 'Completed';
+
+-- MULTI-TABLE INSERT. Oracle has one statement for it:
+-- Oracle: INSERT ALL INTO contracts_archive ... INTO active_pipeline ... SELECT ... FROM contracts;
+-- MySQL (and MeraDB) do it as one INSERT ... SELECT per target table:
+-- MySQL: INSERT INTO active_pipeline (contract_id, client_id, value_musd)
+--        SELECT contract_id, client_id, value_musd FROM contracts WHERE status = 'Active';
+DAALO MEIN active_pipeline (contract_id, client_id, value_musd)
+    DIKHAO contract_id, client_id, value_musd SE contracts JAHAN status = 'Active';
+
+-- MERGE (update the row if the key exists, insert it if not), from a staging table.
+-- MySQL: CREATE TABLE client_updates (client_id INT PRIMARY KEY, client_name VARCHAR(40), sector VARCHAR(30), country VARCHAR(30));
+BANAO TABLE client_updates (
+    client_id   INT MUKHYA KUNJI,
+    client_name VARCHAR(40),
+    sector      VARCHAR(30),
+    country     VARCHAR(30)
+);
+
+-- MySQL: INSERT INTO client_updates VALUES (204,'Orion Bank','Banking and Finance','India'), (207,'Kestrel Shipping','Logistics','Singapore');
+DAALO MEIN client_updates MAAN
+    (204, 'Orion Bank',       'Banking and Finance', 'India'),
+    (207, 'Kestrel Shipping', 'Logistics',           'Singapore');
+
+-- Oracle: MERGE INTO clients c USING client_updates u ON (c.client_id = u.client_id)
+--         WHEN MATCHED THEN UPDATE SET c.sector = u.sector, c.country = u.country
+--         WHEN NOT MATCHED THEN INSERT VALUES (u.client_id, u.client_name, u.sector, u.country);
+-- MySQL: INSERT INTO clients (client_id, client_name, sector, country)
+--        SELECT client_id, client_name, sector, country FROM client_updates
+--        ON DUPLICATE KEY UPDATE sector = VALUES(sector), country = VALUES(country);
+-- (204 already exists -> updated; 207 is new -> inserted)
+DAALO MEIN clients (client_id, client_name, sector, country)
+    DIKHAO client_id, client_name, sector, country SE client_updates
+    TAKRAAV PAR BADLO sector = sector, country = country;
+
+-- MySQL: SELECT * FROM clients ORDER BY client_id;
+DIKHAO * SE clients KRAM client_id;
+
+-- UPDATE one row.
+-- MySQL: UPDATE employees SET office = 'Palo Alto' WHERE emp_id = 101;
+BADLO employees RAKHO office = 'Palo Alto' JAHAN emp_id = 101;
+
+-- UPDATE many rows with an expression.
+-- MySQL: UPDATE employees SET office = 'Palo Alto' WHERE dept_id IN (10, 30);
+BADLO employees RAKHO office = 'Palo Alto' JAHAN dept_id MEIN (10, 30);
+
+-- UPDATE several columns at once.
+-- MySQL: UPDATE employees SET office = 'New York', job_title = 'Senior Account Executive' WHERE emp_id = 110;
+BADLO employees RAKHO office = 'New York', job_title = 'Senior Account Executive' JAHAN emp_id = 110;
+
+-- UPDATE with a subquery in the WHERE.
+-- MySQL: UPDATE departments SET budget_k = budget_k * 1.10
+--        WHERE dept_id IN (SELECT dept_id FROM employees WHERE clearance = 'TOP SECRET');
+BADLO departments RAKHO budget_k = budget_k * 1.10
+    JAHAN dept_id MEIN (DIKHAO dept_id SE employees JAHAN clearance = 'TOP SECRET');
+
+-- DELETE: add a cancelled contract, then delete it.
+-- MySQL: INSERT INTO contracts VALUES (309, 206, 2, '2025-02-01', '2025-03-01', 0.5, 'Cancelled');
+DAALO MEIN contracts MAAN (309, 206, 2, '2025-02-01', '2025-03-01', 0.5, 'Cancelled');
+
+-- MySQL: DELETE FROM contracts WHERE status = 'Cancelled';
+MITAO SE contracts JAHAN status = 'Cancelled';
+
+-- DELETE with a subquery: drop staging rows that are now in clients.
+-- MySQL: DELETE FROM client_updates WHERE client_id IN (SELECT client_id FROM clients);
+MITAO SE client_updates JAHAN client_id MEIN (DIKHAO client_id SE clients);
+
+
+-- ============================================================================
+-- LAB 6 : SELECT AND WHERE -- columns, characters, rows, LIMIT, comparisons
+-- ============================================================================
+
+-- MySQL: SELECT * FROM departments;
+DIKHAO * SE departments;
+
+-- MySQL: SELECT emp_name, job_title FROM employees;
+DIKHAO emp_name, job_title SE employees;
+
+-- Arithmetic and a column alias.
+-- MySQL: SELECT emp_name, salary_k * 1000 AS annual_usd FROM employees;
+DIKHAO emp_name, salary_k * 1000 KAHO annual_usd SE employees;
+
+-- Character concatenation (MySQL CONCAT, Oracle ||, MeraDB +).
+-- MySQL: SELECT CONCAT(emp_name, ' <', email, '>') AS contact FROM employees;
+DIKHAO emp_name + ' <' + email + '>' KAHO contact SE employees;
+
+-- Limit rows.
+-- MySQL: SELECT emp_name, hire_date FROM employees ORDER BY hire_date LIMIT 3;     (Oracle: FETCH FIRST 3 ROWS ONLY)
+DIKHAO emp_name, hire_date SE employees KRAM hire_date SIRF 3;
+
+-- Comparison operators: =  !=  <>  <  <=  >  >=
+-- MySQL: SELECT emp_name FROM employees WHERE dept_id = 20;
+DIKHAO emp_name SE employees JAHAN dept_id = 20;
+
+-- MySQL: SELECT emp_name, clearance FROM employees WHERE clearance <> 'NONE';
+DIKHAO emp_name, clearance SE employees JAHAN clearance <> 'NONE';
+
+-- MySQL: SELECT emp_name, salary_k FROM employees WHERE salary_k >= 200;
+DIKHAO emp_name, salary_k SE employees JAHAN salary_k >= 200;
+
+-- MySQL: SELECT emp_name, hire_date FROM employees WHERE hire_date < '2016-01-01';
+DIKHAO emp_name, hire_date SE employees JAHAN hire_date < '2016-01-01';
+
+-- BETWEEN, IN, LIKE, IS NULL
+-- MySQL: SELECT emp_name, salary_k FROM employees WHERE salary_k BETWEEN 150 AND 200;
+DIKHAO emp_name, salary_k SE employees JAHAN salary_k BEECH 150 AUR 200;
+
+-- MySQL: SELECT client_name, country FROM clients WHERE country IN ('India', 'UK');
+DIKHAO client_name, country SE clients JAHAN country MEIN ('India', 'UK');
+
+-- MySQL: SELECT emp_name FROM employees WHERE emp_name LIKE 'A%';            -- starts with A
+DIKHAO emp_name SE employees JAHAN emp_name JAISA 'A%';
+
+-- MySQL: SELECT emp_name FROM employees WHERE job_title LIKE '%Engineer%';   -- contains
+DIKHAO emp_name, job_title SE employees JAHAN job_title JAISA '%Engineer%';
+
+-- MySQL: SELECT product_name FROM products WHERE product_name LIKE '_p%';    -- 2nd letter p
+DIKHAO product_name SE products JAHAN product_name JAISA '_p%';
+
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k IS NULL;
+DIKHAO emp_name SE employees JAHAN salary_k HAI KHALI;
+
+-- MySQL: SELECT emp_name FROM employees WHERE manager_id IS NOT NULL AND dept_id NOT IN (10, 20);
+DIKHAO emp_name SE employees JAHAN manager_id HAI NAHI KHALI AUR dept_id NAHI MEIN (10, 20);
+
+-- MySQL: SELECT DISTINCT location FROM departments;
+DIKHAO ALAG location SE departments;
+
+
+-- ============================================================================
+-- LAB 7 : LOGICAL OPERATORS, PRECEDENCE, ORDER BY, GROUP FUNCTIONS, GROUP BY, HAVING
+-- ============================================================================
+
+-- Precedence: NOT > AND > OR. Without brackets AND binds first.
+-- MySQL: SELECT emp_name FROM employees WHERE dept_id = 10 OR dept_id = 20 AND salary_k > 172;
+DIKHAO emp_name SE employees JAHAN dept_id = 10 YA dept_id = 20 AUR salary_k > 172;
+
+-- With brackets the meaning changes.
+-- MySQL: SELECT emp_name FROM employees WHERE (dept_id = 10 OR dept_id = 20) AND salary_k > 172;
+DIKHAO emp_name SE employees JAHAN (dept_id = 10 YA dept_id = 20) AUR salary_k > 172;
+
+-- MySQL: SELECT emp_name FROM employees WHERE NOT (clearance = 'NONE');
+DIKHAO emp_name SE employees JAHAN NAHI (clearance = 'NONE');
+
+-- Sorting: several columns, ASC and DESC.
+-- MySQL: SELECT emp_name, dept_id, salary_k FROM employees ORDER BY dept_id ASC, salary_k DESC;
+DIKHAO emp_name, dept_id, salary_k SE employees KRAM dept_id SEEDHA, salary_k ULTA;
+
+-- Sorting by an alias.
+-- MySQL: SELECT emp_name, salary_k * 12 AS yearly_k FROM employees ORDER BY yearly_k DESC LIMIT 5;
+DIKHAO emp_name, salary_k * 12 KAHO yearly_k SE employees KRAM yearly_k ULTA SIRF 5;
+
+-- Group functions (COUNT(*) counts rows; COUNT(col), SUM, AVG, MIN, MAX skip NULL).
+-- MySQL: SELECT COUNT(*) AS staff, COUNT(salary_k) AS paid, SUM(salary_k) AS payroll_k,
+--               AVG(salary_k) AS avg_k, MIN(salary_k) AS min_k, MAX(salary_k) AS max_k FROM employees;
+DIKHAO GINO(*) KAHO staff, GINO(salary_k) KAHO paid, KUL(salary_k) KAHO payroll_k,
+       AUSAT(salary_k) KAHO avg_k, NYUNTAM(salary_k) KAHO min_k, ADHIKTAM(salary_k) KAHO max_k
+    SE employees;
+
+-- MIN / MAX work on dates too.
+-- MySQL: SELECT MIN(hire_date) AS first_hire, MAX(hire_date) AS latest_hire FROM employees;
+DIKHAO NYUNTAM(hire_date) KAHO first_hire, ADHIKTAM(hire_date) KAHO latest_hire SE employees;
+
+-- NVL / IFNULL / COALESCE: replace NULL with a value.
+-- MySQL: SELECT emp_name, IFNULL(salary_k, 0) AS salary_k FROM employees;      (Oracle: NVL(salary_k, 0))
+DIKHAO emp_name, PEHLA(salary_k, 0) KAHO salary_k SE employees;
+
+-- AVG with and without NULLs: AVG skips the NULL, AVG(IFNULL(x,0)) counts it as 0.
+-- MySQL: SELECT AVG(salary_k) AS avg_skip_null, AVG(IFNULL(salary_k, 0)) AS avg_null_as_zero FROM employees;
+DIKHAO AUSAT(salary_k) KAHO avg_skip_null, AUSAT(PEHLA(salary_k, 0)) KAHO avg_null_as_zero SE employees;
+
+-- CASE WHEN (conditional column).
+-- MySQL: SELECT emp_name, CASE WHEN salary_k >= 300 THEN 'Executive' WHEN salary_k >= 180 THEN 'Senior'
+--                               WHEN salary_k IS NULL THEN 'Pending' ELSE 'Staff' END AS band FROM employees;
+DIKHAO emp_name,
+    AGAR salary_k >= 300 TAB 'Executive'
+    AGAR salary_k >= 180 TAB 'Senior'
+    AGAR salary_k HAI KHALI TAB 'Pending'
+    WARNA 'Staff'
+    KHATAM KAHO band
+    SE employees;
+
+-- GROUP BY: one row per department ("per what?" -> per department).
+-- MySQL: SELECT dept_id, COUNT(*) AS staff, AVG(salary_k) AS avg_k FROM employees GROUP BY dept_id ORDER BY dept_id;
+DIKHAO dept_id, GINO(*) KAHO staff, AUSAT(salary_k) KAHO avg_k SE employees SAMOOH dept_id KRAM dept_id;
+
+-- WHERE (rows, before grouping) + GROUP BY + HAVING (groups, after grouping) + ORDER BY.
+-- MySQL: SELECT dept_id, COUNT(*) AS staff, SUM(salary_k) AS payroll_k FROM employees
+--        WHERE hire_date >= '2015-01-01' GROUP BY dept_id HAVING COUNT(*) >= 2 ORDER BY payroll_k DESC;
+DIKHAO dept_id, GINO(*) KAHO staff, KUL(salary_k) KAHO payroll_k
+    SE employees
+    JAHAN hire_date >= '2015-01-01'
+    SAMOOH dept_id
+    JINKA GINO(*) >= 2
+    KRAM payroll_k ULTA;
+
+-- MySQL: SELECT status, COUNT(*) AS deals, SUM(value_musd) AS total_musd FROM contracts GROUP BY status;
+DIKHAO status, GINO(*) KAHO deals, KUL(value_musd) KAHO total_musd SE contracts SAMOOH status;
+
+-- COUNT(DISTINCT col). MeraDB counts distinct values through a view of SELECT DISTINCT.
+-- MySQL: SELECT COUNT(DISTINCT client_id) AS paying_clients FROM contracts;
+BANAO VIEW paying_clients_v KAHO DIKHAO ALAG client_id SE contracts;
+DIKHAO GINO(*) KAHO paying_clients SE paying_clients_v;
+
+
+-- ============================================================================
+-- LAB 8 + THEORY L17 : JOINS
+-- ============================================================================
+
+-- CROSS JOIN / CARTESIAN PRODUCT: every product with every grade (4 x 4 = 16 rows).
+-- MySQL: SELECT p.product_name, g.grade FROM products p CROSS JOIN salary_grades g;
+DIKHAO p.product_name, g.grade SE products p MILAO salary_grades g PAR SACH;
+
+-- NATURAL JOIN: joins on every same-named column (here only dept_id).
+-- MySQL: SELECT emp_name, dept_name FROM employees NATURAL JOIN departments;
+DIKHAO emp_name, dept_name SE employees SAMAAN MILAO departments;
+
+-- INNER JOIN = EQUIJOIN (condition uses =).
+-- MySQL: SELECT e.emp_name, d.dept_name, d.location FROM employees e JOIN departments d ON e.dept_id = d.dept_id;
+DIKHAO e.emp_name, d.dept_name, d.location SE employees e MILAO departments d PAR e.dept_id = d.dept_id;
+
+-- Old-style (theta) equijoin, same result:
+-- MySQL: SELECT e.emp_name, d.dept_name FROM employees e, departments d WHERE e.dept_id = d.dept_id;
+--   (MeraDB writes every join with MILAO ... PAR, as above.)
+
+-- Three-table join through the bridge table: who sells what to whom.
+-- MySQL: SELECT cl.client_name, p.product_name, c.value_musd, c.status
+--        FROM contracts c JOIN clients cl ON c.client_id = cl.client_id
+--                         JOIN products p ON c.product_id = p.product_id ORDER BY c.value_musd DESC;
+DIKHAO cl.client_name, p.product_name, c.value_musd, c.status
+    SE contracts c
+    MILAO clients cl PAR c.client_id = cl.client_id
+    MILAO products p PAR c.product_id = p.product_id
+    KRAM c.value_musd ULTA;
+
+-- Four-table join: who works on which project for which client.
+-- MySQL: SELECT e.emp_name, a.role, pr.project_name, cl.client_name
+--        FROM assignments a JOIN employees e ON a.emp_id = e.emp_id JOIN projects pr ON a.project_id = pr.project_id
+--        JOIN contracts c ON pr.contract_id = c.contract_id JOIN clients cl ON c.client_id = cl.client_id;
+DIKHAO e.emp_name, a.role, pr.project_name, cl.client_name
+    SE assignments a
+    MILAO employees e  PAR a.emp_id = e.emp_id
+    MILAO projects pr  PAR a.project_id = pr.project_id
+    MILAO contracts c  PAR pr.contract_id = c.contract_id
+    MILAO clients cl   PAR c.client_id = cl.client_id
+    KRAM pr.project_name;
+
+-- SELF JOIN: each employee with their manager (two aliases of one table).
+-- MySQL: SELECT e.emp_name AS employee, m.emp_name AS manager FROM employees e JOIN employees m ON e.manager_id = m.emp_id;
+DIKHAO e.emp_name KAHO employee, m.emp_name KAHO manager SE employees e MILAO employees m PAR e.manager_id = m.emp_id;
+
+-- NON-EQUIJOIN: salary falls inside a grade's range.
+-- MySQL: SELECT e.emp_name, e.salary_k, g.grade FROM employees e JOIN salary_grades g ON e.salary_k BETWEEN g.min_k AND g.max_k;
+DIKHAO e.emp_name, e.salary_k, g.grade SE employees e MILAO salary_grades g PAR e.salary_k BEECH g.min_k AUR g.max_k;
+
+-- LEFT OUTER JOIN: every department, even Research which has nobody (NULLs on the right).
+-- MySQL: SELECT d.dept_name, e.emp_name FROM departments d LEFT JOIN employees e ON d.dept_id = e.dept_id;
+DIKHAO d.dept_name, e.emp_name SE departments d BAAYAN MILAO employees e PAR d.dept_id = e.dept_id;
+
+-- RIGHT OUTER JOIN: every client, even those with no contract.
+-- MySQL: SELECT c.contract_id, cl.client_name FROM contracts c RIGHT JOIN clients cl ON c.client_id = cl.client_id;
+DIKHAO c.contract_id, cl.client_name SE contracts c DAHINA MILAO clients cl PAR c.client_id = cl.client_id;
+
+-- FULL OUTER JOIN: every product and every contract, matched where possible.
+-- MySQL has no FULL JOIN; it is LEFT JOIN UNION RIGHT JOIN:
+-- MySQL: SELECT p.product_name, c.contract_id FROM products p LEFT JOIN contracts c ON p.product_id = c.product_id
+--        UNION SELECT p.product_name, c.contract_id FROM products p RIGHT JOIN contracts c ON p.product_id = c.product_id;
+DIKHAO p.product_name, c.contract_id SE products p DONO MILAO contracts c PAR p.product_id = c.product_id;
+
+-- ANTI-JOIN ("clients who never signed a contract") = LEFT JOIN + IS NULL.
+-- MySQL: SELECT cl.client_name FROM clients cl LEFT JOIN contracts c ON cl.client_id = c.client_id WHERE c.contract_id IS NULL;
+DIKHAO cl.client_name SE clients cl BAAYAN MILAO contracts c PAR cl.client_id = c.client_id JAHAN c.contract_id HAI KHALI;
+
+-- JOIN + GROUP BY: contract value per product.
+-- MySQL: SELECT p.product_name, COUNT(*) AS deals, SUM(c.value_musd) AS total_musd
+--        FROM contracts c JOIN products p ON c.product_id = p.product_id GROUP BY p.product_name ORDER BY total_musd DESC;
+DIKHAO p.product_name, GINO(*) KAHO deals, KUL(c.value_musd) KAHO total_musd
+    SE contracts c MILAO products p PAR c.product_id = p.product_id
+    SAMOOH p.product_name
+    KRAM total_musd ULTA;
+
+
+-- ============================================================================
+-- LAB 9 + THEORY L18 : SUBQUERIES
+-- ============================================================================
+
+-- SINGLE-ROW subquery (returns one value): paid more than the company average.
+-- MySQL: SELECT emp_name, salary_k FROM employees WHERE salary_k > (SELECT AVG(salary_k) FROM employees);
+DIKHAO emp_name, salary_k SE employees JAHAN salary_k > (DIKHAO AUSAT(salary_k) SE employees);
+
+-- MySQL: SELECT cl.client_name, c.value_musd FROM contracts c JOIN clients cl ON c.client_id = cl.client_id
+--        WHERE c.value_musd = (SELECT MAX(value_musd) FROM contracts);
+DIKHAO cl.client_name, c.value_musd SE contracts c MILAO clients cl PAR c.client_id = cl.client_id
+    JAHAN c.value_musd = (DIKHAO ADHIKTAM(value_musd) SE contracts);
+
+-- MULTIPLE-ROW subquery with IN: clients that have an Active contract.
+-- MySQL: SELECT client_name FROM clients WHERE client_id IN (SELECT client_id FROM contracts WHERE status = 'Active');
+DIKHAO client_name SE clients JAHAN client_id MEIN (DIKHAO client_id SE contracts JAHAN status = 'Active');
+
+-- MULTIPLE-ROW subquery with NOT IN: products nobody has bought yet.
+-- MySQL: SELECT product_name FROM products WHERE product_id NOT IN (SELECT product_id FROM contracts);
+DIKHAO product_name SE products JAHAN product_id NAHI MEIN (DIKHAO product_id SE contracts);
+
+-- Nested two levels: employees on any project of an Indian client.
+-- MySQL: SELECT emp_name FROM employees WHERE emp_id IN (SELECT emp_id FROM assignments WHERE project_id IN
+--          (SELECT project_id FROM projects WHERE contract_id IN
+--            (SELECT contract_id FROM contracts WHERE client_id IN (SELECT client_id FROM clients WHERE country = 'India'))));
+DIKHAO emp_name SE employees JAHAN emp_id MEIN (
+    DIKHAO emp_id SE assignments JAHAN project_id MEIN (
+        DIKHAO project_id SE projects JAHAN contract_id MEIN (
+            DIKHAO contract_id SE contracts JAHAN client_id MEIN (
+                DIKHAO client_id SE clients JAHAN country = 'India'))));
+
+-- CORRELATED subquery (inner query uses the outer row): paid above their own department's average.
+-- MySQL: SELECT e.emp_name, e.dept_id, e.salary_k FROM employees e
+--        WHERE e.salary_k > (SELECT AVG(e2.salary_k) FROM employees e2 WHERE e2.dept_id = e.dept_id);
+DIKHAO e.emp_name, e.dept_id, e.salary_k SE employees e
+    JAHAN e.salary_k > (DIKHAO AUSAT(e2.salary_k) SE employees e2 JAHAN e2.dept_id = e.dept_id);
+
+-- Correlated subquery in the SELECT list: number of projects per employee.
+-- MySQL: SELECT e.emp_name, (SELECT COUNT(*) FROM assignments a WHERE a.emp_id = e.emp_id) AS projects FROM employees e;
+DIKHAO e.emp_name, (DIKHAO GINO(*) SE assignments a JAHAN a.emp_id = e.emp_id) KAHO projects SE employees e;
+
+-- Subquery in HAVING: departments whose average pay beats the company average.
+-- MySQL: SELECT dept_id, AVG(salary_k) AS avg_k FROM employees GROUP BY dept_id
+--        HAVING AVG(salary_k) > (SELECT AVG(salary_k) FROM employees);
+DIKHAO dept_id, AUSAT(salary_k) KAHO avg_k SE employees SAMOOH dept_id
+    JINKA AUSAT(salary_k) > (DIKHAO AUSAT(salary_k) SE employees);
+
+-- EXISTS / NOT EXISTS / ANY / ALL: MeraDB writes these with IN / NOT IN / MAX / MIN.
+-- MySQL: SELECT emp_name FROM employees e WHERE EXISTS (SELECT 1 FROM projects p WHERE p.lead_emp = e.emp_id);
+DIKHAO emp_name SE employees JAHAN emp_id MEIN (DIKHAO lead_emp SE projects);
+
+-- MySQL: SELECT emp_name FROM employees e WHERE NOT EXISTS (SELECT 1 FROM assignments a WHERE a.emp_id = e.emp_id);
+DIKHAO emp_name SE employees JAHAN emp_id NAHI MEIN (DIKHAO emp_id SE assignments);
+
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k > ALL (SELECT salary_k FROM employees WHERE dept_id = 20);
+DIKHAO emp_name SE employees JAHAN salary_k > (DIKHAO ADHIKTAM(salary_k) SE employees JAHAN dept_id = 20);
+
+
+-- ============================================================================
+-- THEORY L14-L15 : SET OPERATIONS (relational algebra union / intersect / minus)
+-- ============================================================================
+
+-- UNION: employees who lead a project OR manage someone (duplicates removed).
+-- MySQL: SELECT lead_emp FROM projects UNION SELECT manager_id FROM employees WHERE manager_id IS NOT NULL;
+DIKHAO lead_emp SE projects
+SANYUKT
+DIKHAO manager_id SE employees JAHAN manager_id HAI NAHI KHALI;
+
+-- INTERSECT: employees who lead a project AND manage someone.
+-- MySQL: SELECT lead_emp FROM projects INTERSECT SELECT manager_id FROM employees;
+DIKHAO lead_emp SE projects
+SAAJHA
+DIKHAO manager_id SE employees;
+
+-- EXCEPT / MINUS: employees who lead a project but manage nobody.
+-- MySQL: SELECT lead_emp FROM projects EXCEPT SELECT manager_id FROM employees;     (Oracle: MINUS)
+DIKHAO lead_emp SE projects
+CHHODKAR
+DIKHAO manager_id SE employees;
+
+
+-- ============================================================================
+-- THEORY L14-L15 : RELATIONAL ALGEBRA written as queries
+-- ============================================================================
+
+-- SELECT  sigma[country='India'](clients)
+-- MySQL: SELECT * FROM clients WHERE country = 'India';
+DIKHAO * SE clients JAHAN country = 'India';
+
+-- PROJECT  pi[sector](clients)    (projection removes duplicates)
+-- MySQL: SELECT DISTINCT sector FROM clients;
+DIKHAO ALAG sector SE clients;
+
+-- RENAME  rho[staff(name, pay)](employees)
+-- MySQL: SELECT emp_name AS name, salary_k AS pay FROM employees AS staff;
+DIKHAO staff.emp_name KAHO name, staff.salary_k KAHO pay SE employees staff;
+
+-- DIVISION  pi[emp_id,project_id](assignments) / pi[project_id](sigma[lead_emp=107](projects))
+-- "Employees who work on EVERY project that Priya (107) leads" (counting method).
+-- MySQL: SELECT emp_id FROM assignments WHERE project_id IN (SELECT project_id FROM projects WHERE lead_emp = 107)
+--        GROUP BY emp_id HAVING COUNT(*) = (SELECT COUNT(*) FROM projects WHERE lead_emp = 107);
+DIKHAO emp_id SE assignments
+    JAHAN project_id MEIN (DIKHAO project_id SE projects JAHAN lead_emp = 107)
+    SAMOOH emp_id
+    JINKA GINO(*) = (DIKHAO GINO(*) SE projects JAHAN lead_emp = 107);
+
+
+-- ============================================================================
+-- THEORY L25 / L29 : NULL VALUES AND DANGLING TUPLES
+-- ============================================================================
+
+-- "= NULL" is UNKNOWN, never true: this returns 0 rows.
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k = NULL;
+DIKHAO emp_name SE employees JAHAN salary_k = KHALI;
+
+-- The correct test.
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k IS NULL;
+DIKHAO emp_name SE employees JAHAN salary_k HAI KHALI;
+
+-- Dangling tuple: project 406 has no contract, so an INNER join drops it ...
+-- MySQL: SELECT p.project_name, c.contract_id FROM projects p JOIN contracts c ON p.contract_id = c.contract_id;
+DIKHAO p.project_name, c.contract_id SE projects p MILAO contracts c PAR p.contract_id = c.contract_id;
+
+-- ... and an OUTER join keeps it with NULLs.
+-- MySQL: SELECT p.project_name, c.contract_id FROM projects p LEFT JOIN contracts c ON p.contract_id = c.contract_id;
+DIKHAO p.project_name, c.contract_id SE projects p BAAYAN MILAO contracts c PAR p.contract_id = c.contract_id;
+
+
+-- ============================================================================
+-- THEORY L23-L29 : NORMALIZATION -- a lossless decomposition you can check
+-- ----------------------------------------------------------------------------
+-- contract_flat holds one row per contract WITH the client's name and sector
+-- repeated. FDs: contract_id -> client_id, client_id -> client_name, sector.
+-- client_name/sector depend on the key only THROUGH client_id (a transitive
+-- dependency), so contract_flat is in 2NF but not 3NF, and the client's data
+-- is stored again for every contract (update anomaly).
+-- The normalized design is the separate clients + contracts tables above.
+-- The decomposition is LOSSLESS because the common attribute client_id is the
+-- key of clients: joining the two parts gives back exactly the flat table.
+-- ============================================================================
+
+-- MySQL: CREATE TABLE contract_flat (contract_id INT PRIMARY KEY, client_id INT, client_name VARCHAR(40),
+--                                    sector VARCHAR(30), product_id INT, value_musd DECIMAL(8,2));
+BANAO TABLE contract_flat (
+    contract_id INT MUKHYA KUNJI,
+    client_id   INT,
+    client_name VARCHAR(40),
+    sector      VARCHAR(30),
+    product_id  INT,
+    value_musd  NUMBER(8,2)
+);
+
+-- MySQL: INSERT INTO contract_flat SELECT c.contract_id, c.client_id, cl.client_name, cl.sector, c.product_id, c.value_musd
+--        FROM contracts c JOIN clients cl ON c.client_id = cl.client_id;
+DAALO MEIN contract_flat
+    DIKHAO c.contract_id, c.client_id, cl.client_name, cl.sector, c.product_id, c.value_musd
+    SE contracts c MILAO clients cl PAR c.client_id = cl.client_id;
+
+-- The redundancy: Aurora Airlines / Northwind Health / Vega Motors appear twice.
+-- MySQL: SELECT client_name, COUNT(*) AS copies FROM contract_flat GROUP BY client_name HAVING COUNT(*) > 1;
+DIKHAO client_name, GINO(*) KAHO copies SE contract_flat SAMOOH client_name JINKA GINO(*) > 1;
+
+-- Lossless check, both directions: each must return 0 rows.
+-- MySQL: SELECT contract_id, client_id, client_name, sector, product_id, value_musd FROM contract_flat
+--        EXCEPT SELECT c.contract_id, c.client_id, cl.client_name, cl.sector, c.product_id, c.value_musd
+--               FROM contracts c JOIN clients cl ON c.client_id = cl.client_id;
+DIKHAO contract_id, client_id, client_name, sector, product_id, value_musd SE contract_flat
+CHHODKAR
+DIKHAO c.contract_id, c.client_id, cl.client_name, cl.sector, c.product_id, c.value_musd
+    SE contracts c MILAO clients cl PAR c.client_id = cl.client_id;
+
+-- MySQL: (the same two queries the other way round)
+DIKHAO c.contract_id, c.client_id, cl.client_name, cl.sector, c.product_id, c.value_musd
+    SE contracts c MILAO clients cl PAR c.client_id = cl.client_id
+CHHODKAR
+DIKHAO contract_id, client_id, client_name, sector, product_id, value_musd SE contract_flat;
+
+
+-- ============================================================================
+-- LAB 10 + THEORY L16 : VIEWS
+-- ============================================================================
+
+-- MySQL: CREATE VIEW active_contracts_v AS
+--        SELECT c.contract_id AS contract_id, cl.client_name AS client_name, p.product_name AS product_name,
+--               c.value_musd AS value_musd, c.end_date AS end_date
+--        FROM contracts c JOIN clients cl ON c.client_id = cl.client_id JOIN products p ON c.product_id = p.product_id
+--        WHERE c.status = 'Active';
+BANAO VIEW active_contracts_v KAHO
+    DIKHAO c.contract_id KAHO contract_id, cl.client_name KAHO client_name, p.product_name KAHO product_name,
+           c.value_musd KAHO value_musd, c.end_date KAHO end_date
+    SE contracts c
+    MILAO clients cl PAR c.client_id = cl.client_id
+    MILAO products p PAR c.product_id = p.product_id
+    JAHAN c.status = 'Active';
+
+-- MySQL: CREATE VIEW dept_summary_v AS
+--        SELECT d.dept_name AS dept_name, COUNT(e.emp_id) AS staff, SUM(e.salary_k) AS payroll_k
+--        FROM departments d LEFT JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name;
+BANAO VIEW dept_summary_v KAHO
+    DIKHAO d.dept_name KAHO dept_name, GINO(e.emp_id) KAHO staff, KUL(e.salary_k) KAHO payroll_k
+    SE departments d BAAYAN MILAO employees e PAR d.dept_id = e.dept_id
+    SAMOOH d.dept_name;
+
+-- A view hides columns: a public directory without salaries or clearances.
+-- MySQL: CREATE VIEW staff_directory_v AS SELECT emp_id, emp_name, job_title, office FROM employees;
+BANAO VIEW staff_directory_v KAHO DIKHAO emp_id, emp_name, job_title, office SE employees;
+
+-- Use a view like a table.
+-- MySQL: SELECT * FROM active_contracts_v ORDER BY value_musd DESC;
+DIKHAO * SE active_contracts_v KRAM value_musd ULTA;
+
+-- MySQL: SELECT * FROM dept_summary_v ORDER BY payroll_k DESC;
+DIKHAO * SE dept_summary_v KRAM payroll_k ULTA;
+
+-- A view always shows the latest data: change a contract, read the view again.
+-- MySQL: UPDATE contracts SET value_musd = 9.0 WHERE contract_id = 302;
+BADLO contracts RAKHO value_musd = 9.0 JAHAN contract_id = 302;
+
+-- MySQL: SELECT * FROM active_contracts_v WHERE contract_id = 302;
+DIKHAO * SE active_contracts_v JAHAN contract_id = 302;
+
+-- DML through a view.
+-- EXPECTED ERROR (MeraDB views are read-only; in MySQL this INSERT fails too,
+-- because a view with a JOIN is not insertable -- update the base table instead)
+-- MySQL: INSERT INTO active_contracts_v VALUES (399, 'X', 'Y', 1, '2030-01-01');
+DAALO MEIN active_contracts_v MAAN (399, 'X', 'Y', 1, '2030-01-01');
+
+-- Managing views.
+-- MySQL: SHOW FULL TABLES WHERE Table_type = 'VIEW';
+DIKHAO VIEWS;
+
+-- MySQL: SHOW CREATE VIEW staff_directory_v;
+BATAO staff_directory_v;
+
+-- MySQL: DROP VIEW paying_clients_v;
+HATAO VIEW paying_clients_v;
+
+
+-- ============================================================================
+-- INDEXING (Lab syllabus "indexing", Theory L43-L46)
+-- MeraDB builds a hash index automatically on every PRIMARY KEY and UNIQUE
+-- column. EXPLAIN (SAMJHAO) shows whether a query uses one.
+-- ============================================================================
+
+-- MySQL: CREATE UNIQUE INDEX idx_email ON employees (email);
+--   (MeraDB: email is already ANOKHA, so it already HAS this index.)
+-- MySQL: CREATE INDEX idx_dept ON employees (dept_id);
+--   (No CREATE INDEX command in MeraDB: non-unique columns are scanned.)
+
+-- Uses the primary-key hash index.
+-- MySQL: EXPLAIN SELECT * FROM employees WHERE emp_id = 107;
+SAMJHAO DIKHAO * SE employees JAHAN emp_id = 107;
+
+-- Uses the UNIQUE (email) hash index.
+-- MySQL: EXPLAIN SELECT emp_name FROM employees WHERE email = 'priya.nair@pltr.example';
+SAMJHAO DIKHAO emp_name SE employees JAHAN email = 'priya.nair@pltr.example';
+
+-- No index on salary_k, and a range (>) cannot use a hash index: full scan.
+-- MySQL: EXPLAIN SELECT * FROM employees WHERE salary_k > 200;
+SAMJHAO DIKHAO * SE employees JAHAN salary_k > 200;
+
+-- Equality join: hash join.
+-- MySQL: EXPLAIN SELECT e.emp_name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id;
+SAMJHAO DIKHAO e.emp_name, d.dept_name SE employees e MILAO departments d PAR e.dept_id = d.dept_id;
+
+
+-- ============================================================================
+-- LAB 11 + THEORY L16 (DCL) : USERS AND PRIVILEGES
+-- Users and grants are saved server-wide in <data folder>\users.json, with
+-- passwords stored as salted PBKDF2-SHA256 hashes (never as plain text).
+-- Grants are checked only for a session that logs in to the SERVER as that
+-- user (meradb_cli start, then meradb_cli shell -U analyst -W).
+-- Current engine limit: such a restricted session starts in database `main`
+-- and may not run ISTEMAL, so the palantir grants below are stored correctly
+-- but cannot yet be used by analyst/intern from a login.
+-- ============================================================================
+
+-- MySQL: CREATE USER 'analyst'@'localhost' IDENTIFIED BY 'Analyst@123';
+BANAO USER analyst GUPT 'Analyst@123';
+
+-- MySQL: CREATE USER 'intern'@'localhost' IDENTIFIED BY 'Intern@123';
+BANAO USER intern GUPT 'Intern@123';
+
+-- MySQL: GRANT SELECT ON palantir.employees TO 'analyst'@'localhost';
+ADHIKAR DO DIKHAO PAR employees KO analyst;
+
+-- MySQL: GRANT SELECT, INSERT ON palantir.contracts TO 'analyst'@'localhost';
+ADHIKAR DO DIKHAO, DAALO PAR contracts KO analyst;
+
+-- MySQL: GRANT ALL PRIVILEGES ON palantir.projects TO 'analyst'@'localhost';
+ADHIKAR DO SAB PAR projects KO analyst;
+
+-- Granting on a VIEW: the intern can read the directory but never the salaries.
+-- MySQL: GRANT SELECT ON palantir.staff_directory_v TO 'intern'@'localhost';
+ADHIKAR DO DIKHAO PAR staff_directory_v KO intern;
+
+-- MySQL: GRANT SELECT ON palantir.active_contracts_v TO 'intern'@'localhost';
+ADHIKAR DO DIKHAO PAR active_contracts_v KO intern;
+
+-- MySQL: REVOKE INSERT ON palantir.contracts FROM 'analyst'@'localhost';
+ADHIKAR WAPAS DAALO PAR contracts SE analyst;
+
+-- MySQL: REVOKE UPDATE, DELETE ON palantir.projects FROM 'analyst'@'localhost';
+ADHIKAR WAPAS BADLO, MITAO PAR projects SE analyst;
+
+-- A temporary account, removed again.
+-- MySQL: CREATE USER 'contractor'@'localhost' IDENTIFIED BY 'Temp@123';
+BANAO USER contractor GUPT 'Temp@123';
+
+-- MySQL: DROP USER 'contractor'@'localhost';
+HATAO USER contractor;
+
+-- Not in MeraDB (documented limits): roles (CREATE ROLE), column-level grants
+-- (GRANT SELECT (col) ...), WITH GRANT OPTION, SHOW GRANTS.
+
+
+-- ============================================================================
+-- LAB 12 + THEORY L30-L35 : TRANSACTIONS (COMMIT, ROLLBACK, SAVEPOINT)
+-- ============================================================================
+
+-- Transfer 50k of budget from Sales to Research: both updates, or neither.
+-- MySQL: START TRANSACTION;
+SHURU;
+
+-- MySQL: UPDATE departments SET budget_k = budget_k - 50 WHERE dept_id = 40;
+BADLO departments RAKHO budget_k = budget_k - 50 JAHAN dept_id = 40;
+
+-- MySQL: UPDATE departments SET budget_k = budget_k + 50 WHERE dept_id = 60;
+BADLO departments RAKHO budget_k = budget_k + 50 JAHAN dept_id = 60;
+
+-- MySQL: COMMIT;
+PAKKA;
+
+-- MySQL: SELECT dept_id, dept_name, budget_k FROM departments WHERE dept_id IN (40, 60);
+DIKHAO dept_id, dept_name, budget_k SE departments JAHAN dept_id MEIN (40, 60);
+
+-- ROLLBACK: an accidental "delete everything", undone.
+-- MySQL: START TRANSACTION;
+SHURU;
+
+-- MySQL: DELETE FROM assignments;
+MITAO SE assignments;
+
+-- MySQL: SELECT COUNT(*) FROM assignments;        -- 0 inside the transaction
+DIKHAO GINO(*) KAHO inside_txn SE assignments;
+
+-- MySQL: ROLLBACK;
+WAPAS;
+
+-- MySQL: SELECT COUNT(*) FROM assignments;        -- back to 13
+DIKHAO GINO(*) KAHO after_rollback SE assignments;
+
+-- SAVEPOINT (partial rollback):
+-- MySQL: START TRANSACTION;
+--        UPDATE projects SET budget_k = budget_k + 100 WHERE project_id = 401;
+--        SAVEPOINT sp1;
+--        UPDATE projects SET budget_k = budget_k + 999 WHERE project_id = 402;
+--        ROLLBACK TO SAVEPOINT sp1;        -- undoes only the 402 change
+--        COMMIT;                           -- keeps the 401 change
+-- MeraDB has no SAVEPOINT: a transaction is committed or rolled back whole.
+-- The same result in MeraDB = commit the part to keep, then roll back the rest:
+SHURU;
+BADLO projects RAKHO budget_k = budget_k + 100 JAHAN project_id = 401;
+PAKKA;
+SHURU;
+BADLO projects RAKHO budget_k = budget_k + 999 JAHAN project_id = 402;
+WAPAS;
+
+-- MySQL: SELECT project_id, budget_k FROM projects WHERE project_id IN (401, 402);   -- 401 = 1000, 402 = 1500
+DIKHAO project_id, budget_k SE projects JAHAN project_id MEIN (401, 402);
+
+
+-- ============================================================================
+-- LAB 12 + THEORY L22 : TRIGGERS
+-- ============================================================================
+
+-- AUDIT trigger (AFTER UPDATE): every salary change is logged with OLD and NEW.
+-- MySQL: CREATE TABLE salary_audit (emp_id INT, old_salary_k DECIMAL(8,2), new_salary_k DECIMAL(8,2));
+BANAO TABLE salary_audit (emp_id INT, old_salary_k NUMBER(8,2), new_salary_k NUMBER(8,2));
+
+-- MySQL: DELIMITER //
+--        CREATE TRIGGER trg_salary_audit AFTER UPDATE ON employees FOR EACH ROW
+--        BEGIN
+--          INSERT INTO salary_audit VALUES (NEW.emp_id, OLD.salary_k, NEW.salary_k);
+--        END //
+--        DELIMITER ;
+BANAO TRIGGER trg_salary_audit BAAD BADLO PAR employees SHURU
+    DAALO MEIN salary_audit MAAN (NAYA.emp_id, PURANA.salary_k, NAYA.salary_k);
+KHATAM;
+
+-- VALIDATION trigger (BEFORE INSERT): no one may be booked over 500 hours on
+-- one project. The trigger writes the new hours into a table whose CHECK
+-- allows at most 500; a bigger value makes the trigger fail, which cancels the
+-- INSERT -- the same job SIGNAL SQLSTATE '45000' does in MySQL.
+-- MySQL: CREATE TABLE hours_check (emp_id INT, project_id INT, hours INT CHECK (hours <= 500));
+BANAO TABLE hours_check (emp_id INT, project_id INT, hours INT SHART (hours <= 500));
+
+-- MySQL: DELIMITER //
+--        CREATE TRIGGER trg_hours_limit BEFORE INSERT ON assignments FOR EACH ROW
+--        BEGIN
+--          IF NEW.hours > 500 THEN
+--            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Too many hours';
+--          END IF;
+--        END //
+--        DELIMITER ;
+BANAO TRIGGER trg_hours_limit PEHLE DAALO PAR assignments SHURU
+    DAALO MEIN hours_check MAAN (NAYA.emp_id, NAYA.project_id, NAYA.hours);
+KHATAM;
+
+-- ARCHIVE trigger (AFTER DELETE): a deleted contract is copied to the archive.
+-- MySQL: DELIMITER //
+--        CREATE TRIGGER trg_contract_archive AFTER DELETE ON contracts FOR EACH ROW
+--        BEGIN
+--          INSERT INTO contracts_archive VALUES (OLD.contract_id, OLD.client_id, OLD.product_id, OLD.value_musd, OLD.status);
+--        END //
+--        DELIMITER ;
+BANAO TRIGGER trg_contract_archive BAAD MITAO PAR contracts SHURU
+    DAALO MEIN contracts_archive MAAN (PURANA.contract_id, PURANA.client_id, PURANA.product_id, PURANA.value_musd, PURANA.status);
+KHATAM;
+
+-- Fire the audit trigger.
+-- MySQL: UPDATE employees SET salary_k = 180 WHERE emp_id = 107;
+BADLO employees RAKHO salary_k = 180 JAHAN emp_id = 107;
+
+-- Fire the validation trigger: 120 hours is accepted ...
+-- MySQL: INSERT INTO assignments VALUES (108, 405, 'Engineer', 120);
+DAALO MEIN assignments MAAN (108, 405, 'Engineer', 120);
+
+-- EXPECTED ERROR (the BEFORE trigger rejects 650 hours; nothing is inserted)
+-- MySQL: INSERT INTO assignments VALUES (110, 401, 'Engineer', 650);
+DAALO MEIN assignments MAAN (110, 401, 'Engineer', 650);
+
+-- MySQL: SELECT COUNT(*) FROM assignments WHERE emp_id = 110;       -- 0
+DIKHAO GINO(*) KAHO rejected_rows SE assignments JAHAN emp_id = 110;
+
+-- Fire the archive trigger: sign a short contract, then delete it.
+-- MySQL: INSERT INTO contracts VALUES (310, 206, 1, '2026-01-01', '2026-06-30', 2.0, 'Cancelled');
+DAALO MEIN contracts MAAN (310, 206, 1, '2026-01-01', '2026-06-30', 2.0, 'Cancelled');
+
+-- MySQL: DELETE FROM contracts WHERE contract_id = 310;
+MITAO SE contracts JAHAN contract_id = 310;
+
+-- MySQL: SELECT * FROM contracts_archive WHERE contract_id = 310;
+DIKHAO * SE contracts_archive JAHAN contract_id = 310;
+
+
+-- ============================================================================
+-- LAB 12 : STORED PROCEDURES
+-- ============================================================================
+
+-- MySQL: DELIMITER //
+--        CREATE PROCEDURE give_raise (IN p_dept INT, IN p_pct DECIMAL(5,2))
+--        BEGIN
+--          UPDATE employees SET salary_k = salary_k * (1 + p_pct / 100) WHERE dept_id = p_dept;
+--        END //
+--        DELIMITER ;
+BANAO PROCEDURE give_raise (p_dept INT, p_pct FLOAT) SHURU
+    BADLO employees RAKHO salary_k = salary_k * (1 + p_pct / 100) JAHAN dept_id = p_dept;
+KHATAM;
+
+-- MySQL: DELIMITER //
+--        CREATE PROCEDURE staff_project (IN p_emp INT, IN p_proj INT, IN p_role VARCHAR(30), IN p_hours INT)
+--        BEGIN
+--          INSERT INTO assignments VALUES (p_emp, p_proj, p_role, p_hours);
+--        END //
+--        DELIMITER ;
+BANAO PROCEDURE staff_project (p_emp INT, p_proj INT, p_role TEXT, p_hours INT) SHURU
+    DAALO MEIN assignments MAAN (p_emp, p_proj, p_role, p_hours);
+KHATAM;
+
+-- 5% raise for Forward Deployed Engineering (also fires the audit trigger per row).
+-- MySQL: CALL give_raise(20, 5);
+CHALAO give_raise(20, 5);
+
+-- MySQL: CALL staff_project(111, 404, 'Compliance Review', 60);
+CHALAO staff_project(111, 404, 'Compliance Review', 60);
+
+-- MySQL: SELECT * FROM salary_audit;
+DIKHAO * SE salary_audit;
+
+-- MySQL: SELECT emp_id, project_id, role, hours FROM assignments WHERE emp_id = 111;
+DIKHAO emp_id, project_id, role, hours SE assignments JAHAN emp_id = 111;
+
+
+-- ============================================================================
+-- THEORY L19 : CURSORS     (no MeraDB command -- MySQL code and the MeraDB way)
+-- ============================================================================
+-- MySQL: DELIMITER //
+--        CREATE PROCEDURE total_active_value (OUT p_total DECIMAL(10,2))
+--        BEGIN
+--          DECLARE v_val  DECIMAL(8,2);
+--          DECLARE v_done INT DEFAULT 0;
+--          DECLARE cur CURSOR FOR SELECT value_musd FROM contracts WHERE status = 'Active';
+--          DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+--          SET p_total = 0;
+--          OPEN cur;
+--          rd: LOOP
+--            FETCH cur INTO v_val;
+--            IF v_done = 1 THEN LEAVE rd; END IF;
+--            SET p_total = p_total + v_val;
+--          END LOOP rd;
+--          CLOSE cur;
+--        END //
+--        DELIMITER ;
+--        CALL total_active_value(@t);  SELECT @t;
+-- A cursor walks the rows one by one. MeraDB has no cursors; it computes the
+-- same answer set-based, in one statement (row-by-row work is what its
+-- FOR EACH ROW triggers above do):
+-- MySQL: SELECT SUM(value_musd) AS total_active_musd FROM contracts WHERE status = 'Active';
+DIKHAO KUL(value_musd) KAHO total_active_musd SE contracts JAHAN status = 'Active';
+
+
+-- ============================================================================
+-- THEORY L20 : DYNAMIC SQL     (no MeraDB command -- MySQL code and the MeraDB way)
+-- ============================================================================
+-- MySQL: SET @sql = CONCAT('SELECT emp_name FROM employees WHERE dept_id = ?');
+--        PREPARE stmt FROM @sql;
+--        SET @d = 20;
+--        EXECUTE stmt USING @d;
+--        DEALLOCATE PREPARE stmt;
+-- MeraDB has no PREPARE/EXECUTE. Its nearest feature is a PARAMETERISED stored
+-- procedure: the statement is stored once and run later with new values.
+-- (Shown with an UPDATE because a MeraDB procedure reports row counts only.)
+-- MySQL: CREATE PROCEDURE set_office (IN p_dept INT, IN p_office VARCHAR(20))
+--        BEGIN UPDATE employees SET office = p_office WHERE dept_id = p_dept; END;
+BANAO PROCEDURE set_office (p_dept INT, p_office TEXT) SHURU
+    BADLO employees RAKHO office = p_office JAHAN dept_id = p_dept;
+KHATAM;
+
+-- MySQL: CALL set_office(50, 'Washington DC');
+CHALAO set_office(50, 'Washington DC');
+
+-- MySQL: CALL set_office(40, 'New York');
+CHALAO set_office(40, 'New York');
+
+-- MySQL: SELECT emp_name, office FROM employees ORDER BY office, emp_name;
+DIKHAO emp_name, office SE employees KRAM office, emp_name;
+
+
+-- ============================================================================
+-- STORED FUNCTION (Lab syllabus "functions")
+-- MySQL: DELIMITER //
+--        CREATE FUNCTION pay_band (p_sal DECIMAL(8,2)) RETURNS VARCHAR(10) DETERMINISTIC
+--        BEGIN
+--          RETURN CASE WHEN p_sal >= 300 THEN 'Executive' WHEN p_sal >= 180 THEN 'Senior' ELSE 'Staff' END;
+--        END //
+--        DELIMITER ;
+--        SELECT emp_name, pay_band(salary_k) FROM employees;
+-- MeraDB has no user-defined functions; the same CASE logic goes in the query:
+-- ============================================================================
+DIKHAO emp_name, salary_k,
+    AGAR salary_k >= 300 TAB 'Executive' AGAR salary_k >= 180 TAB 'Senior' WARNA 'Staff' KHATAM KAHO pay_band
+    SE employees KRAM salary_k ULTA;
+
+
+-- ============================================================================
+-- EXTENDED SQL : functions, paging, joins, subqueries, new column types,
+-- foreign-key actions, ALTER extras, REPLACE, views, roles and SHOW commands
+-- (all of these run in the MeraDB C++ engine)
+-- ============================================================================
+
+-- ---- String, numeric and date functions ----
+-- MySQL: SELECT UPPER(emp_name), LENGTH(emp_name), SUBSTRING(email, 1, 4), CONCAT(emp_name, ' <', email, '>') FROM employees LIMIT 3;
+DIKHAO UPPER(emp_name), LENGTH(emp_name), SUBSTRING(email, 1, 4), CONCAT(emp_name, ' <', email, '>') SE employees SIRF 3;
+
+-- MySQL: SELECT TRIM('  hi  '), LOWER('ABC'), REPLACE('a-b-c', '-', '+'), LEFT('palantir', 3), RIGHT('palantir', 3);
+DIKHAO TRIM('  hi  '), LOWER('ABC'), REPLACE('a-b-c', '-', '+'), LEFT('palantir', 3), RIGHT('palantir', 3);
+
+-- MySQL: SELECT ROUND(salary_k / 7, 2), MOD(salary_k, 7), ABS(-5), FLOOR(2.7), CEIL(2.1), POWER(2, 10), SQRT(16) FROM employees LIMIT 3;
+DIKHAO ROUND(salary_k / 7, 2), MOD(salary_k, 7), ABS(-5), FLOOR(2.7), CEIL(2.1), POWER(2, 10), SQRT(16) SE employees SIRF 3;
+
+-- MySQL: SELECT emp_name, YEAR(hire_date), DATEDIFF(CURDATE(), hire_date) AS days_here, DATE_FORMAT(hire_date, '%d %M %Y') FROM employees LIMIT 3;
+DIKHAO emp_name, YEAR(hire_date), DATEDIFF(CURDATE(), hire_date) KAHO days_here, DATE_FORMAT(hire_date, '%d %M %Y') SE employees SIRF 3;
+
+-- MySQL: SELECT NOW(), CURDATE();     (a SELECT without FROM)
+DIKHAO NOW(), CURDATE();
+
+-- MySQL: SELECT emp_name, COALESCE(manager_id, 0), NULLIF(clearance, 'NONE'), IFNULL(email, 'no email'), CAST(salary_k AS CHAR) FROM employees LIMIT 3;
+DIKHAO emp_name, PEHLA(manager_id, 0), NULLIF(clearance, 'NONE'), IFNULL(email, 'no email'), CAST(salary_k KAHO TEXT) SE employees SIRF 3;
+
+-- ---- LIMIT ... OFFSET ----
+-- MySQL: SELECT emp_id, emp_name FROM employees ORDER BY emp_id LIMIT 3 OFFSET 2;
+DIKHAO emp_id, emp_name SE employees KRAM emp_id SIRF 3 OFFSET 2;
+
+-- ---- JOIN ... USING, GROUP BY on two columns ----
+-- MySQL: SELECT emp_name, dept_name FROM employees JOIN departments USING (dept_id) ORDER BY emp_id LIMIT 4;
+DIKHAO emp_name, dept_name SE employees MILAO departments USING (dept_id) KRAM emp_id SIRF 4;
+
+-- MySQL: SELECT dept_id, clearance, COUNT(*) FROM employees GROUP BY dept_id, clearance ORDER BY dept_id, clearance;
+DIKHAO dept_id, clearance, GINO(*) SE employees SAMOOH dept_id, clearance KRAM dept_id, clearance;
+
+-- ---- EXISTS, ANY / ALL, a subquery in FROM ----
+-- MySQL: SELECT dept_name FROM departments d WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.dept_id);
+DIKHAO dept_name SE departments d JAHAN EXISTS (DIKHAO 1 SE employees e JAHAN e.dept_id = d.dept_id);
+
+-- MySQL: SELECT dept_name FROM departments d WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.dept_id);
+DIKHAO dept_name SE departments d JAHAN NOT EXISTS (DIKHAO 1 SE employees e JAHAN e.dept_id = d.dept_id);
+
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k > ALL (SELECT salary_k FROM employees WHERE dept_id = 30);
+DIKHAO emp_name SE employees JAHAN salary_k > ALL (DIKHAO salary_k SE employees JAHAN dept_id = 30);
+
+-- MySQL: SELECT emp_name FROM employees WHERE salary_k > ANY (SELECT salary_k FROM employees WHERE dept_id = 30);
+DIKHAO emp_name SE employees JAHAN salary_k > ANY (DIKHAO salary_k SE employees JAHAN dept_id = 30);
+
+-- MySQL: SELECT x.dept_id, x.n FROM (SELECT dept_id, COUNT(*) AS n FROM employees GROUP BY dept_id) x ORDER BY x.n DESC;
+DIKHAO x.dept_id, x.n SE (DIKHAO dept_id, GINO(*) KAHO n SE employees SAMOOH dept_id) x KRAM x.n ULTA;
+
+-- ---- AUTO_INCREMENT, ENUM, DATETIME ----
+-- MySQL: CREATE TABLE x_tickets (ticket_id INT PRIMARY KEY AUTO_INCREMENT, title VARCHAR(40) NOT NULL,
+--          severity ENUM('low','medium','high') DEFAULT 'low', opened_at DATETIME);
+BANAO TABLE x_tickets (
+    ticket_id INT         MUKHYA KUNJI AUTO_INCREMENT,
+    title     VARCHAR(40) ZAROORI,
+    severity  ENUM('low', 'medium', 'high') WARNA 'low',
+    opened_at DATETIME
+);
+
+-- MySQL: INSERT INTO x_tickets (title, severity, opened_at) VALUES ('Login page down', 'high', NOW()), ('Typo in report', 'low', '2026-10-30 09:15:00');
+DAALO MEIN x_tickets (title, severity, opened_at) MAAN ('Login page down', 'high', NOW()), ('Typo in report', 'low', '2026-10-30 09:15:00');
+DIKHAO * SE x_tickets;
+
+-- EXPECTED ERROR (ENUM accepts only its listed values)
+-- MySQL: INSERT INTO x_tickets (title, severity) VALUES ('Bad one', 'urgent');   -- ERROR 1265 / 1366
+DAALO MEIN x_tickets (title, severity) MAAN ('Bad one', 'urgent');
+
+-- ---- CREATE TABLE ... AS SELECT, CREATE TABLE ... LIKE ----
+-- MySQL: CREATE TABLE x_big_earners AS SELECT emp_id, emp_name, salary_k FROM employees WHERE salary_k > 150;
+BANAO TABLE x_big_earners KAHO DIKHAO emp_id, emp_name, salary_k SE employees JAHAN salary_k > 150;
+DIKHAO * SE x_big_earners KRAM emp_id;
+
+-- MySQL: CREATE TABLE x_departments_copy LIKE departments;
+BANAO TABLE x_departments_copy LIKE departments;
+BATAO x_departments_copy;
+
+-- ---- Foreign-key actions: ON DELETE CASCADE / SET NULL ----
+-- MySQL: CREATE TABLE x_parent (id INT PRIMARY KEY, name VARCHAR(20));
+BANAO TABLE x_parent (id INT MUKHYA KUNJI, name VARCHAR(20));
+-- MySQL: CREATE TABLE x_child_cascade (id INT PRIMARY KEY, parent_id INT, FOREIGN KEY (parent_id) REFERENCES x_parent(id) ON DELETE CASCADE);
+BANAO TABLE x_child_cascade (id INT MUKHYA KUNJI, parent_id INT SANDARBH x_parent(id) ON DELETE CASCADE);
+-- MySQL: CREATE TABLE x_child_null (id INT PRIMARY KEY, parent_id INT, FOREIGN KEY (parent_id) REFERENCES x_parent(id) ON DELETE SET NULL);
+BANAO TABLE x_child_null (id INT MUKHYA KUNJI, parent_id INT SANDARBH x_parent(id) ON DELETE SET NULL);
+
+DAALO MEIN x_parent MAAN (1, 'one'), (2, 'two');
+DAALO MEIN x_child_cascade MAAN (10, 1), (11, 1), (12, 2);
+DAALO MEIN x_child_null MAAN (20, 1), (21, 2);
+
+-- MySQL: DELETE FROM x_parent WHERE id = 1;     -- cascade removes children 10 and 11; SET NULL clears child 20
+MITAO SE x_parent JAHAN id = 1;
+DIKHAO * SE x_child_cascade KRAM id;
+DIKHAO * SE x_child_null KRAM id;
+
+-- ---- ALTER TABLE: CHANGE, MODIFY, ADD ... AFTER ----
+-- MySQL: ALTER TABLE x_tickets ADD COLUMN owner VARCHAR(30) AFTER title;
+SUDHARO TABLE x_tickets JODO owner VARCHAR(30) AFTER title;
+-- MySQL: ALTER TABLE x_tickets CHANGE owner assigned_to VARCHAR(40);
+SUDHARO TABLE x_tickets CHANGE owner assigned_to VARCHAR(40);
+-- MySQL: ALTER TABLE x_tickets MODIFY title VARCHAR(80) NOT NULL;
+SUDHARO TABLE x_tickets MODIFY title VARCHAR(80) ZAROORI;
+BATAO x_tickets;
+
+-- ---- REPLACE INTO ----
+-- MySQL: REPLACE INTO x_parent VALUES (2, 'two (replaced)'), (3, 'three');
+REPLACE INTO x_parent MAAN (2, 'two (replaced)'), (3, 'three');
+DIKHAO * SE x_parent KRAM id;
+
+-- ---- Views: CREATE OR REPLACE, WITH CHECK OPTION, DML through a view ----
+-- MySQL: CREATE OR REPLACE VIEW x_high_tickets AS SELECT ticket_id, title, severity FROM x_tickets WHERE severity = 'high' WITH CHECK OPTION;
+BANAO OR REPLACE VIEW x_high_tickets KAHO DIKHAO ticket_id, title, severity SE x_tickets JAHAN severity = 'high' WITH CHECK OPTION;
+
+-- MySQL: INSERT INTO x_high_tickets (title, severity) VALUES ('Database offline', 'high');
+DAALO MEIN x_high_tickets (title, severity) MAAN ('Database offline', 'high');
+-- MySQL: UPDATE x_high_tickets SET title = 'Database offline (paged)' WHERE title = 'Database offline';
+BADLO x_high_tickets RAKHO title = 'Database offline (paged)' JAHAN title = 'Database offline';
+DIKHAO * SE x_high_tickets KRAM ticket_id;
+
+-- EXPECTED ERROR (WITH CHECK OPTION: the new row would not be visible through the view)
+-- MySQL: INSERT INTO x_high_tickets (title, severity) VALUES ('Not high', 'low');   -- ERROR 1369
+DAALO MEIN x_high_tickets (title, severity) MAAN ('Not high', 'low');
+
+-- ---- Roles and SHOW commands ----
+-- MySQL: CREATE ROLE x_reader;
+BANAO ROLE x_reader;
+-- MySQL: GRANT SELECT ON palantir.employees TO x_reader;
+ADHIKAR DO SELECT PAR employees KO x_reader;
+-- MySQL: GRANT x_reader TO analyst;
+ADHIKAR DO ROLE x_reader KO analyst;
+-- MySQL: SHOW GRANTS FOR analyst;
+SHOW GRANTS FOR analyst;
+
+-- MySQL: SHOW TABLES;   SHOW CREATE TABLE x_tickets;   SHOW TRIGGERS;   SHOW PROCEDURE STATUS;
+SHOW TABLES;
+SHOW CREATE TABLE x_tickets;
+SHOW TRIGGERS;
+SHOW PROCEDURE STATUS;
+
+-- ---- Clean up the scratch tables of this section ----
+HATAO VIEW x_high_tickets;
+HATAO TABLE x_tickets;
+HATAO TABLE x_big_earners;
+HATAO TABLE x_departments_copy;
+HATAO TABLE x_child_cascade;
+HATAO TABLE x_child_null;
+HATAO TABLE x_parent;
+HATAO ROLE x_reader;
+
+-- ============================================================================
+-- FINAL CHECK : what is saved in the palantir database
+-- ============================================================================
+
+-- MySQL: SHOW TABLES;
+DIKHAO TABLES;
+
+-- MySQL: SHOW FULL TABLES WHERE Table_type = 'VIEW';
+DIKHAO VIEWS;
+
+-- MySQL: SELECT 'departments' AS tbl, COUNT(*) FROM departments UNION ALL SELECT 'employees', COUNT(*) FROM employees ... ;
+DIKHAO 'departments' KAHO tbl, GINO(*) KAHO row_count SE departments
+SANYUKT DIKHAO 'employees', GINO(*) SE employees
+SANYUKT DIKHAO 'products', GINO(*) SE products
+SANYUKT DIKHAO 'clients', GINO(*) SE clients
+SANYUKT DIKHAO 'contracts', GINO(*) SE contracts
+SANYUKT DIKHAO 'projects', GINO(*) SE projects
+SANYUKT DIKHAO 'assignments', GINO(*) SE assignments
+SANYUKT DIKHAO 'contracts_archive', GINO(*) SE contracts_archive
+SANYUKT DIKHAO 'salary_audit', GINO(*) SE salary_audit;
+
+-- salary_audit holds 7 rows: the 4 salary changes shown above, plus 3 rows
+-- from the set_office calls. An AFTER UPDATE trigger fires on EVERY update of
+-- the row, so those 3 rows have old salary = new salary.
+
+-- The palantir database is NOT dropped: it stays saved in the data folder.

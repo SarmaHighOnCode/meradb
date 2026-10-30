@@ -1,0 +1,6 @@
+-- Wipes the palantir database and its two users so palantir_lab.mdb can run again from scratch.
+-- MySQL: DROP DATABASE IF EXISTS palantir; DROP USER IF EXISTS 'analyst'@'localhost', 'intern'@'localhost';
+ISTEMAL main;
+HATAO DATABASE palantir;
+HATAO USER analyst;
+HATAO USER intern;
