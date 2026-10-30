@@ -13,6 +13,7 @@ endif()
 FetchContent_Declare(
   glfw
   URL https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
+  URL_HASH SHA256=c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01
 )
 FetchContent_MakeAvailable(glfw)
 meradb_quiet_third_party(glfw)
@@ -21,6 +22,7 @@ meradb_quiet_third_party(glfw)
 FetchContent_Declare(
   imgui
   URL https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0.tar.gz
+  URL_HASH SHA256=f7bf6bc76e5d79d40d751096663e6c5d18daf08129dd52e7f7b09e4251c8eeee
 )
 FetchContent_MakeAvailable(imgui)
 add_library(meradb_imgui STATIC
@@ -47,6 +49,7 @@ endif()
 FetchContent_Declare(
   geist
   URL https://github.com/vercel/geist-font/releases/download/v1.8.2/geist-font-v1.8.2.zip
+  URL_HASH SHA256=43ffb66912b1c49e40c371d96e86b3b3dab42db83eb2d0c8a17321210394c4c7
 )
 FetchContent_MakeAvailable(geist)
 set(MERADB_FONT_FILES "")
@@ -75,6 +78,7 @@ endforeach()
 FetchContent_Declare(
   stb
   URL https://raw.githubusercontent.com/nothings/stb/1ee679ca2ef753a528db5ba6801e1067b40481b8/stb_image_write.h
+  URL_HASH SHA256=cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05
   DOWNLOAD_NO_EXTRACT TRUE
 )
 FetchContent_MakeAvailable(stb)

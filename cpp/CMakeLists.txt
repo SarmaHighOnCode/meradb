@@ -54,6 +54,7 @@ if(MERADB_WORKBENCH)
   FetchContent_Declare(
     ftxui
     URL https://github.com/ArthurSonzogni/FTXUI/archive/refs/tags/v5.0.0.tar.gz
+    URL_HASH SHA256=a2991cb222c944aee14397965d9f6b050245da849d8c5da7c72d112de2786b5b
     EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(ftxui)
@@ -80,12 +81,14 @@ endif()
 FetchContent_Declare(
   json
   URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
+  URL_HASH SHA256=0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
 )
 FetchContent_MakeAvailable(json)
 
 FetchContent_Declare(
   catch2
   URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.4.tar.gz
+  URL_HASH SHA256=b7754b711242c167d8f60b890695347f90a1ebc95949a045385114165d606dbb
 )
 FetchContent_MakeAvailable(catch2)
 
