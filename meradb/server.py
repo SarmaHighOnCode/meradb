@@ -21,6 +21,7 @@ Architecture:
 
 import hmac
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -44,6 +45,8 @@ from .protocol import (
 )
 
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+# A script that may carry a password (BANAO USER naam GUPT '...') must not reach the log, not even echoed in a parse error.
+_SENSITIVE_WORD = re.compile(r"(?<![A-Za-z0-9_])(USER|GUPT|IDENTIFIED)(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
 class MeraDBServer(socketserver.ThreadingTCPServer):
@@ -152,8 +155,10 @@ class ClientHandler(socketserver.StreamRequestHandler):
 
         if kind == "query":
             text = str(request.get("text", ""))
+            secret_text = _SENSITIVE_WORD.search(text) is not None
             if server.verbose:
-                server.log(f"{peer}  [{session.current_db}]  {' '.join(text.split())[:200]}")
+                shown = "(user/password wali query -- log mein nahi likhi)" if secret_text else " ".join(text.split())[:200]
+                server.log(f"{peer}  [{session.current_db}]  {shown}")
             try:
                 results = session.run_script(text)
             except Exception as e:  # a bug must not kill the whole server
@@ -161,7 +166,7 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 results = [Result(error=f"[Internal Galti] {e!r}")]
             for r in results:
                 if r.error:
-                    server.log(f"{peer}  {r.error}")
+                    server.log(f"{peer}  {'user/password wali query fail hui' if secret_text else r.error}")
             return {
                 "ok": True,
                 "results": [r.to_dict() for r in results],

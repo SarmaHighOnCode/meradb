@@ -121,6 +121,22 @@ class SharedPasswordTests(ServerCase):
         self.assertTrue(self.client().request(type="hello", password="s3cret").get("ok"))
 
 
+class LogTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.server.verbose = True
+
+    def test_passwords_in_queries_never_reach_the_log(self):
+        c = self.client()
+        c.request(type="hello")
+        for text in ["BANAO USER asha GUPT 'TopSecret99';", "banao  user\n asha gupt 'TopSecret99';",
+                     "BANAO USER asha 'TopSecret99';"]:
+            c.request(type="query", text=text)
+        self.assertNotIn("TopSecret99", "\n".join(self.log))
+        c.request(type="query", text="DIKHAO 'still logged';")
+        self.assertIn("still logged", "\n".join(self.log))
+
+
 class PathTests(ServerCase):
     def test_database_name_cannot_leave_the_data_folder(self):
         os.makedirs(os.path.join(self.dir, "outside"))

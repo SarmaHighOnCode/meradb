@@ -228,6 +228,22 @@ TEST_CASE("security damaged users.json entries never log in and never crash", "[
     }
 }
 
+TEST_CASE("security passwords in queries never reach the server log", "[security][passwords][server]") {
+    RunningServer server("", /*verbose=*/true);
+    RawClient client(server.port());
+    REQUIRE(client.hello().value("ok", false));
+    for (const char* text : {"BANAO USER asha GUPT 'TopSecret99';",
+                             "banao   user\n asha gupt 'TopSecret99';",
+                             "BANAO USER asha 'TopSecret99';",  // a typo: the parse error must not echo it
+                             "PREPARE p FROM 'BANAO USER asha GUPT ''TopSecret99''';"})
+        client.query(text);
+    CHECK_FALSE(server.logContains("TopSecret99"));
+    client.query("DIKHAO 'still logged';");  // anything else is logged as before
+    CHECK(server.logContains("still logged"));
+    client.query("DIKHAO user_name SE nothing_here;");  // a word that only contains USER is not a false alarm
+    CHECK(server.logContains("nothing_here"));
+}
+
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----
 
 namespace {

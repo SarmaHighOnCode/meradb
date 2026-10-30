@@ -7,6 +7,7 @@
 #include "meradb/pytext.h"
 #include "meradb/sys_compat.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <filesystem>
@@ -97,6 +98,23 @@ std::string collapseWhitespace(const std::string& text, std::size_t limit) {
         at += pytext::decode(joined, at, cp);
     }
     return joined.substr(0, at);
+}
+
+// A script that may carry a password (BANAO USER naam GUPT '...') must not reach the log, not even echoed in a parse
+// error. It looks at whole words anywhere in the text, so PREPARE's quoted statement and a typo are caught too; a
+// false alarm only costs one log line its detail.
+bool mayHoldPassword(const std::string& text) {
+    std::string word;
+    auto sensitive = [&] { return word == "USER" || word == "GUPT" || word == "IDENTIFIED"; };
+    for (char c : text) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        } else {
+            if (sensitive()) return true;
+            word.clear();
+        }
+    }
+    return sensitive();
 }
 
 Json failure(const std::string& message) {
@@ -307,7 +325,10 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
     if (type == "query") {
         const Json* textField = field(request, "text");
         const std::string text = textField ? pyStr(*textField) : "";
-        if (options_.verbose) log(peer + "  [" + session.currentDb + "]  " + collapseWhitespace(text, 200));
+        const bool secretText = mayHoldPassword(text);
+        if (options_.verbose)
+            log(peer + "  [" + session.currentDb + "]  " + (secretText ? std::string("(user/password wali query -- log mein nahi likhi)")
+                                                                       : collapseWhitespace(text, 200)));
         std::vector<Result> results;
         try {
             results = session.runScript(text);
@@ -319,7 +340,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
         }
         Json encoded = Json::array();
         for (const auto& r : results) {
-            if (!r.error.empty()) log(peer + "  " + r.error);
+            if (!r.error.empty()) log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
             encoded.push_back(protocol::resultToJson(r));
         }
         Json reply = success();
