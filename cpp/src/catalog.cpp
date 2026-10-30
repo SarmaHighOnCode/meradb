@@ -1,4 +1,5 @@
 // cpp/src/catalog.cpp
+#include "meradb/durability.h"
 #include "meradb/fs_util.h"
 #include "meradb/catalog.h"
 #include "meradb/errors.h"
@@ -374,11 +375,13 @@ void Catalog::save() {
         out.flush();
         if (!out) throw StorageError(tmp + " likh nahi paaye");
     }
-    if (!syncFile(tmp)) throw StorageError(tmp + " disk par pakki nahi hui");
+    durable::syncBeforeRename(tmp);
+    durable::beforeReplace(path_);
+    crashPoint("catalog-before-rename");
     std::error_code ec;
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " save nahi hua: " + ec.message());
-    syncFolderOf(path_);
+    durable::renamed(path_);
 }
 
 std::string Catalog::tablePath(const std::string& table) const {
@@ -524,11 +527,21 @@ void Catalog::saveProcedureMeta() const {
     for (const auto& [name, when] : procedureCreated_)
         if (procedures.contains(name)) mj[name] = when;
     if (mj.empty()) {
+        durable::beforeReplace(textOf(file));
         fs::remove(file, ec);
+        durable::renamed(textOf(file));
         return;
     }
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (out) out << mj.dump(2) << "\n";
+    // best effort, like the rest of this file's readers: a procedure's creation time is only shown, never relied on
+    const std::string target = textOf(file), tmp = target + ".tmp";
+    {
+        std::ofstream out(pathOf(tmp), std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        out << mj.dump(2) << "\n";
+    }
+    durable::beforeReplace(target);
+    fs::rename(pathOf(tmp), file, ec);
+    if (!ec) durable::renamed(target);
 }
 
 void Catalog::removeProcedure(const std::string& name) {

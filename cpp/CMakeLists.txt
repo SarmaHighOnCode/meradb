@@ -141,6 +141,7 @@ add_library(meradb_core STATIC
   src/catalog.cpp
   src/storage.cpp
   src/fs_sync.cpp
+  src/durability.cpp
   src/table.cpp
   src/planner.cpp
   src/pyvalue.cpp

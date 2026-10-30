@@ -79,7 +79,8 @@ data/
     catalog.json   table schemas
     students.tbl   rows of `students` (binary)
   college/         another database (BANAO DATABASE college)
-  .wapas/          transaction snapshots (only while a transaction is open)
+  .wapas/          transaction snapshots (only while a transaction is open), and the undo journal
+                   of the running statement (see "Durability" in ARCHITECTURE.md)
 ```
 
 ## Client options
