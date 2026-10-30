@@ -51,6 +51,7 @@ int digitsOnly(ImGuiInputTextCallbackData* data) { return data->EventChar >= '0'
 const std::vector<KeyHelp>& keyHelp() {
     static const std::vector<KeyHelp> rows = {
         {MERADB_CTRL "+Enter / F5", "Chalao: jo text select hai woh, nahi to poora editor", Action::Run},
+        {"Alt+Enter / F9", "Yeh query: sirf woh query chalao jahan cursor hai (ya jo select hai)", Action::RunStatement},
         {MERADB_CTRL "+Shift+Enter / F6", "Samjhao: query plan dikhao, bina chalaye", Action::Explain},
         {"Alt+Up / " MERADB_CTRL "+Up", "Pichli query (history)", Action::Previous},
         {"Alt+Down / " MERADB_CTRL "+Down", "Agli query (history)", Action::Next},
@@ -310,6 +311,7 @@ std::vector<CommandItem> commandItems(wb::Session& session) {
         items.push_back(std::move(item));
     };
     action("Chalao", MERADB_CTRL "+Enter", Action::Run);
+    action("Yeh query", "Alt+Enter", Action::RunStatement);
     action("Samjhao", MERADB_CTRL "+Shift+Enter", Action::Explain);
     action("CSV", MERADB_CTRL "+S", Action::ExportCsv);
     action("Connect", MERADB_CTRL "+O", Action::Connect);

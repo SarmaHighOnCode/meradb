@@ -29,6 +29,11 @@ namespace meradb::wb {
 
 using UiPoster = std::function<void(std::function<void()>)>;
 
+// The statement of a script around byte `offset`: the one the caret is in or right after; on the blanks between two, the
+// next one; past the last, the last one. Semicolons in strings, comments and procedure bodies do not end a statement. A
+// script that cannot be split (an open string) comes back whole, so that running it reports the error. "" when empty.
+std::string statementAt(const std::string& script, std::size_t offset);
+
 enum class Panel { Tree, Results, Log, Editor };
 enum class Modal { None, Help, Connect };
 
@@ -128,6 +133,10 @@ public:
     // ---- actions (key bindings call these) ----
     void runEditorText();                            // F5 / Ctrl+R
     void runText(const std::string& text);           // tui.py run_text
+    void runEditorStatement();                       // the selection if any, else only the statement at the caret
+    // A query from the list goes below the script (never in place of it) and is selected, so that Chalao runs just it.
+    // A history entry on screen makes way for the script first.
+    void addQueryToEditor(const std::string& text);
     void clearLog();                                 // Ctrl+L
     void explainEditorText();                        // F6
     void historyStep(int delta);                     // Ctrl+Up (-1) / Ctrl+Down (+1)

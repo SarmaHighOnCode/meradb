@@ -546,6 +546,70 @@ TEST_CASE("A syntax error or a lost connection is one failure without a statemen
     CHECK(s.lastRunErrors()[0].text.find("toot gaya") != std::string::npos);
 }
 
+// ---- one query out of a script ----
+
+TEST_CASE("statementAt finds the statement around the caret", "[wb][statement]") {
+    const std::string script = "DIKHAO 'a;b' SE t; -- yeh; bhi\n\nDIKHAO * SE u;\nBADLO t RAKHO a = 1";
+    const std::string first = "DIKHAO 'a;b' SE t;", second = "DIKHAO * SE u;", third = "BADLO t RAKHO a = 1";
+    CHECK(statementAt(script, 0) == first);
+    CHECK(statementAt(script, 9) == first);                   // inside the string
+    CHECK(statementAt(script, first.size()) == first);        // right after the semicolon
+    CHECK(statementAt(script, script.find("yeh")) == second); // the comment belongs to what comes next
+    CHECK(statementAt(script, script.find(second) + 3) == second);
+    CHECK(statementAt(script, script.size()) == third);       // no semicolon at the end
+    CHECK(statementAt("  ", 1).empty());
+    CHECK(statementAt("-- sirf comment", 3).empty());
+    CHECK(statementAt("DIKHAO 1;  \n", 11) == "DIKHAO 1;");    // past the last: the last
+    CHECK(statementAt("DIKHAO 'khula", 2) == "DIKHAO 'khula"); // cannot be split: whole, for its error
+}
+
+TEST_CASE("statementAt keeps a procedure body together and stops at a broken statement", "[wb][statement]") {
+    const std::string proc = "BANAO PROCEDURE p () SHURU DIKHAO 1; DIKHAO 2; KHATAM;";
+    const std::string script = "DIKHAO 0;\n" + proc + "\nDIKHAO 3;";
+    INFO(script);
+    CHECK(statementAt(script, script.find("DIKHAO 2")) == proc);
+    CHECK(statementAt(script, script.find("DIKHAO 3")) == "DIKHAO 3;");
+    const std::string broken = "DIKHAO SE SE;\nDIKHAO 4;";
+    CHECK(statementAt(broken, 2) == "DIKHAO SE SE;");
+    CHECK(statementAt(broken, broken.size()) == "DIKHAO 4;");
+}
+
+TEST_CASE("One query of a script runs, with a broken one elsewhere in it", "[wb][statement]") {
+    WalkRig rig;
+    rig.s().editor().setText("BANAO BANAO;\nDIKHAO * SE t;\nDAALO MEIN t MAAN (1);");
+    rig.s().editor().moveTo(Pos{1, 3}, false);
+    rig.s().runEditorStatement();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"DIKHAO * SE t;"}));
+    CHECK(rig.s().history().items().back() == "DIKHAO * SE t;");
+    rig.s().editor().selectRange(Pos{2, 0}, Pos{2, 5});      // a selection wins
+    rig.s().runEditorStatement();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    CHECK(rig.fake->ranList().back() == "DAALO");
+}
+
+TEST_CASE("A query from the list goes below the script, selected, and only it runs", "[wb][statement]") {
+    WalkRig rig({"a;"}, "-- script");
+    rig.s().addQueryToEditor("x;\ny;");
+    CHECK(rig.text() == "-- script\n\nx;\ny;");
+    CHECK(rig.s().editor().selectedText() == "x;\ny;");
+    rig.s().runEditorText();
+    REQUIRE(rig.poster.pumpIdle(rig.s()));
+    CHECK(rig.fake->ranList() == std::vector<std::string>({"x;\ny;"}));
+    rig.s().editor().setText("  ");
+    rig.s().addQueryToEditor("z;");                          // into an empty area
+    CHECK(rig.text() == "z;");
+    CHECK(rig.s().editor().selectedText() == "z;");
+}
+
+TEST_CASE("A query from the list does not stack on a history entry being looked at", "[wb][statement]") {
+    WalkRig rig({"a;"}, "-- script");
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "a;");
+    rig.s().addQueryToEditor("q;");
+    CHECK(rig.text() == "-- script\n\nq;");
+}
+
 // ---- Connect: the kept work follows the connection ----
 
 TEST_CASE("The kept work follows a Connect in both directions", "[wb][querystore][connect]") {

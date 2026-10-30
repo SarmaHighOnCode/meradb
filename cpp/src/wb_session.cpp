@@ -5,6 +5,8 @@
 #include "meradb/parser.h"
 #include "meradb/protocol.h"
 #include "meradb/pytext.h"
+#include "meradb/tokenizer.h"
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <climits>
@@ -62,6 +64,45 @@ ConnectDefaults connectDefaults(const std::string& description) {
     const std::string port = description.substr(colon + 1);
     if (host.empty() || !allDigits(port)) return fallback;
     return ConnectDefaults{host, port};
+}
+
+std::string statementAt(const std::string& script, std::size_t offset) {
+    std::vector<Token> tokens;
+    try {
+        tokens = tokenize(script);
+    } catch (...) {
+        return script;
+    }
+    const auto parses = [](const std::string& piece) {
+        try {
+            return parseScript(piece).size() == 1;
+        } catch (...) {
+            return false;
+        }
+    };
+    constexpr int kMostSemicolons = 256;   // of one statement: a procedure body; a broken text stops looking here
+    std::string last;
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i].type != TokenType::Eof) {
+        const std::size_t start = static_cast<std::size_t>(tokens[i].start);
+        std::size_t end = std::string::npos, firstSemicolon = std::string::npos, j = i;
+        int tried = 0;
+        for (; tokens[j].type != TokenType::Eof; ++j) {
+            if (tokens[j].type != TokenType::Symbol || tokens[j].textValue != ";") continue;
+            if (firstSemicolon == std::string::npos) firstSemicolon = j;
+            if (parses(script.substr(start, static_cast<std::size_t>(tokens[j].end) - start))) {
+                end = j;
+                break;
+            }
+            if (++tried >= kMostSemicolons) break;
+        }
+        if (end == std::string::npos) end = firstSemicolon != std::string::npos ? firstSemicolon : j - 1;   // to report its error
+        const std::size_t stop = static_cast<std::size_t>(tokens[end].end);
+        last = script.substr(start, stop - start);
+        if (offset <= stop) return last;
+        i = end + 1;
+    }
+    return last;
 }
 
 std::unique_ptr<Backend> defaultBackendFactory(const ConnectRequest& request, const std::string& dataDir) {
@@ -293,6 +334,32 @@ void Session::runText(const std::string& raw) {
 }
 
 void Session::runEditorText() { runText(editor_.runnableText()); }
+
+void Session::runEditorStatement() {
+    if (editor_.hasSelection()) {
+        runEditorText();
+        return;
+    }
+    const Pos caret = editor_.cursor();
+    std::size_t offset = editor_.byteOffset(caret.row, caret.col);
+    for (int row = 0; row < caret.row; ++row) offset += editor_.line(row).size() + 1;
+    runText(statementAt(editor_.text(), offset));
+}
+
+void Session::addQueryToEditor(const std::string& text) {
+    endWalk();
+    const std::string current = editor_.text();
+    const bool blank = pytext::strip(current).empty();
+    editor_.setText(blank ? text : current + (current.back() == '\n' ? "\n" : "\n\n") + text);
+    if (blank) {
+        editor_.selectAll();
+    } else {
+        const int rows = 1 + static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+        const Pos end = editor_.cursor();
+        editor_.selectRange(Pos{end.row - rows + 1, 0}, end);
+    }
+    focusRequest_ = Panel::Editor;
+}
 
 void Session::selectResultSet(int index) {
     if (index < 0 || index >= static_cast<int>(resultSets_.size()) || index == currentSet_) return;

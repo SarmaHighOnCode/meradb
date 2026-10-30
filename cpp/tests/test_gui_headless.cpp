@@ -1337,6 +1337,62 @@ TEST_CASE("gui tabs: a run with a table and an error shows Results and marks Log
     CHECK_FALSE(s.ui.logErrorDot());
 }
 
+TEST_CASE("gui toolbar: Yeh query runs only the statement at the caret, the key and the button", "[gui][headless][toolbar]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK); DAALO MEIN t MAAN (1);"));
+    s.buffer().setText("DAALO MEIN t MAAN (2);\nDIKHAO * SE t;\nDIKHAO * SE u;");
+    s.click(s.at(1, 3));
+    s.press(ImGuiKey_Enter, false, false, true);         // Alt+Enter: no line break, one statement
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    CHECK(s.buffer().lineCount() == 3);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>{"a"});
+    CHECK(s.rig.session->table()->rows.size() == 1);     // the DAALO on the line above did not run
+    s.click(s.at(2, 3));
+    s.click(s.ui.toolbarButtonCentre(Action::RunStatement));
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>{"b"});
+    CHECK(s.ui.editor().focused());
+    s.press(ImGuiKey_F9);
+    REQUIRE(s.rig.settle());
+    s.frames(2);
+    CHECK(s.logCount("DIKHAO * SE u;") == 2);
+}
+
+TEST_CASE("gui queries: a click on a saved query adds it as one undo step and Chalao runs only it", "[gui][headless][queries]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1);"));
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    s.buffer().setText("DAALO MEIN t MAAN (9);");
+    s.ui.showTab(GuiUi::Tab::Queries);
+    s.frames(3);
+    const ImVec2 row = s.ui.queryRowCentre(1);           // DIKHAO * SE t;
+    REQUIRE(row.x > 0.0f);
+    s.click(row);
+    CHECK(s.text() == "DAALO MEIN t MAAN (9);\n\nDIKHAO * SE t;");
+    CHECK(s.ui.editor().focused());
+    s.press(ImGuiKey_Enter, true);
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->rows.size() == 1);     // the DAALO above it did not run again
+    s.press(ImGuiKey_Z, true);
+    CHECK(s.text() == "DAALO MEIN t MAAN (9);");
+}
+
+TEST_CASE("gui queries: a thousand saved queries draw only what is in view", "[gui][headless][queries]") {
+    Screen s;
+    for (int i = 0; i < 1000; ++i) s.rig.session->runText("DIKHAO " + std::to_string(i) + ";");
+    REQUIRE(s.rig.settle());
+    s.frames(2);                                         // the run has shown its own tab
+    s.ui.showTab(GuiUi::Tab::Queries);
+    s.frames(4);
+    CHECK(s.ui.queryRowCentre(999).x > 0.0f);            // the newest first
+    CHECK(s.ui.queryRowCentre(0).x < 0.0f);
+}
+
 TEST_CASE("gui results: a script's every table can be opened, and the grid and the CSV follow", "[gui][headless][resultsets]") {
     Screen s;
     REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK, c ANK); DAALO MEIN t MAAN (1); DAALO MEIN u MAAN (2, 3), (4, 5); "

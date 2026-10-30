@@ -81,12 +81,18 @@ public:
     // the Log; a run that makes no table and fails still goes to the Log tab itself.
     bool logErrorDot() const { return logErrorDot_; }
     // Where the last frame drew a toolbar button (screen pixels; (-1, -1) before the first frame): Run, Explain,
-    // Previous or Next. Clicking one gives the keyboard back to the editor.
+    // Previous, Next or RunStatement. Clicking one gives the keyboard back to the editor.
     ImVec2 toolbarButtonCentre(Action action) const;
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
     // Where the last frame drew the button of a script's result set; (-1, -1) when it is not on screen.
     ImVec2 resultSetButtonCentre(std::size_t index) const { return index < setButtons_.size() ? setButtons_[index] : ImVec2(-1, -1); }
     bool runErrorsShown() const { return runErrorsShown_; }      // the Results tab named a failure of the last run
+    // Where the last frame drew the row of a saved query (index in Session::savedQueries()); (-1, -1) when not on screen.
+    ImVec2 queryRowCentre(int index) const {
+        for (const auto& row : queryRows_)
+            if (row.first == index) return row.second;
+        return ImVec2(-1, -1);
+    }
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
     void prepare(float scale);
@@ -151,7 +157,8 @@ private:
     std::size_t seenRevision_ = 0, seenGeneration_ = 0;
     bool logFollow_ = true;
     bool logErrorDot_ = false;
-    ImVec2 toolbar_[4] = {ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1)};
+    ImVec2 toolbar_[5] = {ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1)};
+    std::vector<std::pair<int, ImVec2>> queryRows_;   // (index in the list, centre) of the rows the last frame drew
     void focusEditor();
     bool badgeShown_ = false;
     std::vector<ImVec2> setButtons_;

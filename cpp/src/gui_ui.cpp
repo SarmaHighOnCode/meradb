@@ -71,6 +71,9 @@ const std::vector<KeyBinding>& keyBindings() {
         {ImGuiMod_Ctrl | ImGuiKey_Enter, Action::Run},
         {ImGuiMod_Ctrl | ImGuiKey_KeypadEnter, Action::Run},
         {ImGuiKey_F5, Action::Run},
+        {ImGuiMod_Alt | ImGuiKey_Enter, Action::RunStatement},
+        {ImGuiMod_Alt | ImGuiKey_KeypadEnter, Action::RunStatement},
+        {ImGuiKey_F9, Action::RunStatement},
         {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Enter, Action::Explain},
         {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_KeypadEnter, Action::Explain},
         {ImGuiKey_F6, Action::Explain},
@@ -113,6 +116,7 @@ ImVec2 GuiUi::toolbarButtonCentre(Action action) const {
         case Action::Explain: return toolbar_[1];
         case Action::Previous: return toolbar_[2];
         case Action::Next: return toolbar_[3];
+        case Action::RunStatement: return toolbar_[4];
         default: break;
     }
     return ImVec2(-1, -1);
@@ -126,6 +130,7 @@ void GuiUi::focusEditor() {
 void GuiUi::perform(Action action) {
     switch (action) {
         case Action::Run: session_.runEditorText(); break;
+        case Action::RunStatement: session_.runEditorStatement(); break;
         case Action::Explain: session_.explainEditorText(); break;
         case Action::Previous: editor_.external([this] { session_.historyStep(-1); }); break;
         case Action::Next: editor_.external([this] { session_.historyStep(+1); }); break;
@@ -588,8 +593,16 @@ void GuiUi::drawQuery(const Rect& rect) {
             dl->AddText(ImVec2(lo.x + px(14.0f) + runLabelW + px(10.0f), lo.y + (buttonH - hintH) * 0.5f), toU32(th.primaryText, 0.55f), hint);
             ImGui::PopFont();
         }
+        ImGui::SetItemTooltip("%s", "Jo text select hai woh, nahi to poora editor chalao");
         ImGui::SameLine();
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        if (ImGui::Button("Yeh query", ImVec2(ImGui::CalcTextSize("Yeh query").x + px(24.0f), buttonH))) {
+            perform(Action::RunStatement);
+            focusEditor();
+        }
+        ImGui::SetItemTooltip("%s", "Sirf woh query chalao jahan cursor hai (Alt+Enter / F9)");
+        toolbar_[4] = rectCentre();
+        ImGui::SameLine();
         if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), buttonH))) {
             perform(Action::Explain);
             focusEditor();
@@ -841,12 +854,16 @@ void GuiUi::drawQueriesTab() {
         ImGui::PopStyleColor();
         return;
     }
+    queryRows_.clear();
     ImGui::BeginChild("##queries", ImVec2(0, 0), ImGuiChildFlags_None);
     ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
     const float runW = ImGui::CalcTextSize("Chalao").x + px(20.0f);
     ImGui::PopFont();
     const float rowH = px(34.0f);
-    for (int i = static_cast<int>(queries.size()) - 1; i >= 0; --i) {
+    ImGuiListClipper clipper;   // the list only grows: a long one draws what is in view
+    clipper.Begin(static_cast<int>(queries.size()));
+    while (clipper.Step()) for (int shownRow = clipper.DisplayStart; shownRow < clipper.DisplayEnd; ++shownRow) {
+        const int i = static_cast<int>(queries.size()) - 1 - shownRow;
         const wb::SavedQuery& q = queries[static_cast<std::size_t>(i)];
         ImGui::PushID(i);
         std::string one = q.text;
@@ -858,12 +875,12 @@ void GuiUi::drawQueriesTab() {
         const ImVec2 at = ImGui::GetCursorScreenPos();
         if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_None, ImVec2(avail - runW - px(8.0f), rowH))) {
             // added below the script that is already there (one undo step), never in place of it
-            const std::string current = session_.editor().text();
-            const bool blank = current.find_first_not_of(" \t\n") == std::string::npos;
-            session_.editor().setText(blank ? q.text : current + (current.back() == '\n' ? "\n" : "\n\n") + q.text);
+            const std::string text = q.text;
+            editor_.external([this, &text] { session_.addQueryToEditor(text); });
             editor_.setFocused(true);
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n\n(click: editor mein neeche jodo, Chalao: seedha chalao)", q.text.c_str());
+        queryRows_.emplace_back(i, rectCentre());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n\n(click: editor mein neeche jodo aur select karo, Chalao: seedha chalao)", q.text.c_str());
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float maxW = std::max(px(60.0f), avail - runW - px(170.0f));
         ImGui::PushFont(fonts_.ui, 12.0f);
