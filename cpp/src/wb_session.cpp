@@ -342,6 +342,13 @@ void Session::clearSavedQueries() {
     store_.clear(savedDb_);
     saved_.clear();
     ++savedVersion_;
+    endWalk();            // an entry on screen has just been deleted: the script comes back
+    seedHistory();
+}
+
+void Session::endWalk() {
+    if (stepping_ && editor_.text() == steppedText_) editor_.setText(draft_);
+    stepping_ = false;
 }
 
 void Session::applySnapshot(const Snapshot& s) {

@@ -173,6 +173,7 @@ private:
     int savedVersion_ = 0;
     void reloadSaved();
     void seedHistory();
+    void endWalk();                // gives the writing area back if it still shows a history entry
     bool stepping_ = false;        // Pichli / Agli is walking through the history
     std::string steppedText_;      // the history entry Pichli / Agli last put in the writing area (never saved as the script)
     std::string draft_;            // what the writing area held before the walk; Agli past the end brings it back

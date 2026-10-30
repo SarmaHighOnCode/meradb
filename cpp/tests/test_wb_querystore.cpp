@@ -476,3 +476,14 @@ TEST_CASE("A one-line script that starts with ISTEMAL is a query, only a bare sw
     CHECK(rig.s().savedQueries().size() == 1);
 }
 
+TEST_CASE("Queries saaf karo empties Pichli too and gives the script back", "[wb][querystore][history]") {
+    WalkRig rig({"a;", "b;"}, "-- script");
+    rig.s().historyStep(-1);
+    REQUIRE(rig.text() == "b;");
+    rig.s().clearSavedQueries();
+    CHECK(rig.s().history().size() == 0);
+    CHECK(rig.text() == "-- script");
+    rig.s().persistEditor(true);
+    CHECK(rig.savedScript() == "-- script");
+}
+

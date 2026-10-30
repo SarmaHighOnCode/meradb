@@ -655,7 +655,7 @@ void GuiUi::drawTabBarExtras(float tabY, float rightX) {
         if (session_.savedQueriesEnabled() && !session_.savedQueries().empty()) {
             const float w = ImGui::CalcTextSize("Queries saaf karo").x + px(20.0f);
             ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
-            if (ImGui::Button("Queries saaf karo", ImVec2(w, height))) session_.clearSavedQueries();
+            if (ImGui::Button("Queries saaf karo", ImVec2(w, height))) editor_.external([this] { session_.clearSavedQueries(); });
         }
     } else if (activeTab_ == Tab::Log) {
         const float w = ImGui::CalcTextSize("Log saaf karo").x + px(20.0f);
