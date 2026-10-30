@@ -86,7 +86,9 @@ class MeraDBServer(socketserver.ThreadingTCPServer):
         return self.server_address[1]
 
     def log(self, message: str) -> None:
-        self._log_fn(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {message}")
+        # Log text holds what clients sent: one event stays one line, so a client cannot fake a line of the server's.
+        safe = "".join(c if c.isprintable() or c == " " else c.encode("unicode_escape").decode("ascii") for c in message)
+        self._log_fn(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {safe}")
 
     def track(self, delta: int) -> None:
         with self._sessions_lock:

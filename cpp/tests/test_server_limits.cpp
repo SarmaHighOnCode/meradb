@@ -6,10 +6,18 @@
 #include "meradb/query_limits.h"
 #include "meradb/sys_compat.h"
 #include "server_fixture.h"
+#include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
+#endif
 
 using namespace meradb;
 using namespace meradb_test;
@@ -311,7 +319,7 @@ TEST_CASE("a query past its time limit is stopped and the lock is free again", "
 }
 
 TEST_CASE("a stored procedure that never ends is stopped by the time limit", "[server][qlimit]") {
-    RunningServer s("", false, protocol::kMaxMessageBytes, [](ServerOptions& o) { o.maxQuerySeconds = 0.3; });
+    RunningServer s("", false, protocol::kMaxMessageBytes, [](ServerOptions& o) { o.maxQuerySeconds = 0.02; });  // sooner than the loop's own limit of iterations
     RawClient c(s.port());
     REQUIRE(c.hello().value("ok", false));
     REQUIRE(firstError(c.query("BANAO PROCEDURE ghoomo () SHURU DECLARE n INT DEFAULT 0; WHILE 1 = 1 DO SET n = n + 1; END WHILE; KHATAM")) == "");
@@ -419,4 +427,154 @@ TEST_CASE("an embedded engine has no query limits, even in a process that serves
     std::string script = "SET @a = 'xxxxxxxxxxxxxxxx';";
     for (int i = 0; i < 16; ++i) script += "SET @a = CONCAT(@a, @a);";  // 1 MB, past the limit of the scope above
     for (const auto& r : local.runScript(script)) CHECK(r.error.empty());
+}
+
+// ---- files and text that must not give anything away ----
+
+TEST_CASE("users.json is saved through a temporary name nobody can guess", "[server][files]") {
+    TempDir dir;
+    // A folder (or a planted link) at the old fixed name must not get in the way, or be written through.
+    std::filesystem::create_directory(dir.path() / "users.json.tmp");
+    UserStore store(dir.str());
+    store.create("ravi", "pw");
+    CHECK(std::filesystem::is_regular_file(dir.path() / "users.json"));
+    int leftovers = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path())) {
+        const std::string name = entry.path().filename().string();
+        if (name != "users.json" && name != "users.json.tmp") ++leftovers;
+    }
+    CHECK(leftovers == 0);
+    UserStore again(dir.str());
+    CHECK(again.verify("ravi", "pw"));
+}
+
+#ifdef _WIN32
+namespace {
+
+// The trustees that may reach this file, and whether it still takes rights from its folder.
+struct FileAccess {
+    std::vector<std::string> sids;
+    bool inherits = true;
+};
+
+FileAccess accessOf(const std::filesystem::path& file) {
+    FileAccess out;
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    REQUIRE(GetNamedSecurityInfoW(file.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr, &sd) == ERROR_SUCCESS);
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    GetSecurityDescriptorControl(sd, &control, &revision);
+    out.inherits = (control & SE_DACL_PROTECTED) == 0;
+    for (DWORD i = 0; dacl != nullptr && i < dacl->AceCount; ++i) {
+        void* ace = nullptr;
+        REQUIRE(GetAce(dacl, i, &ace));
+        LPSTR text = nullptr;
+        REQUIRE(ConvertSidToStringSidA(&static_cast<ACCESS_ALLOWED_ACE*>(ace)->SidStart, &text));
+        out.sids.emplace_back(text);
+        LocalFree(text);
+    }
+    LocalFree(sd);
+    return out;
+}
+
+std::string currentUserSid() {
+    HANDLE token = nullptr;
+    REQUIRE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token));
+    char buffer[256];
+    DWORD size = sizeof buffer;
+    REQUIRE(GetTokenInformation(token, TokenUser, buffer, size, &size));
+    CloseHandle(token);
+    LPSTR text = nullptr;
+    REQUIRE(ConvertSidToStringSidA(reinterpret_cast<TOKEN_USER*>(buffer)->User.Sid, &text));
+    std::string sid(text);
+    LocalFree(text);
+    return sid;
+}
+
+}  // namespace
+
+TEST_CASE("users.json can be reached by the current user only", "[server][files]") {
+    TempDir dir;
+    {
+        UserStore store(dir.str());
+        store.create("ravi", "pw");
+    }
+    FileAccess access = accessOf(dir.path() / "users.json");
+    CHECK_FALSE(access.inherits);
+    CHECK(access.sids == std::vector<std::string>{currentUserSid()});
+}
+
+TEST_CASE("a users.json written earlier is restricted when it is next opened", "[server][files]") {
+    TempDir dir;
+    { std::ofstream(dir.path() / "users.json") << "{}"; }
+    CHECK(accessOf(dir.path() / "users.json").inherits);
+    UserStore store(dir.str());
+    FileAccess access = accessOf(dir.path() / "users.json");
+    CHECK_FALSE(access.inherits);
+    CHECK(access.sids == std::vector<std::string>{currentUserSid()});
+}
+#else
+TEST_CASE("users.json can be reached by the current user only", "[server][files]") {
+    TempDir dir;
+    UserStore store(dir.str());
+    store.create("ravi", "pw");
+    using std::filesystem::perms;
+    const perms mode = std::filesystem::status(dir.path() / "users.json").permissions();
+    CHECK((mode & (perms::group_all | perms::others_all)) == perms::none);
+}
+#endif
+
+TEST_CASE("a log line stays one line whatever a client puts in it", "[server][log]") {
+    RunningServer s;
+    s.server().log("before\nFAKE 2026-01-01 00:00:00  login ok\r\x1b[31mred\x7f");
+    bool found = false;
+    for (const auto& line : s.logLines()) {
+        CHECK(line.find('\n') == std::string::npos);
+        CHECK(line.find('\r') == std::string::npos);
+        CHECK(line.find('\x1b') == std::string::npos);
+        if (line.find("before\\nFAKE") != std::string::npos) found = true;
+    }
+    CHECK(found);
+    s.server().log("Dilli se \xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xA4\xE0\xA5\x87");  // text is left alone
+    CHECK(s.logContains("\xE0\xA4\xA8\xE0\xA4\xAE"));
+}
+
+TEST_CASE("error text sent to a client does not show where the data folder is", "[server][paths]") {
+    RunningServer s;
+    const std::filesystem::path bad = std::filesystem::u8path(s.dataDir()) / "kharab";
+    std::filesystem::create_directories(bad);
+    { std::ofstream(bad / "catalog.json") << "this is not json"; }
+
+    RawClient c(s.port());
+    REQUIRE(c.hello().value("ok", false));
+    const std::string error = c.query("ISTEMAL kharab; DIKHAO TABLES")["results"][1]["error"].get<std::string>();
+    CHECK(error.find("corrupt") != std::string::npos);  // the message still says what is wrong
+    CHECK(error.find("catalog.json") != std::string::npos);
+    CHECK(error.find(s.dataDir()) == std::string::npos);
+    CHECK(error.find("<data folder>") != std::string::npos);
+    CHECK(s.logContains(s.dataDir()));  // the one running the server still sees it
+
+    RawClient atHello(s.port());
+    const std::string refused = atHello.hello(nullptr, "kharab").value("error", std::string());
+    CHECK(refused.find(s.dataDir()) == std::string::npos);
+    std::string slashes = s.dataDir();
+    std::replace(slashes.begin(), slashes.end(), '\\', '/');
+    CHECK(refused.find(slashes) == std::string::npos);
+}
+
+TEST_CASE("the status reply names the data folder only on the server's own computer", "[server][paths]") {
+    RunningServer local;
+    {
+        RawClient c(local.port());
+        REQUIRE(c.hello().value("ok", false));
+        CHECK(c.request(Json{{"type", "status"}}).contains("data_dir"));
+    }
+    RunningServer remote("", false, protocol::kMaxMessageBytes, [](ServerOptions& o) { o.testPeerIsRemote = true; });
+    RawClient c(remote.port());
+    REQUIRE(c.hello().value("ok", false));
+    Json status = c.request(Json{{"type", "status"}});
+    CHECK(status.value("ok", false));
+    CHECK_FALSE(status.contains("data_dir"));
+    CHECK(status.contains("databases"));
 }

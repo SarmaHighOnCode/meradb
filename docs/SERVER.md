@@ -182,8 +182,17 @@ is waiting for. It is closed as well as rolled back, so that a client which thin
 transaction cannot carry on outside one without noticing. Whatever it sends next gets the reason as
 its answer, then the closed connection.
 
-Protect the data folder with ordinary file permissions. `users.json` holds password hashes:
-on Linux and macOS it is written owner-only, on Windows it inherits the folder's permissions.
+Protect the data folder with ordinary file permissions. `users.json` holds password hashes, so
+only the user who runs MeraDB can read it: mode `600` on Linux and macOS, and on Windows an access
+list with that one user and nothing inherited from the folder. A `users.json` from an older version
+gets the same rights the next time the C++ engine opens it. (So a server that runs as another Windows
+account than the one you use for `--local` needs that account's rights: an administrator can take
+ownership. The older Python engine does not set the Windows list, and a save by it puts the file back
+on the folder's rights until the C++ engine next opens it.)
+
+Errors sent to clients say `<data folder>` where the path would be, and only a client on the server's
+own computer gets the folder from `meradb status`; the server's log keeps the full text. One event
+is always one line in the log: a line break or control character a client sent shows as `\n` or `\x1b`.
 
 ## Users and privileges
 

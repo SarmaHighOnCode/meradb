@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <iostream>
 #include <system_error>
+#include <vector>
 
 namespace meradb {
 
@@ -154,9 +155,54 @@ Server::~Server() {
     reap(true);  // only non-empty if serveForever() was never allowed to finish
 }
 
+// Log text holds what clients sent (user names, table names in error messages). One event stays one line, so a client
+// cannot write a line that looks like the server's own, and no terminal escape reaches whoever reads the log.
+static std::string oneLogLine(const std::string& message) {
+    std::string out;
+    out.reserve(message.size());
+    for (char c : message) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if (byte < 0x20 || byte == 0x7f) {
+            static const char* const digits = "0123456789abcdef";
+            out += "\\x";
+            out += digits[byte >> 4];
+            out += digits[byte & 15];
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 void Server::log(const std::string& message) {
     std::lock_guard<std::mutex> guard(logMutex_);
-    options_.log(sys::localLogStamp() + "  " + message);
+    options_.log(sys::localLogStamp() + "  " + oneLogLine(message));
+}
+
+// Where the data lives is the business of whoever runs the server. The log keeps the full text.
+std::string Server::withoutPaths(std::string text) const {
+    std::vector<std::string> forms;
+    for (const std::string& dir : {instance_->dataDir(), options_.dataDir}) {
+        if (dir.size() < 2) continue;  // "." or "/": replacing that would wreck ordinary text
+        std::string slashes = dir;
+        std::replace(slashes.begin(), slashes.end(), '\\', '/');
+        std::string doubled;  // as repr() and JSON write it
+        for (char c : dir) {
+            doubled += c;
+            if (c == '\\') doubled += c;
+        }
+        forms.push_back(doubled);
+        forms.push_back(dir);
+        forms.push_back(slashes);
+    }
+    for (const std::string& form : forms)
+        for (std::size_t at = text.find(form); at != std::string::npos; at = text.find(form, at + 13))
+            text.replace(at, form.size(), "<data folder>");
+    return text;
 }
 
 bool Server::loginLocked(const std::string& ip) {
@@ -399,7 +445,8 @@ void Server::serveConnection(Connection& connection) {
                 session.executeStatement(use);
             } catch (const MeraDBError& e) {
                 // .message(), not what(): the client wraps this in ConnectionFailed (see above)
-                protocol::send(socket, failure(e.message()), &stop_);
+                log(peer + "  " + e.message());
+                protocol::send(socket, failure(withoutPaths(e.message())), &stop_);
                 return;
             }
         }
@@ -447,7 +494,7 @@ void Server::serveConnection(Connection& connection) {
                 reply = dispatch(session, *request, peerIp, peer, stopConnection);
             } catch (const std::exception& e) {  // a bug must not kill the whole server
                 log(peer + "  INTERNAL ERROR\n" + e.what());
-                reply = failure(std::string("[Internal Galti] ") + e.what());
+                reply = failure(withoutPaths(std::string("[Internal Galti] ") + e.what()));
             }
             sendReply(socket, reply);
             if (isWork) lastWork = clock::now();
@@ -525,8 +572,11 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
             }
         }
         Json encoded = Json::array();
-        for (const auto& r : results) {
-            if (!r.error.empty()) log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
+        for (auto& r : results) {
+            if (!r.error.empty()) {
+                log(peer + "  " + (secretText ? std::string("user/password wali query fail hui") : r.error));
+                r.error = withoutPaths(r.error);
+            }
             encoded.push_back(protocol::resultToJson(r));
         }
         Json reply = success();
@@ -542,7 +592,8 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
             reply["tree"] = session.schemaTree();
             return reply;
         } catch (const MeraDBError& e) {
-            return failure(e.message());  // bare: the client wraps it in ConnectionFailed
+            log(peer + "  " + e.message());
+            return failure(withoutPaths(e.message()));  // bare: the client wraps it in ConnectionFailed
         }
     }
 
@@ -551,7 +602,7 @@ Json Server::dispatch(Engine& session, const Json& request, const std::string& p
         reply["server"] = protocol::kServerName;
         if (session.user) return reply;  // the folder, the pid and every database name are for a superuser
         reply["pid"] = static_cast<std::int64_t>(sys::processId());
-        reply["data_dir"] = instance_->dataDir();
+        if (isLoopback(peerIp) && !options_.testPeerIsRemote) reply["data_dir"] = instance_->dataDir();
         reply["started"] = started_;
         reply["sessions"] = sessions_.load();
         Json databases = Json::array();

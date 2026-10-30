@@ -36,6 +36,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 import threading
 from typing import Optional
 
@@ -65,13 +66,19 @@ class UserStore:
 
     def save(self) -> None:
         with self._save_lock:
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                # Password hashes: owner only on POSIX. (On Windows this does not change the ACL: the file inherits the
-                # data folder's, see docs/SERVER.md.)
-                os.chmod(tmp, 0o600)
-                json.dump(self.users, f, indent=2)
-            os.replace(tmp, self.path)
+            # mkstemp: owner only on POSIX from the first byte, under a name nobody can prepare a link for. (The Windows
+            # access list is the C++ engine's work, see docs/SERVER.md.)
+            fd, tmp = tempfile.mkstemp(prefix="users.json.", suffix=".tmp", dir=os.path.dirname(self.path) or ".")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self.users, f, indent=2)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
 
     # ---- user management ----
     def exists(self, name: str) -> bool:

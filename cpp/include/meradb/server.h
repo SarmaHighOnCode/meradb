@@ -67,6 +67,7 @@ struct ServerOptions {
     std::size_t maxValueBytes = protocol::kMaxMessageBytes;
     std::size_t maxResultRows = 5000000;
     std::size_t maxReplyBytes = protocol::kMaxMessageBytes;
+    bool testPeerIsRemote = false;  // tests only bind to 127.0.0.1: treat their peers as coming from elsewhere
     // After this many wrong passwords in a row from one address, it gets the same "wrong password" answer for
     // loginLockSeconds whatever it sends (and costs no hashing). 0 = no limit.
     int loginFailureLimit = 10;
@@ -112,6 +113,7 @@ private:
     void noteLogin(const std::string& ip, bool succeeded);
     bool beginHashing();  // false: the server stayed too busy for too long
     void endHashing();
+    std::string withoutPaths(std::string text) const;
     void sendReply(net::Socket& socket, protocol::Json& reply);
 
     struct LoginFailures {
