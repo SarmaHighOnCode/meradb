@@ -1665,6 +1665,16 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
         else if (matchKeyword("DONO")) { expectKeyword("MILAO"); kind = "FULL"; }
         else if (matchKeyword("SAMAAN")) { expectKeyword("MILAO"); kind = "NATURAL"; }
         else if (matchKeyword("MILAO")) { kind = "INNER"; }
+        else if (matchSymbol(",")) {  // SE a, b: every row of a with every row of b; JAHAN does the filtering
+            Join cross;
+            cross.kind = "INNER";
+            std::optional<std::string> crossAlias;
+            parseSource(cross.table, crossAlias, cross.derived);
+            cross.alias = crossAlias ? *crossAlias : cross.table;
+            cross.on = std::make_unique<Literal>(Value(true));
+            sel->joins.push_back(std::move(cross));
+            continue;
+        }
         else break;
         Join j;
         j.kind = kind;

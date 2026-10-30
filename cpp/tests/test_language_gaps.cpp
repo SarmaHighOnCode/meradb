@@ -250,3 +250,18 @@ TEST_CASE("JAISA can name an escape character", "[gaps][like]") {
     run(e, "DAALO MEIN u MAAN ('a');");
     REQUIRE(q(e, "DIKHAO escape SE u JAHAN escape JAISA 'a';") == "a");
 }
+
+TEST_CASE("Tables can be listed with a comma", "[gaps][from]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE a (x INT);");
+    run(e, "BANAO TABLE b (y INT);");
+    run(e, "DAALO MEIN a MAAN (1), (2);");
+    run(e, "DAALO MEIN b MAAN (2), (3);");
+    REQUIRE(q(e, "DIKHAO x, y SE a, b KRAM x, y;") == "1|2;1|3;2|2;2|3");
+    REQUIRE(q(e, "DIKHAO x, y SE a, b JAHAN x = y;") == "2|2");
+    REQUIRE(q(e, "DIKHAO p.x, q.y SE a p, b q JAHAN p.x = q.y;") == "2|2");
+    REQUIRE(q(e, "DIKHAO p.x, r.x SE a p, a r JAHAN p.x < r.x;") == "1|2");
+    REQUIRE(q(e, "DIKHAO x, y SE a, (DIKHAO y SE b JAHAN y = 3) d;") == "1|3;2|3");
+    REQUIRE(q(e, "DIKHAO a.x, b.y, c.x SE a, b MILAO a c PAR c.x = b.y JAHAN a.x = 1;") == "1|2|2");
+}
