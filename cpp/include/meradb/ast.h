@@ -97,8 +97,8 @@ struct CaseWhen : Expr {
 };
 
 // ---- database-level statements ----
-struct CreateDatabase : Statement { std::string name; };
-struct DropDatabase : Statement { std::string name; };
+struct CreateDatabase : Statement { std::string name; bool ifNotExists = false; };
+struct DropDatabase : Statement { std::string name; bool ifExists = false; };
 struct UseDatabase : Statement { std::string name; };
 struct ShowTables : Statement {};
 struct Describe : Statement { std::string table; };
@@ -110,8 +110,16 @@ struct CreateView : Statement {
     bool alter = false;        // SUDHARO VIEW: the view must exist already
     bool checkOption = false;  // WITH CHECK OPTION
 };
-struct DropView : Statement { std::string name; };
+struct DropView : Statement { std::string name; bool ifExists = false; };
 struct ShowViews : Statement {};
+// BANAO [ANOKHA] INDEX [IF NOT EXISTS] naam PAR table (a, b)   /   HATAO INDEX [IF EXISTS] naam PAR table   /   SHOW INDEX FROM table
+struct CreateIndex : Statement {
+    std::string name, table;
+    std::vector<std::string> columns;
+    bool unique = false, ifNotExists = false;
+};
+struct DropIndex : Statement { std::string name, table; bool ifExists = false; };
+struct ShowIndex : Statement { std::string table; };
 // SHOW family (English SHOW, or DIKHAO for the first four)
 struct ShowDatabases : Statement {};
 struct ShowTriggers : Statement {};
@@ -147,6 +155,7 @@ struct ForeignKeyDef {
 
 struct CreateTable : Statement {
     std::string name;
+    bool ifNotExists = false;  // BANAO TABLE IF NOT EXISTS: an existing table of that name is left alone
     std::vector<ColumnDef> columns;
     std::vector<std::vector<std::string>> compositeUnique;
     std::optional<std::vector<std::string>> compositePk;
@@ -161,7 +170,7 @@ struct AlterAddComposite : Statement {
     std::vector<std::string> columns;
 };
 
-struct DropTable : Statement { std::string name; };
+struct DropTable : Statement { std::string name; bool ifExists = false; };
 struct AlterAddColumn : Statement {
     std::string table;
     ColumnDef column;
@@ -232,6 +241,7 @@ struct Select : Statement {
     std::optional<int> limit;
     std::optional<int> offset;  // SIRF n OFFSET m  /  SIRF m, n
     bool distinct = false;
+    std::string lockMode;  // FOR UPDATE / FOR SHARE / LOCK IN SHARE MODE: accepted, a transaction already locks the database
     std::vector<std::optional<std::string>> aliases;  // parallel to `columns`
 };
 
@@ -253,8 +263,8 @@ struct Delete : Statement {
 };
 
 // ---- users & privileges (Phase 2) ----
-struct CreateUser : Statement { std::string name; std::string password; };
-struct DropUser : Statement { std::string name; };
+struct CreateUser : Statement { std::string name; std::string password; bool ifNotExists = false; };
+struct DropUser : Statement { std::string name; bool ifExists = false; };
 struct Grant : Statement {
     std::vector<std::string> privileges;  // DIKHAO | DAALO | BADLO | MITAO (SAB is expanded by the parser)
     // privilege -> column list, for `DIKHAO (a, b)` style grants (DIKHAO / DAALO / BADLO only); absent = whole table
@@ -270,10 +280,18 @@ struct Revoke : Statement {
     std::string user;
 };
 // roles: BANAO ROLE r / HATAO ROLE r / ADHIKAR DO ROLE r KO user / ADHIKAR WAPAS ROLE r SE user / SET ROLE ...
-struct CreateRole : Statement { std::string name; };
-struct DropRole : Statement { std::string name; };
+struct CreateRole : Statement { std::string name; bool ifNotExists = false; };
+struct DropRole : Statement { std::string name; bool ifExists = false; };
 struct GrantRole : Statement { std::vector<std::string> roles; std::string user; };
 struct RevokeRole : Statement { std::vector<std::string> roles; std::string user; };
+// SET DEFAULT ROLE ALL | NONE | r [, r] TO user: the roles a user's session starts with
+struct SetDefaultRole : Statement {
+    std::vector<std::string> roles;
+    bool all = false, none = false;
+    std::string user;
+};
+// SET [SESSION | GLOBAL] TRANSACTION ISOLATION LEVEL READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE
+struct SetIsolation : Statement { std::string level; };
 struct SetRole : Statement {
     std::vector<std::string> roles;
     bool all = false;   // SET ROLE SAB / ALL: every granted role (the default)

@@ -53,6 +53,7 @@ add_executable(meradb_tests
   test_sql_batch2.cpp
   test_sql_batch3.cpp
   test_sql_batch4.cpp
+  test_sql_batch5.cpp
   # test files are appended here by later tasks
 )
 target_link_libraries(meradb_tests PRIVATE meradb_core Catch2::Catch2WithMain)

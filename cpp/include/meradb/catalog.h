@@ -45,6 +45,14 @@ struct Column {
     static Column fromJson(const nlohmann::ordered_json& j);
 };
 
+// BANAO [ANOKHA] INDEX naam PAR table (a, b). A unique one also lives in `compositeUnique` (that is what enforces it); the
+// plain ones are catalogue entries: SHOW INDEX lists them, but a lookup on them still scans.
+struct IndexDef {
+    std::string name;
+    std::vector<std::string> columns;
+    bool unique = false;
+};
+
 struct TableSchema {
     std::string name;
     std::vector<Column> columns;
@@ -52,6 +60,7 @@ struct TableSchema {
     // single-column constraint lives on the Column itself.
     std::vector<std::vector<std::string>> compositeUnique;
     std::optional<std::vector<std::string>> compositePk;
+    std::vector<IndexDef> indexes;  // written to catalog.json ("indexes") only when not empty
 
     std::vector<std::string> columnNames() const;
     std::vector<std::string> types() const;

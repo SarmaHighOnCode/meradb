@@ -577,10 +577,38 @@ std::unique_ptr<Statement> Parser::parseStatementBody() {
 
 // ---- DDL ----
 
+bool Parser::matchIfExists() {
+    if (!(isSoftWord(0, "if") && isSoftWord(1, "exists"))) return false;
+    advance();
+    advance();
+    return true;
+}
+
+bool Parser::matchIfNotExists() {
+    if (!(isSoftWord(0, "if") && isSoftWord(1, "not") && isSoftWord(2, "exists"))) return false;
+    advance();
+    advance();
+    advance();
+    return true;
+}
+
 std::unique_ptr<Statement> Parser::parseBanao() {
+    // BANAO [ANOKHA] INDEX [IF NOT EXISTS] naam PAR table (a, b)
+    if (isSoftWord(0, "index") || (checkKeyword("ANOKHA") && isSoftWord(1, "index"))) {
+        auto ci = std::make_unique<CreateIndex>();
+        ci->unique = matchKeyword("ANOKHA");
+        advance();  // INDEX
+        ci->ifNotExists = matchIfNotExists();
+        ci->name = expectIdent("index ka naam");
+        expectKeyword("PAR");
+        ci->table = expectIdent("table ka naam");
+        ci->columns = parseCompositeColumns(1);
+        return ci;
+    }
     // BANAO DATABASE name
     if (matchKeyword("DATABASE")) {
         auto d = std::make_unique<CreateDatabase>();
+        d->ifNotExists = matchIfNotExists();
         d->name = expectIdent("database ka naam");
         return d;
     }
@@ -599,6 +627,7 @@ std::unique_ptr<Statement> Parser::parseBanao() {
     if (isSoftWord(0, "role") && peek(1).type == TokenType::Ident) {
         advance();
         auto r = std::make_unique<CreateRole>();
+        r->ifNotExists = matchIfNotExists();
         r->name = expectIdent("role ka naam");
         return r;
     }
@@ -606,6 +635,7 @@ std::unique_ptr<Statement> Parser::parseBanao() {
     // BANAO USER naam GUPT 'password'
     if (matchKeyword("USER")) {
         auto u = std::make_unique<CreateUser>();
+        u->ifNotExists = matchIfNotExists();
         u->name = expectIdent("user ka naam");
         expectKeyword("GUPT");
         u->password = expectString("password");
@@ -624,6 +654,7 @@ std::unique_ptr<Statement> Parser::parseBanao() {
     // BANAO TABLE name ( coldef | table-constraint, ... )
     expectKeyword("TABLE");
     auto stmt = std::make_unique<CreateTable>();
+    stmt->ifNotExists = matchIfNotExists();
     stmt->name = expectIdent("table ka naam");
     // BANAO TABLE t KAHO DIKHAO ...  (also AS)  -- the table takes the query's columns and rows
     if (checkKeyword("KAHO") || (peek().type == TokenType::Ident && peek().textValue == "as")) {
@@ -670,13 +701,13 @@ void Parser::parseTableItem(CreateTable& stmt) {
     stmt.columns.push_back(parseColumnDef());
 }
 
-std::vector<std::string> Parser::parseCompositeColumns() {
+std::vector<std::string> Parser::parseCompositeColumns(size_t minColumns) {
     expectSymbol("(");
     std::vector<std::string> cols;
     cols.push_back(expectIdent("column ka naam"));
     while (matchSymbol(",")) cols.push_back(expectIdent("column ka naam"));
     expectSymbol(")");
-    if (cols.size() < 2) {
+    if (cols.size() < minColumns) {
         error("Composite constraint mein kam se kam 2 columns chahiye (1 column ke liye normal ANOKHA/MUKHYA KUNJI use karo)");
     }
     return cols;
@@ -861,22 +892,26 @@ std::unique_ptr<CreateView> Parser::parseCreateView() {
 std::unique_ptr<Statement> Parser::parseHatao() {
     if (matchKeyword("DATABASE")) {
         auto d = std::make_unique<DropDatabase>();
+        d->ifExists = matchIfExists();
         d->name = expectIdent("database ka naam");
         return d;
     }
     if (matchKeyword("VIEW")) {
         auto d = std::make_unique<DropView>();
+        d->ifExists = matchIfExists();
         d->name = expectIdent("view ka naam");
         return d;
     }
     if (matchKeyword("USER")) {
         auto d = std::make_unique<DropUser>();
+        d->ifExists = matchIfExists();
         d->name = expectIdent("user ka naam");
         return d;
     }
     if (isSoftWord(0, "role") && peek(1).type == TokenType::Ident) {
         advance();
         auto d = std::make_unique<DropRole>();
+        d->ifExists = matchIfExists();
         d->name = expectIdent("role ka naam");
         return d;
     }
@@ -914,8 +949,18 @@ std::unique_ptr<Statement> Parser::parseHatao() {
         d->name = expectIdent("prepared statement ka naam");
         return d;
     }
+    if (isSoftWord(0, "index")) {  // HATAO INDEX [IF EXISTS] naam PAR table
+        advance();
+        auto d = std::make_unique<DropIndex>();
+        d->ifExists = matchIfExists();
+        d->name = expectIdent("index ka naam");
+        expectKeyword("PAR");
+        d->table = expectIdent("table ka naam");
+        return d;
+    }
     expectKeyword("TABLE");
     auto d = std::make_unique<DropTable>();
+    d->ifExists = matchIfExists();
     d->name = expectIdent("table ka naam");
     return d;
 }
@@ -1046,6 +1091,35 @@ std::vector<std::pair<std::string, std::unique_ptr<Expr>>> Parser::parseVarAssig
 }
 
 std::unique_ptr<Statement> Parser::parseSet() {
+    // SET DEFAULT ROLE ALL | NONE | r [, r] TO user
+    if (isSoftWord(0, "default") && isSoftWord(1, "role")) {
+        advance();
+        advance();
+        auto d = std::make_unique<SetDefaultRole>();
+        if (matchKeyword("SAB") || (isSoftWord(0, "all") && (advance(), true))) d->all = true;
+        else if (isSoftWord(0, "none")) { advance(); d->none = true; }
+        else d->roles = parseNameList("role ka naam");
+        if (!isSoftWord(0, "to") && !checkKeyword("KO")) error("SET DEFAULT ROLE ... ke baad TO user (ya KO user) expected tha");
+        advance();
+        d->user = expectIdent("user ka naam");
+        return d;
+    }
+    // SET [SESSION | GLOBAL] TRANSACTION ISOLATION LEVEL <level>
+    int skip = (isSoftWord(0, "session") || isSoftWord(0, "global")) ? 1 : 0;
+    if (isSoftWord(skip, "transaction") && isSoftWord(skip + 1, "isolation")) {
+        for (int k = 0; k < skip + 2; ++k) advance();
+        if (!isSoftWord(0, "level")) error("ISOLATION ke baad LEVEL expected tha");
+        advance();
+        auto iso = std::make_unique<SetIsolation>();
+        const std::string first = advance().textValue;
+        if (first == "serializable") iso->level = "SERIALIZABLE";
+        else if (first == "repeatable" && isSoftWord(0, "read")) { advance(); iso->level = "REPEATABLE READ"; }
+        else if (first == "read" && (isSoftWord(0, "committed") || isSoftWord(0, "uncommitted"))) {
+            iso->level = isSoftWord(0, "committed") ? "READ COMMITTED" : "READ UNCOMMITTED";
+            advance();
+        } else error("ISOLATION LEVEL ke baad READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ ya SERIALIZABLE expected tha");
+        return iso;
+    }
     auto s = std::make_unique<SetVariable>();
     s->assignments = parseVarAssignments();
     return s;
@@ -1144,6 +1218,14 @@ std::optional<std::string> Parser::parseForUser() {
 std::unique_ptr<Statement> Parser::parseShow() {
     if (matchKeyword("TABLES")) return std::make_unique<ShowTables>();
     if (matchKeyword("VIEWS")) return std::make_unique<ShowViews>();
+    if (isSoftWord(0, "index") || isSoftWord(0, "indexes") || isSoftWord(0, "keys")) {  // SHOW INDEX FROM table
+        advance();
+        if (!matchKeyword("SE") && !(isSoftWord(0, "from") && (advance(), true)) && !(isSoftWord(0, "in") && (advance(), true)))
+            error("SHOW INDEX ke baad FROM expected tha");
+        auto s = std::make_unique<ShowIndex>();
+        s->table = expectIdent("table ka naam");
+        return s;
+    }
     if (isSoftWord(0, "databases")) { advance(); return std::make_unique<ShowDatabases>(); }
     if (isSoftWord(0, "triggers")) { advance(); return std::make_unique<ShowTriggers>(); }
     if (isSoftWord(0, "procedures")) { advance(); return std::make_unique<ShowProcedures>(); }
@@ -1591,6 +1673,20 @@ std::unique_ptr<Select> Parser::parseSelectBody() {
             }
         }
     }
+    // FOR UPDATE [NOWAIT | SKIP LOCKED] | FOR SHARE | LOCK IN SHARE MODE
+    if (isSoftWord(0, "for") && (isSoftWord(1, "update") || isSoftWord(1, "share"))) {
+        sel->lockMode = peek(1).textValue == "update" ? "UPDATE" : "SHARE";
+        advance();
+        advance();
+        if (isSoftWord(0, "nowait")) advance();
+        else if (isSoftWord(0, "skip") && isSoftWord(1, "locked")) {
+            advance();
+            advance();
+        }
+    } else if (isSoftWord(0, "lock") && isSoftWord(1, "in") && isSoftWord(2, "share") && isSoftWord(3, "mode")) {
+        sel->lockMode = "SHARE";
+        for (int k = 0; k < 4; ++k) advance();
+    }
     return sel;
 }
 
@@ -1615,6 +1711,7 @@ std::optional<std::string> Parser::parseAliasOpt() {
         // MILAO b USING (id): USING is the join clause, not an alias
         if (peek().textValue == "using" && peek(1).type == TokenType::Symbol && peek(1).textValue == "(")
             return std::nullopt;
+        if (peek().textValue == "lock" && isSoftWord(1, "in") && isSoftWord(2, "share")) return std::nullopt;  // LOCK IN SHARE MODE
         // SE t LIMIT 5: LIMIT is the row limit, not an alias
         if (peek().textValue == "limit" && peek(1).type == TokenType::Number) return std::nullopt;
         // BANAO VIEW v KAHO DIKHAO * SE t WITH CHECK OPTION: WITH belongs to the view, not to the table

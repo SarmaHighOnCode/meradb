@@ -226,6 +226,10 @@ json TableSchema::toJson() const {
     }
     j["composite_unique"] = compositeUnique;
     j["composite_pk"] = compositePk.has_value() ? json(*compositePk) : json(nullptr);
+    if (!indexes.empty()) {
+        j["indexes"] = json::array();
+        for (const auto& ix : indexes) j["indexes"].push_back(json{{"name", ix.name}, {"columns", ix.columns}, {"unique", ix.unique}});
+    }
     return j;
 }
 
@@ -237,6 +241,11 @@ TableSchema TableSchema::fromJson(const json& j) {
     auto cu = j.find("composite_unique");
     if (cu != j.end() && !cu->is_null()) s.compositeUnique = cu->get<std::vector<std::vector<std::string>>>();
     s.compositePk = optionalField<std::vector<std::string>>(j, "composite_pk");
+    auto ixs = j.find("indexes");
+    if (ixs != j.end() && ixs->is_array())
+        for (const auto& ij : *ixs)
+            s.indexes.push_back(IndexDef{ij.at("name").get<std::string>(), ij.at("columns").get<std::vector<std::string>>(),
+                                         ij.value("unique", false)});
     s.assignFkNames();  // older catalogs have unnamed foreign keys
     return s;
 }

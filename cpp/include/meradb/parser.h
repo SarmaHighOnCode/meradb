@@ -119,8 +119,10 @@ private:
     std::unique_ptr<ast::Statement> parseUpdate();
     std::unique_ptr<ast::Statement> parseDelete();
     void parseTableItem(ast::CreateTable& stmt);
-    std::vector<std::string> parseCompositeColumns();
+    std::vector<std::string> parseCompositeColumns(size_t minColumns = 2);
     ast::ColumnDef parseColumnDef();
+    bool matchIfExists();     // IF EXISTS
+    bool matchIfNotExists();  // IF NOT EXISTS
     bool isSoftWord(int offset, const char* word) const;  // an IDENT (lower-cased) with this exact spelling
     bool checkKeywordAt(int offset, const std::string& kw) const;
     bool atForeignKeyItem(int offset) const;

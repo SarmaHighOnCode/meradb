@@ -401,6 +401,24 @@ void UserStore::grantRole(const std::string& role, const std::string& user) {
     });
 }
 
+std::optional<std::vector<std::string>> UserStore::defaultRoles(const std::string& user) const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = users_.find(user);
+    if (it == users_.end() || !it.value().is_object() || !it.value().contains("default_roles")) return std::nullopt;
+    return it.value()["default_roles"].get<std::vector<std::string>>();
+}
+
+void UserStore::setDefaultRoles(const std::string& user, const std::optional<std::vector<std::string>>& roles) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = users_.find(user);
+    if (it == users_.end()) throw noSuchUser(user);
+    if (!it.value().is_object()) throw ExecutionError("User '" + user + "' ke liye default role set nahi ho sakta");
+    mutateAndSave([&] {
+        if (roles) (*it)["default_roles"] = *roles;
+        else it->erase("default_roles");
+    });
+}
+
 void UserStore::revokeRole(const std::string& role, const std::string& user) {
     std::lock_guard<std::mutex> guard(mutex_);
     auto it = users_.find(user);

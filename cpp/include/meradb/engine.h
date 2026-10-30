@@ -114,6 +114,8 @@ public:
     std::optional<std::string> user;
     // SET ROLE: the roles in force for `user`. nullopt = every role granted to it (the default); empty = none.
     std::optional<std::set<std::string>> activeRoles;
+    bool rolesInit_ = false;                     // the user's default roles are applied once, at the first statement
+    std::string isolation_ = "REPEATABLE READ";  // what SET TRANSACTION ISOLATION LEVEL asked for (see execSetIsolation)
     std::optional<std::string> txnDb;  // database of the open transaction, if any
     bool inTransaction() const { return txnDb.has_value(); }
     // SET autocommit = 0: every statement that changes something opens a transaction (if none is open) that stays open until PAKKA / WAPAS.
@@ -276,6 +278,11 @@ private:
     Result execCreateView(const ast::CreateView&);
     Result execDropView(const ast::DropView&);
     Result execShowViews(const ast::ShowViews&);
+    Result execCreateIndex(const ast::CreateIndex&);
+    Result execDropIndex(const ast::DropIndex&);
+    Result execShowIndex(const ast::ShowIndex&);
+    Result execSetDefaultRole(const ast::SetDefaultRole&);
+    Result execSetIsolation(const ast::SetIsolation&);
     Result execShowDatabases(const ast::ShowDatabases&);
     Result execShowTriggers(const ast::ShowTriggers&);
     Result execShowProcedures(const ast::ShowProcedures&);

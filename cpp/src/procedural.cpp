@@ -623,6 +623,8 @@ Result Engine::execShowVariables(const ast::ShowVariables& stmt) {
     Result r;
     r.columns = {"variable_name", "value"};
     if (!stmt.hasPattern || likeText("autocommit", stmt.pattern)) r.rows.push_back({textValue("autocommit"), textValue(autocommit_ ? "ON" : "OFF")});
+    if (!stmt.hasPattern || likeText("transaction_isolation", stmt.pattern))
+        r.rows.push_back({textValue("transaction_isolation"), textValue(isolation_)});
     r.message = std::to_string(r.rows.size()) + " variable(s)";
     return r;
 }

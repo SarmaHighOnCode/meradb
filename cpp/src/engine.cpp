@@ -227,6 +227,7 @@ size_t utf8Length(const std::string& s) {
 }
 
 Value textValue(std::string s) { return Value(std::move(s)); }
+Value intValue(int64_t n) { return Value(n); }
 
 Result messageResult(std::string message) {
     Result r;
@@ -376,6 +377,10 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
         currentDb = DEFAULT_DATABASE;
         throw ExecutionError("Database '" + gone + "' ab exist nahi karta. Ab '" + DEFAULT_DATABASE + "' use ho raha hai.");
     }
+    if (user && !rolesInit_) {  // a session starts with the roles SET DEFAULT ROLE chose for the user (none chosen = all)
+        rolesInit_ = true;
+        if (auto defaults = instance_->users().defaultRoles(*user)) activeRoles = std::set<std::string>(defaults->begin(), defaults->end());
+    }
     checkPrivileges(stmt);
     using namespace ast;
     if (functionDepth_ > 0 && !isReadOnlyStatement(stmt))
@@ -424,6 +429,11 @@ Result Engine::executeStatement(const ast::Statement& stmt) {
     if (auto* s = dynamic_cast<const CreateView*>(&stmt)) return execCreateView(*s);
     if (auto* s = dynamic_cast<const DropView*>(&stmt)) return execDropView(*s);
     if (auto* s = dynamic_cast<const ShowViews*>(&stmt)) return execShowViews(*s);
+    if (auto* s = dynamic_cast<const CreateIndex*>(&stmt)) return execCreateIndex(*s);
+    if (auto* s = dynamic_cast<const DropIndex*>(&stmt)) return execDropIndex(*s);
+    if (auto* s = dynamic_cast<const ShowIndex*>(&stmt)) return execShowIndex(*s);
+    if (auto* s = dynamic_cast<const SetDefaultRole*>(&stmt)) return execSetDefaultRole(*s);
+    if (auto* s = dynamic_cast<const SetIsolation*>(&stmt)) return execSetIsolation(*s);
     if (auto* s = dynamic_cast<const ShowDatabases*>(&stmt)) return execShowDatabases(*s);
     if (auto* s = dynamic_cast<const ShowTriggers*>(&stmt)) return execShowTriggers(*s);
     if (auto* s = dynamic_cast<const ShowProcedures*>(&stmt)) return execShowProcedures(*s);
@@ -769,7 +779,7 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
     }
     // Open to every session: choosing the database (grants are per database, so nothing is exposed), SET ROLE, and
     // SHOW GRANTS for yourself.
-    if (dynamic_cast<const UseDatabase*>(&stmt) || dynamic_cast<const SetRole*>(&stmt)) return;
+    if (dynamic_cast<const UseDatabase*>(&stmt) || dynamic_cast<const SetRole*>(&stmt) || dynamic_cast<const SetIsolation*>(&stmt)) return;
     // Session variables and prepared statements are open too: EXECUTE re-enters executeStatement, so the statement it
     // runs is checked like any other. SET autocommit stays a transaction command (superuser only).
     if (dynamic_cast<const ShowVariables*>(&stmt) || dynamic_cast<const Prepare*>(&stmt) ||
@@ -795,11 +805,15 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
 }
 
 Result Engine::execCreateUser(const ast::CreateUser& stmt) {
+    if (stmt.ifNotExists && instance_->users().exists(stmt.name))
+        return messageResult("User '" + stmt.name + "' pehle se hai -- kuch nahi badla");
     instance_->users().create(stmt.name, stmt.password);
     return messageResult("User '" + stmt.name + "' ban gaya");
 }
 
 Result Engine::execDropUser(const ast::DropUser& stmt) {
+    if (stmt.ifExists && !instance_->users().exists(stmt.name))
+        return messageResult("User '" + stmt.name + "' nahi hai -- kuch nahi badla");
     instance_->users().drop(stmt.name);
     return messageResult("User '" + stmt.name + "' hata diya");
 }
@@ -840,12 +854,22 @@ Result Engine::execRevoke(const ast::Revoke& stmt) {
 Result Engine::execCreateRole(const ast::CreateRole& stmt) {
     if (stmt.name == "none" || stmt.name == "all" || stmt.name == "default")
         throw ExecutionError("'" + stmt.name + "' role ka naam nahi ho sakta (SET ROLE mein iska alag matlab hai)");
-    instance_->users().createRole(stmt.name);
+    try {
+        instance_->users().createRole(stmt.name);
+    } catch (const ExecutionError& e) {
+        if (!stmt.ifNotExists || std::string(e.what()).find("Role '") == std::string::npos) throw;
+        return messageResult("Role '" + stmt.name + "' pehle se hai -- kuch nahi badla");
+    }
     return messageResult("Role '" + stmt.name + "' ban gaya");
 }
 
 Result Engine::execDropRole(const ast::DropRole& stmt) {
-    instance_->users().dropRole(stmt.name);
+    try {
+        instance_->users().dropRole(stmt.name);
+    } catch (const ExecutionError& e) {
+        if (!stmt.ifExists) throw;
+        return messageResult("Role '" + stmt.name + "' nahi hai -- kuch nahi badla");
+    }
     if (activeRoles) activeRoles->erase(stmt.name);
     return messageResult("Role '" + stmt.name + "' hata diya");
 }
@@ -858,6 +882,31 @@ Result Engine::execGrantRole(const ast::GrantRole& stmt) {
 Result Engine::execRevokeRole(const ast::RevokeRole& stmt) {
     for (const auto& role : stmt.roles) instance_->users().revokeRole(role, stmt.user);
     return messageResult("Role " + joinStrs(stmt.roles, ", ") + " '" + stmt.user + "' se wapas le liya");
+}
+
+// SET DEFAULT ROLE ALL | NONE | r [, r] TO user: kept in users.json; a session of that user starts with them active.
+Result Engine::execSetDefaultRole(const ast::SetDefaultRole& stmt) {
+    if (stmt.all) {
+        instance_->users().setDefaultRoles(stmt.user, std::nullopt);
+        return messageResult("'" + stmt.user + "' ke saare granted roles ab shuru se active honge");
+    }
+    std::vector<std::string> chosen = stmt.none ? std::vector<std::string>() : stmt.roles;
+    std::vector<std::string> granted = instance_->users().rolesOf(stmt.user);
+    for (const auto& role : chosen)
+        if (std::find(granted.begin(), granted.end(), role) == granted.end())
+            throw ExecutionError("Role '" + role + "' '" + stmt.user + "' ko diya hi nahi gaya");
+    instance_->users().setDefaultRoles(stmt.user, chosen);
+    return messageResult(stmt.none ? "'" + stmt.user + "' ke liye shuru mein koi role active nahi hoga"
+                                   : "'" + stmt.user + "' ka default role ab " + joinStrs(chosen, ", ") + " hai");
+}
+
+// SET TRANSACTION ISOLATION LEVEL: remembered and shown by SHOW VARIABLES. MeraDB runs a transaction while holding the
+// whole instance lock, so whatever is asked for, a transaction behaves as SERIALIZABLE: no other session can read or
+// write in between (no dirty, non-repeatable or phantom reads).
+Result Engine::execSetIsolation(const ast::SetIsolation& stmt) {
+    isolation_ = stmt.level;
+    return messageResult("isolation level " + stmt.level + " likh liya. Dhyan do: MeraDB transaction ke dauraan poora database lock rakhta hai, "
+                         "isliye asal mein har transaction SERIALIZABLE chalta hai");
 }
 
 // SET ROLE r [, r] | SAB | NONE: picks which of the user's granted roles count for this session.
@@ -1011,7 +1060,10 @@ void Engine::noTransaction(const std::string& command) const {
 Result Engine::execCreateDatabase(const ast::CreateDatabase& stmt) {
     noTransaction("BANAO DATABASE");
     fs::path path = pathOf(instance_->dbDir(stmt.name));
-    if (fs::is_directory(path)) throw ExecutionError("Database '" + stmt.name + "' pehle se hai");
+    if (fs::is_directory(path)) {
+        if (stmt.ifNotExists) return messageResult("Database '" + stmt.name + "' pehle se hai -- kuch nahi badla");
+        throw ExecutionError("Database '" + stmt.name + "' pehle se hai");
+    }
     fs::create_directories(path);
     return messageResult("Database '" + stmt.name + "' ban gaya");
 }
@@ -1021,7 +1073,10 @@ Result Engine::execDropDatabase(const ast::DropDatabase& stmt) {
     if (stmt.name == DEFAULT_DATABASE)
         throw ExecutionError(std::string("'") + DEFAULT_DATABASE + "' default database hai, use hata nahi sakte");
     fs::path path = pathOf(instance_->dbDir(stmt.name));
-    if (!fs::is_directory(path)) throw ExecutionError("Database '" + stmt.name + "' exist nahi karta");
+    if (!fs::is_directory(path)) {
+        if (stmt.ifExists) return messageResult("Database '" + stmt.name + "' nahi hai -- kuch nahi badla");
+        throw ExecutionError("Database '" + stmt.name + "' exist nahi karta");
+    }
     std::error_code ec;
     fs::remove_all(path, ec);
     if (ec) throw StorageError("Database '" + stmt.name + "' hata nahi paaye: " + ec.message());
@@ -1179,6 +1234,7 @@ bool Engine::startsTransaction(const ast::Statement& stmt) {
            dynamic_cast<const AlterDropForeignKey*>(&stmt) || dynamic_cast<const AlterDropColumn*>(&stmt) ||
            dynamic_cast<const RenameTable*>(&stmt) || dynamic_cast<const RenameColumn*>(&stmt) ||
            dynamic_cast<const CreateView*>(&stmt) || dynamic_cast<const DropView*>(&stmt) ||
+           dynamic_cast<const CreateIndex*>(&stmt) || dynamic_cast<const DropIndex*>(&stmt) ||
            dynamic_cast<const CreateTrigger*>(&stmt) || dynamic_cast<const DropTrigger*>(&stmt) ||
            dynamic_cast<const CreateProcedure*>(&stmt) || dynamic_cast<const DropProcedure*>(&stmt) ||
            dynamic_cast<const CreateFunction*>(&stmt) || dynamic_cast<const DropFunction*>(&stmt) ||
@@ -1194,7 +1250,7 @@ bool Engine::isReadOnlyStatement(const ast::Statement& stmt) {
            dynamic_cast<const ShowTriggers*>(&stmt) || dynamic_cast<const ShowProcedures*>(&stmt) ||
            dynamic_cast<const ShowFunctions*>(&stmt) || dynamic_cast<const ShowGrants*>(&stmt) ||
            dynamic_cast<const ShowCreateTable*>(&stmt) || dynamic_cast<const ShowCreateView*>(&stmt) ||
-           dynamic_cast<const ShowVariables*>(&stmt);
+           dynamic_cast<const ShowVariables*>(&stmt) || dynamic_cast<const ShowIndex*>(&stmt);
 }
 
 // ---- savepoints: copies of the database folder, taken inside the open transaction
@@ -1370,7 +1426,10 @@ void Engine::checkShartExpr(const Column& col, const TableSchema& schema) const 
 
 Result Engine::execCreateTable(const ast::CreateTable& stmt) {
     Catalog& cat = catalog();
-    if (cat.find(stmt.name)) throw ExecutionError("Table '" + stmt.name + "' pehle se hai");
+    if (cat.find(stmt.name)) {
+        if (stmt.ifNotExists) return messageResult("Table '" + stmt.name + "' pehle se hai -- kuch nahi badla");
+        throw ExecutionError("Table '" + stmt.name + "' pehle se hai");
+    }
     if (cat.views.count(stmt.name))
         throw ExecutionError("'" + stmt.name + "' ek VIEW hai -- table usi naam se nahi ban sakti");
     if (!stmt.likeTable.empty()) return execCreateTableLike(stmt);
@@ -1576,6 +1635,7 @@ Result Engine::execCreateTableAs(const ast::CreateTable& stmt) {
 
 Result Engine::execDropTable(const ast::DropTable& stmt) {
     Catalog& cat = catalog();
+    if (stmt.ifExists && !cat.find(stmt.name)) return messageResult("Table '" + stmt.name + "' nahi hai -- kuch nahi badla");
     std::vector<std::string> children;
     for (const auto& [otherName, other] : cat.tables) {
         if (otherName == stmt.name) continue;
@@ -1801,6 +1861,9 @@ Result Engine::execAlterDropColumn(const ast::AlterDropColumn& stmt) {
     newSchema.name = schema.name;
     newSchema.columns = schema.columns;
     newSchema.columns.erase(newSchema.columns.begin() + static_cast<std::ptrdiff_t>(idx));
+    for (const auto& ix : schema.indexes)  // a plain index survives unless it names the dropped column
+        if (!ix.unique && std::find(ix.columns.begin(), ix.columns.end(), stmt.column) == ix.columns.end())
+            newSchema.indexes.push_back(ix);
     auto types = newSchema.types();
     std::vector<std::vector<uint8_t>> payloads;
     for (auto& [id, v] : t->rows()) {
@@ -1860,6 +1923,9 @@ Result Engine::execAlterModifyColumn(const ast::AlterModifyColumn& stmt) {
     TableSchema newSchema = schema;
     newSchema.columns[idx] = col;
     if (renamed) {  // composite ANOKHA / MUKHYA KUNJI groups name columns, so they follow the rename
+        for (auto& ix : newSchema.indexes)
+            for (auto& n : ix.columns)
+                if (n == old.name) n = col.name;
         for (auto& group : newSchema.compositeUnique)
             for (auto& n : group)
                 if (n == old.name) n = col.name;
@@ -2042,6 +2108,9 @@ Result Engine::execRenameColumn(const ast::RenameColumn& stmt) {
     }
 
     schema.columns[idx].name = stmt.newName;
+    for (auto& ix : schema.indexes)
+        for (auto& n : ix.columns)
+            if (n == stmt.column) n = stmt.newName;
     for (auto& group : schema.compositeUnique)  // table-level ANOKHA / MUKHYA KUNJI groups name columns too
         for (auto& n : group)
             if (n == stmt.column) n = stmt.newName;
@@ -3588,6 +3657,82 @@ Result Engine::execShowViews(const ast::ShowViews&) {
     return r;
 }
 
+Result Engine::execCreateIndex(const ast::CreateIndex& stmt) {
+    auto t = table(stmt.table);
+    TableSchema schema = t->schema();
+    for (const auto& ix : schema.indexes)
+        if (ix.name == stmt.name) {
+            if (stmt.ifNotExists) return messageResult("Index '" + stmt.name + "' pehle se hai -- kuch nahi badla");
+            throw ExecutionError("Index '" + stmt.name + "' table '" + stmt.table + "' par pehle se hai");
+        }
+    if (stmt.name == "PRIMARY") throw ExecutionError("'PRIMARY' naam MUKHYA KUNJI ka hai -- koi aur naam chuno");
+    for (size_t i = 0; i < stmt.columns.size(); ++i) {
+        schema.indexOf(stmt.columns[i]);  // throws if the column is missing
+        for (size_t k = 0; k < i; ++k)
+            if (stmt.columns[k] == stmt.columns[i])
+                throw ExecutionError("Column '" + stmt.columns[i] + "' index mein do baar likha hai");
+    }
+    if (stmt.unique) {
+        // the uniqueness itself is a table-level ANOKHA group; adding it checks the rows already there
+        ast::AlterAddComposite add;
+        add.table = stmt.table;
+        add.kind = "ANOKHA";
+        add.columns = stmt.columns;
+        execAlterAddComposite(add);
+        schema = table(stmt.table)->schema();
+    }
+    schema.indexes.push_back(IndexDef{stmt.name, stmt.columns, stmt.unique});
+    catalog().add(schema);
+    return messageResult(std::string(stmt.unique ? "ANOKHA index '" : "Index '") + stmt.name + "' table '" + stmt.table +
+                         "' par (" + joinStrs(stmt.columns, ", ") + ") ke liye ban gaya");
+}
+
+Result Engine::execDropIndex(const ast::DropIndex& stmt) {
+    auto t = table(stmt.table);
+    TableSchema schema = t->schema();
+    auto it = std::find_if(schema.indexes.begin(), schema.indexes.end(), [&](const IndexDef& ix) { return ix.name == stmt.name; });
+    if (it == schema.indexes.end()) {
+        if (stmt.ifExists) return messageResult("Index '" + stmt.name + "' nahi hai -- kuch nahi badla");
+        throw ExecutionError("Index '" + stmt.name + "' table '" + stmt.table + "' par nahi hai (SHOW INDEX FROM " +
+                             stmt.table + " se dekho)");
+    }
+    if (it->unique) {  // dropping a unique index lifts the ANOKHA group it added
+        auto g = std::find(schema.compositeUnique.begin(), schema.compositeUnique.end(), it->columns);
+        if (g != schema.compositeUnique.end()) schema.compositeUnique.erase(g);
+    }
+    schema.indexes.erase(it);
+    t->invalidateIndexes();
+    catalog().add(schema);
+    return messageResult("Index '" + stmt.name + "' hata diya");
+}
+
+Result Engine::execShowIndex(const ast::ShowIndex& stmt) {
+    auto t = table(stmt.table);
+    const TableSchema& schema = t->schema();
+    Result r;
+    r.columns = {"Table", "Non_unique", "Key_name", "Seq_in_index", "Column_name"};
+    auto add = [&](const std::string& key, bool unique, const std::vector<std::string>& cols) {
+        for (size_t i = 0; i < cols.size(); ++i)
+            r.rows.push_back({textValue(schema.name), intValue(unique ? 0 : 1), textValue(key),
+                              intValue(static_cast<int64_t>(i + 1)), textValue(cols[i])});
+    };
+    std::vector<std::string> pk;
+    for (const auto& c : schema.columns)
+        if (c.primaryKey) pk.push_back(c.name);
+    if (schema.compositePk) pk = *schema.compositePk;
+    if (!pk.empty()) add("PRIMARY", true, pk);
+    for (const auto& c : schema.columns)
+        if (c.unique && !c.primaryKey) add(c.name, true, {c.name});
+    for (const auto& g : schema.compositeUnique) {
+        auto named = std::find_if(schema.indexes.begin(), schema.indexes.end(),
+                                  [&](const IndexDef& ix) { return ix.unique && ix.columns == g; });
+        if (named == schema.indexes.end()) add(joinStrs(g, "_"), true, g);
+    }
+    for (const auto& ix : schema.indexes) add(ix.name, ix.unique, ix.columns);
+    r.message = std::to_string(r.rows.size()) + " index entry(ies) on '" + schema.name + "'";
+    return r;
+}
+
 Result Engine::execCreateView(const ast::CreateView& stmt) {
     Catalog& cat = catalog();
     if (cat.find(stmt.name) != nullptr)
@@ -3805,7 +3950,10 @@ Result Engine::execDeleteViaView(const ast::Delete& stmt) {
 
 Result Engine::execDropView(const ast::DropView& stmt) {
     Catalog& cat = catalog();
-    if (!cat.views.count(stmt.name)) throw ExecutionError("View '" + stmt.name + "' exist nahi karta");
+    if (!cat.views.count(stmt.name)) {
+        if (stmt.ifExists) return messageResult("View '" + stmt.name + "' nahi hai -- kuch nahi badla");
+        throw ExecutionError("View '" + stmt.name + "' exist nahi karta");
+    }
     cat.removeView(stmt.name);
     return messageResult("View '" + stmt.name + "' hata diya");
 }

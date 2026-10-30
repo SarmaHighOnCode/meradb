@@ -84,6 +84,9 @@ public:
     void grantRole(const std::string& role, const std::string& user);
     void revokeRole(const std::string& role, const std::string& user);
     std::vector<std::string> rolesOf(const std::string& user) const;
+    // SET DEFAULT ROLE: the roles a session of `user` starts with. nullopt = every granted role (the default).
+    std::optional<std::vector<std::string>> defaultRoles(const std::string& user) const;
+    void setDefaultRoles(const std::string& user, const std::optional<std::vector<std::string>>& roles);
     std::vector<std::string> roleNames() const;  // creation order
 
     // SHOW GRANTS: "GRANT SELECT, INSERT ON db.t TO name", "GRANT role TO name", ... (never empty)

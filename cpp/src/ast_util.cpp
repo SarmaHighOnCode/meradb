@@ -112,6 +112,7 @@ std::unique_ptr<Select> cloneSelect(const Select& s) {
     out->limit = s.limit;
     out->offset = s.offset;
     out->distinct = s.distinct;
+    out->lockMode = s.lockMode;
     out->aliases = s.aliases;
     return out;
 }
@@ -134,7 +135,9 @@ std::string astClassName(const ast::Statement& stmt) {
     MERADB_CLASS_NAME(ShowDatabases) MERADB_CLASS_NAME(ShowTriggers) MERADB_CLASS_NAME(ShowProcedures)
     MERADB_CLASS_NAME(ShowGrants) MERADB_CLASS_NAME(ShowCreateTable) MERADB_CLASS_NAME(ShowCreateView)
     MERADB_CLASS_NAME(CreateRole) MERADB_CLASS_NAME(DropRole) MERADB_CLASS_NAME(GrantRole)
-    MERADB_CLASS_NAME(RevokeRole) MERADB_CLASS_NAME(SetRole)
+    MERADB_CLASS_NAME(RevokeRole) MERADB_CLASS_NAME(SetRole) MERADB_CLASS_NAME(CreateIndex)
+    MERADB_CLASS_NAME(DropIndex) MERADB_CLASS_NAME(ShowIndex)
+    MERADB_CLASS_NAME(SetDefaultRole) MERADB_CLASS_NAME(SetIsolation)
 #undef MERADB_CLASS_NAME
     return "Statement";
 }
