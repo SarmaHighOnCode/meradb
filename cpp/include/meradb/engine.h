@@ -15,6 +15,7 @@
 #pragma once
 #include "meradb/ast.h"
 #include "meradb/catalog.h"
+#include "meradb/durability.h"
 #include "meradb/evaluator.h"
 #include "meradb/planner.h"
 #include "meradb/proc_ast.h"
@@ -79,8 +80,12 @@ public:
     // Databases rolled back by crash recovery when this Instance started.
     const std::vector<std::string>& recovered() const { return recovered_; }
 
+    // When this Instance's writes reach the disk (see durability.h). Serialized by `lock`.
+    Durability& durability() { return durability_; }
+
 private:
     std::string dataDir_;
+    Durability durability_;
     UserStore users_;  // declared after dataDir_: its constructor needs it
     std::unordered_map<std::string, std::unique_ptr<Catalog>> catalogs_;
     std::unordered_map<std::string, std::unordered_map<std::string, IndexCache>> indexes_;  // db -> table -> slot
@@ -128,6 +133,7 @@ public:
     // Never throws a MeraDBError: a failing statement gets Result.error
     // ("[Stage Galti] message") and the following statements still run.
     std::vector<Result> runScript(const std::string& text);
+    // Returns once the statement's changes are on the disk (see durability.h).
     Result executeStatement(const ast::Statement& stmt);
     // End the session: an unfinished transaction is rolled back.
     void close();
@@ -197,6 +203,7 @@ private:
     struct SavepointEntry { std::string name, tag; };
     std::vector<SavepointEntry> savepoints_;
     int savepointSeq_ = 0;
+    Result runStatement(const ast::Statement& stmt);
     void beginTransaction();
     void finishTransaction(bool commit);
     void clearSavepoints();

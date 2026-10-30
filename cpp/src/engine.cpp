@@ -125,18 +125,38 @@ void Instance::takeSnapshot(const std::string& db) {
     std::error_code ec;
     fs::copy(pathOf(dbDir(db)), tmp, fs::copy_options::recursive, ec);
     if (ec) throw StorageError("Database '" + db + "' ki copy nahi ban paayi: " + ec.message());
+    // The copy is on the disk BEFORE it gets its name and before the transaction touches a live file: a name without
+    // its bytes would "roll back" to garbage after a power cut.
+    if (!syncRelaxed() && !syncTree(textOf(tmp))) throw StorageError("Database '" + db + "' ki copy disk par pakki nahi hui");
+    crashPoint("snapshot-before-rename");
     replacePath(tmp, pathOf(snapshotPath(db)));  // only a COMPLETE copy ever gets the real name
+    if (!syncRelaxed()) syncFolder(textOf(tmp.parent_path()));
+    crashPoint("snapshot-after-rename");
+    durability_.enterTransaction();
 }
 
 void Instance::discardSnapshot(const std::string& db) {
+    durability_.syncDirty();  // every change of the transaction is on the disk BEFORE the commit point
+    crashPoint("commit-before-marker");
     fs::path done = pathOf(snapshotPath(db, ".done"));
     replacePath(pathOf(snapshotPath(db)), done);  // <- the COMMIT POINT: after this, no rollback
+    if (!syncRelaxed()) syncFolder(textOf(done.parent_path()));  // and the commit point itself, before PAKKA is acknowledged
+    crashPoint("commit-after-marker");
     removeTreeQuietly(done);
+    durability_.leaveTransaction();
 }
 
 void Instance::restoreSnapshot(const std::string& db) {
+    durability_.forgetDirty();  // those files are about to go
     removeTreeQuietly(pathOf(dbDir(db)));
-    replacePath(pathOf(snapshotPath(db)), pathOf(dbDir(db)));
+    crashPoint("rollback-after-remove");
+    fs::path snapshot = pathOf(snapshotPath(db));
+    replacePath(snapshot, pathOf(dbDir(db)));
+    if (!syncRelaxed()) {
+        syncFolder(textOf(snapshot.parent_path()));
+        syncFolder(dataDir_);
+    }
+    durability_.leaveTransaction();
     forget(db);
 }
 
@@ -164,8 +184,11 @@ void Instance::restoreCopy(const std::string& db, const std::string& tag) {
     fs::path aside = pathOf(snapshotPath(db, ".aside.tmp"));
     removeTreeQuietly(aside);
     replacePath(pathOf(dbDir(db)), aside);
+    crashPoint("restore-copy-between-renames");
     replacePath(staging, pathOf(dbDir(db)));
     removeTreeQuietly(aside);
+    durability_.markTree(dbDir(db));  // every file is a new one now; PAKKA or the statement's end syncs them
+    durability_.markFolder(dataDir_);
     forget(db);
 }
 
@@ -383,6 +406,14 @@ std::vector<Result> Engine::runScript(const std::string& text) {
 }
 
 Result Engine::executeStatement(const ast::Statement& stmt) {
+    auto guard = acquireLock(instance_->lockTimeoutSeconds);  // held until the statement is on the disk
+    StatementScope durable(instance_->durability());
+    Result result = runStatement(stmt);
+    durable.finish();
+    return result;
+}
+
+Result Engine::runStatement(const ast::Statement& stmt) {
     StackBase base;
     requireStack();
     ScopedSessionHost sessionHost(this);  // @variables and stored functions, for every expression this statement evaluates
@@ -1147,6 +1178,7 @@ Result Engine::execCreateDatabase(const ast::CreateDatabase& stmt) {
         throw ExecutionError("Database '" + stmt.name + "' pehle se hai");
     }
     fs::create_directories(path);
+    instance_->durability().markFolder(instance_->dataDir());
     return messageResult("Database '" + stmt.name + "' ban gaya");
 }
 
@@ -1159,8 +1191,17 @@ Result Engine::execDropDatabase(const ast::DropDatabase& stmt) {
         if (stmt.ifExists) return messageResult("Database '" + stmt.name + "' nahi hai -- kuch nahi badla");
         throw ExecutionError("Database '" + stmt.name + "' exist nahi karta");
     }
+    // Out of sight in ONE rename, then deleted: a crash half-way through a delete must not leave half a database.
+    // Recovery deletes a leftover .done.
+    fs::path gone = pathOf(instance_->dataDir()) / SNAPSHOT_DIR / pathOf(stmt.name + ".done");
     std::error_code ec;
-    fs::remove_all(path, ec);
+    fs::create_directories(gone.parent_path(), ec);
+    fs::remove_all(gone, ec);
+    fs::rename(path, gone, ec);
+    if (ec) throw StorageError("Database '" + stmt.name + "' hata nahi paaye: " + ec.message());
+    instance_->durability().markFolder(instance_->dataDir());
+    crashPoint("drop-database-after-rename");
+    fs::remove_all(gone, ec);
     if (ec) throw StorageError("Database '" + stmt.name + "' hata nahi paaye: " + ec.message());
     instance_->forget(stmt.name);
     if (currentDb == stmt.name) currentDb = DEFAULT_DATABASE;
@@ -2163,6 +2204,7 @@ Result Engine::execRenameTable(const ast::RenameTable& stmt) {
     std::error_code ec;
     fs::rename(pathOf(cat.tablePath(stmt.table)), pathOf(cat.tablePath(stmt.newName)), ec);
     if (ec) throw StorageError("Table file ka naam badal nahi paaye: " + ec.message());
+    durable::renamed(cat.tablePath(stmt.newName));
     cat.tables.erase(stmt.table);
     schema.name = stmt.newName;
     cat.tables[stmt.newName] = schema;

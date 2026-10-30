@@ -43,11 +43,19 @@ inline bool isReservedDeviceName(const std::string& name) {
            upper[3] <= '9';
 }
 
+// Tests only: called with the path of every file and folder about to be synced. A kill test cannot see a missing sync
+// (the operating system still has the bytes), so this is how the tests see which syncs happen and in what order.
+using SyncObserver = void (*)(const std::string& utf8);
+void setSyncObserver(SyncObserver observer);
+
 // Force a written file to the disk, so a rename right after cannot, after a power cut, leave an empty or half-written
 // file in place of the old one. False if it could not be done.
 bool syncFile(const std::string& utf8);
-// Force a rename inside this folder to the disk (POSIX; NTFS journals the rename itself, so it does nothing on Windows).
-void syncFolderOf(const std::string& utf8);
+// Force a rename or a new name inside a folder to the disk. False if it could not be done; callers go on, since not every file system can do this for a folder and the rename has already happened.
+bool syncFolder(const std::string& utf8);
+void syncFolderOf(const std::string& utf8);  // the folder holding this file
+// Every file and folder under this folder, then the folder itself. False if a file could not be synced.
+bool syncTree(const std::string& utf8);
 
 // os.path.abspath: relative to the working directory, "" and "." mean the working directory itself,
 // "." and ".." parts and doubled separators are folded away and a trailing separator is dropped

@@ -1,4 +1,5 @@
 // cpp/src/storage.cpp
+#include "meradb/durability.h"
 #include "meradb/fs_util.h"
 #include "meradb/storage.h"
 #include "meradb/errors.h"
@@ -170,12 +171,7 @@ std::vector<Value> decodeRow(const std::vector<uint8_t>& payload, const std::vec
 
 HeapFile::HeapFile(std::string path) : path_(std::move(path)) {}
 
-void HeapFile::create() {
-    std::ofstream out(pathOf(path_), std::ios::binary | std::ios::trunc);
-    if (!out) throw StorageError(path_ + " ban nahi paayi");
-    out.write(kMagic, static_cast<std::streamsize>(kMagicLen));
-    if (!out) throw StorageError(path_ + " likh nahi paaye");
-}
+void HeapFile::create() { rewrite({}); }  // a whole new file, swapped in: TRUNCATE must not destroy the old rows in place
 
 void HeapFile::destroy() {
     std::error_code ec;
@@ -205,6 +201,9 @@ std::vector<int64_t> HeapFile::insertMany(const std::vector<std::vector<uint8_t>
     writeBytes(out, buffer);
     out.flush();
     if (!out) throw StorageError(path_ + " mein likh nahi paaye");
+    out.close();
+    crashPoint("stmt-after-write");
+    durable::wrote(path_);
     return offsets;
 }
 
@@ -220,6 +219,9 @@ void HeapFile::deleteMany(const std::vector<int64_t>& offsets) {
     }
     f.flush();
     if (!f) throw StorageError(path_ + " mein likh nahi paaye");
+    f.close();
+    crashPoint("stmt-after-write");
+    durable::wrote(path_);
 }
 
 std::optional<std::vector<uint8_t>> HeapFile::read(int64_t offset) const {
@@ -284,11 +286,11 @@ void HeapFile::rewrite(const std::vector<std::vector<uint8_t>>& payloads) {
         out.flush();
         if (!out) throw StorageError(tmp + " mein likh nahi paaye");
     }
-    if (!syncFile(tmp)) throw StorageError(tmp + " disk par pakki nahi hui");
+    durable::syncBeforeRename(tmp);
     std::error_code ec;
     fs::rename(pathOf(tmp), pathOf(path_), ec);
     if (ec) throw StorageError(path_ + " rewrite nahi hua: " + ec.message());
-    syncFolderOf(path_);
+    durable::renamed(path_);
 }
 
 void HeapFile::compact() {
