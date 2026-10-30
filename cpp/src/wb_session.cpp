@@ -5,6 +5,8 @@
 #include "meradb/parser.h"
 #include "meradb/protocol.h"
 #include "meradb/pytext.h"
+#include "meradb/tokenizer.h"
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <climits>
@@ -64,6 +66,45 @@ ConnectDefaults connectDefaults(const std::string& description) {
     return ConnectDefaults{host, port};
 }
 
+std::string statementAt(const std::string& script, std::size_t offset) {
+    std::vector<Token> tokens;
+    try {
+        tokens = tokenize(script);
+    } catch (...) {
+        return script;
+    }
+    const auto parses = [](const std::string& piece) {
+        try {
+            return parseScript(piece).size() == 1;
+        } catch (...) {
+            return false;
+        }
+    };
+    constexpr int kMostSemicolons = 256;   // of one statement: a procedure body; a broken text stops looking here
+    std::string last;
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i].type != TokenType::Eof) {
+        const std::size_t start = static_cast<std::size_t>(tokens[i].start);
+        std::size_t end = std::string::npos, firstSemicolon = std::string::npos, j = i;
+        int tried = 0;
+        for (; tokens[j].type != TokenType::Eof; ++j) {
+            if (tokens[j].type != TokenType::Symbol || tokens[j].textValue != ";") continue;
+            if (firstSemicolon == std::string::npos) firstSemicolon = j;
+            if (parses(script.substr(start, static_cast<std::size_t>(tokens[j].end) - start))) {
+                end = j;
+                break;
+            }
+            if (++tried >= kMostSemicolons) break;
+        }
+        if (end == std::string::npos) end = firstSemicolon != std::string::npos ? firstSemicolon : j - 1;   // to report its error
+        const std::size_t stop = static_cast<std::size_t>(tokens[end].end);
+        last = script.substr(start, stop - start);
+        if (offset <= stop) return last;
+        i = end + 1;
+    }
+    return last;
+}
+
 std::unique_ptr<Backend> defaultBackendFactory(const ConnectRequest& request, const std::string& dataDir) {
     if (request.local) return std::unique_ptr<Backend>(new LocalBackend(dataDir));
     ConnectOptions options;
@@ -87,6 +128,17 @@ struct Session::Snapshot {
 
 constexpr const char* kUnknownFailure = "anjaan galti hui";
 
+// "ISTEMAL x;" and nothing else: a database switch is not a query to go back to. A script that starts with one is.
+static bool isBareSwitch(const std::string& raw) {
+    std::string text = pytext::strip(raw);
+    if (text.size() < 8) return false;
+    std::string head = text.substr(0, 8);
+    for (char& ch : head) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    if (head != "ISTEMAL ") return false;
+    if (text.back() == ';') text.pop_back();
+    return text.find_first_of(";\n") == std::string::npos;
+}
+
 static std::string describeCurrentException() {  // inside a catch block
     try {
         throw;
@@ -98,6 +150,7 @@ static std::string describeCurrentException() {  // inside a catch block
 }
 
 struct Session::RunOutcome {
+    std::string text;      // what was run
     std::vector<Result> results;
     double ms = 0;
     bool failed = false;
@@ -230,13 +283,12 @@ void Session::echoOnWorker(const std::string& text, bool addToHistory) {
         if (addToHistory) history_.add(text);
         const std::string where = db ? *db : header_.db;
         log_.add(echoEntry(where, text));
-        std::string head = pytext::strip(text).substr(0, 8);
-        for (char& ch : head) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        const bool isSwitch = head == "ISTEMAL " && text.find('\n') == std::string::npos;   // a database switch is no query
-        if (store_.enabled() && !where.empty() && !isSwitch) {
+        if (store_.enabled() && !where.empty() && !isBareSwitch(text)) {
             SavedQuery q{text, QueryStore::nowStamp()};
             store_.append(where, q);
             if (where == savedDb_) {
+                // queued behind a database switch: that switch brought this database's history after runText added it
+                if (history_.size() == 0 || history_.items().back() != text) history_.add(text);
                 saved_.push_back(std::move(q));
                 ++savedVersion_;
             }
@@ -260,6 +312,7 @@ void Session::enqueueRun(const std::string& text) {
     ++pending_;
     worker_.post([this, text] {
         auto out = std::make_shared<RunOutcome>();
+        out->text = text;
         echoOnWorker(text, false);
         runOnWorker(text, *out);
         postUi([this, out]() {
@@ -274,16 +327,43 @@ void Session::runText(const std::string& raw) {
     const std::string text = pytext::strip(raw);
     if (text.empty()) return;
     history_.add(text);  // the echo line follows when the statement starts (echoOnWorker)
-    stepping_ = false;
+    // Running the entry on screen is still only a look at an old query: the script stays kept, Agli brings it back.
+    if (stepping_ && editor_.text() != steppedText_) stepping_ = false;
     switchScriptTo_.clear();   // a card's ISTEMAL that failed must not swap the writing area on a later typed ISTEMAL
     enqueueRun(text);
 }
 
 void Session::runEditorText() { runText(editor_.runnableText()); }
 
-void Session::showResult(Result result) {
-    table_ = makeTable(result);
-    lastResult_ = std::move(result);
+void Session::runEditorStatement() {
+    if (editor_.hasSelection()) {
+        runEditorText();
+        return;
+    }
+    const Pos caret = editor_.cursor();
+    std::size_t offset = editor_.byteOffset(caret.row, caret.col);
+    for (int row = 0; row < caret.row; ++row) offset += editor_.line(row).size() + 1;
+    runText(statementAt(editor_.text(), offset));
+}
+
+void Session::addQueryToEditor(const std::string& text) {
+    endWalk();
+    const std::string current = editor_.text();
+    const bool blank = pytext::strip(current).empty();
+    editor_.setText(blank ? text : current + (current.back() == '\n' ? "\n" : "\n\n") + text);
+    if (blank) {
+        editor_.selectAll();
+    } else {
+        const int rows = 1 + static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+        const Pos end = editor_.cursor();
+        editor_.selectRange(Pos{end.row - rows + 1, 0}, end);
+    }
+    focusRequest_ = Panel::Editor;
+}
+
+void Session::selectResultSet(int index) {
+    if (index < 0 || index >= static_cast<int>(resultSets_.size()) || index == currentSet_) return;
+    currentSet_ = index;
     ++resultVersion_;
 }
 
@@ -309,7 +389,10 @@ void Session::persistEditor(bool force) {
     lastScriptWrite_ = now;
 }
 
-void Session::openDatabase(const std::string& name) {
+void Session::openDatabase(const std::string& asTyped) {
+    std::string name = asTyped;   // the engine folds a name to lower case; the answer is compared with this
+    for (char& ch : name)
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
     if (name.empty()) return;
     if (name == header_.db) return;
     persistEditor(true);
@@ -318,7 +401,7 @@ void Session::openDatabase(const std::string& name) {
     enqueueRun("ISTEMAL " + name + ";");   // not added to the history: it is not a query to go back to
 }
 
-// Pichli / Agli walk through the queries saved for the database (from the constructor and when a card opens one).
+// Pichli / Agli walk through the queries saved for the database: from the start, and whenever the database changes.
 void Session::seedHistory() {
     history_ = History();
     for (const SavedQuery& q : saved_) history_.add(q.text);
@@ -329,6 +412,13 @@ void Session::clearSavedQueries() {
     store_.clear(savedDb_);
     saved_.clear();
     ++savedVersion_;
+    endWalk();            // an entry on screen has just been deleted: the script comes back
+    seedHistory();
+}
+
+void Session::endWalk() {
+    if (stepping_ && editor_.text() == steppedText_) editor_.setText(draft_);
+    stepping_ = false;
 }
 
 void Session::applySnapshot(const Snapshot& s) {
@@ -336,11 +426,15 @@ void Session::applySnapshot(const Snapshot& s) {
         header_.description = s.description;
         header_.db = s.db;
         header_.inTransaction = s.inTransaction;
-        if (store_.enabled() && header_.db != savedDb_) reloadSaved();
+        if (store_.enabled() && header_.db != savedDb_) {   // the Queries tab and Pichli show the same database, always
+            reloadSaved();
+            seedHistory();
+        }
         if (store_.enabled() && !switchScriptTo_.empty() && switchScriptTo_ == header_.db) {   // opened from the Home cards
             switchScriptTo_.clear();
             persistEditor(true);   // the last edits of the database being left, inside the save delay
             seedHistory();
+            stepping_ = false;     // the walk belonged to the database being left
             scriptDb_ = header_.db;
             editor_.setText(store_.loadScript(scriptDb_));
             lastScript_ = editor_.text();
@@ -354,29 +448,49 @@ void Session::applySnapshot(const Snapshot& s) {
 }
 
 void Session::applyRun(RunOutcome out) {
+    runErrors_.clear();
     if (out.notice) {
         log_.addText(out.notice->first, out.notice->second);
+        if (out.notice->first == LogKind::Error) runErrors_.push_back({0, out.notice->second});
         return;
     }
     if (out.failed) {
         log_.addText(LogKind::Error, out.failure);
         log_.addText(LogKind::Dim, "Ctrl+O se dobara connect karo.");
+        runErrors_.push_back({0, out.failure});
         return;
     }
-    Result* shown = nullptr;
-    for (Result& r : out.results) {
+    std::vector<ResultSet> sets;
+    const bool alone = out.results.size() == 1;
+    for (std::size_t i = 0; i < out.results.size(); ++i) {
+        Result& r = out.results[i];
+        const int statement = static_cast<int>(i) + 1;
         if (!r.error.empty()) {
             log_.addText(LogKind::Error, r.error);
+            runErrors_.push_back({alone ? 0 : statement, r.error});
             continue;
         }
-        if (!r.columns.empty()) shown = &r;
         if (!r.message.empty()) log_.addText(LogKind::Message, r.message);
+        if (!r.columns.empty()) {
+            ResultSet set;
+            set.statement = statement;
+            set.table = makeTable(r);
+            set.result = std::move(r);
+            sets.push_back(std::move(set));
+        }
     }
     char buf[64];
     std::snprintf(buf, sizeof buf, "(%.1f ms)", out.ms);
     log_.addText(LogKind::Dim, buf);
-    if (shown != nullptr) showResult(std::move(*shown));
+    if (!sets.empty()) {   // a run without a table leaves the last one on screen
+        resultSets_ = std::move(sets);
+        currentSet_ = static_cast<int>(resultSets_.size()) - 1;
+        ++resultVersion_;
+    }
+    const std::string dbBefore = savedDb_;
     if (out.snapshot) applySnapshot(*out.snapshot);
+    // a script that moved to another database was saved under the old one, but it was just run: Pichli still reaches it
+    if (store_.enabled() && savedDb_ != dbBefore && !isBareSwitch(out.text)) history_.add(out.text);
 }
 
 void Session::clearLog() { log_.clear(); }
@@ -412,32 +526,53 @@ void Session::explainEditorText() {
 }
 
 // Pichli / Agli. The text that was in the writing area before the walk is kept as a draft: Agli past the newest entry
-// puts it back instead of leaving the area empty (so a script is never lost by looking at an old query).
+// puts it back instead of leaving the area empty (so a script is never lost by looking at an old query). An entry equal
+// to the text on screen is passed over, or the press would change nothing and look broken. keepWork = false follows
+// tui.py exactly (the workbench_diff probe compares against it).
 void Session::historyStep(int delta) {
-    if (store_.enabled() && !stepping_ && delta < 0) {   // local mode: the writing area is a kept script
-        draft_ = editor_.text();
+    if (!options_.keepWork) {
+        if (auto t = history_.step(delta)) {
+            editor_.setText(*t);
+            focusRequest_ = Panel::Editor;
+        }
+        return;
+    }
+    if (history_.size() == 0) return;
+    const std::string current = editor_.text();
+    if (stepping_ && current != steppedText_) stepping_ = false;   // the entry was edited: that is the new draft
+    if (!stepping_) {
+        if (delta > 0 && history_.position() >= history_.size()) return;   // nothing newer and nothing to bring back
+        persistEditor(true);   // the draft may be younger than the save delay, and the walk does not save
+        draft_ = current;
         stepping_ = true;
     }
-    if (auto t = history_.step(delta)) {
-        if (store_.enabled() && t->empty() && delta > 0) {   // past the newest entry
-            if (stepping_) editor_.setText(draft_);
-            stepping_ = false;
-        } else {
-            editor_.setText(*t);
-            steppedText_ = editor_.text();
-        }
-        focusRequest_ = Panel::Editor;
+    const std::string shown = pytext::strip(current);
+    std::optional<std::string> entry = history_.step(delta);
+    while (!entry->empty() && *entry == shown && (delta > 0 || history_.position() > 0)) entry = history_.step(delta);
+    focusRequest_ = Panel::Editor;
+    if (entry->empty()) {   // past the newest entry
+        editor_.setText(draft_);
+        stepping_ = false;
+    } else {
+        if (*entry != shown) editor_.setText(*entry);
+        steppedText_ = editor_.text();
     }
 }
 
+std::string Session::historyLabel() const {
+    if (!stepping_ || history_.position() >= history_.size()) return "";
+    return std::to_string(history_.position() + 1) + "/" + std::to_string(history_.size());
+}
+
 void Session::exportCsv() {
-    if (lastResult_ == std::nullopt) {
+    const Result* shown = lastResult();
+    if (shown == nullptr) {
         log_.addText(LogKind::Warn, "Pehle koi DIKHAO query chalao, phir Ctrl+S");
         return;
     }
-    const ExportOutcome outcome = meradb::wb::exportCsv(*lastResult_, options_.exportBaseDir, options_.stamp());
+    const ExportOutcome outcome = meradb::wb::exportCsv(*shown, options_.exportBaseDir, options_.stamp());
     if (outcome.ok) {
-        const std::string message = std::to_string(lastResult_->rows.size()) + " row(s) CSV mein save: " + outcome.path;
+        const std::string message = std::to_string(shown->rows.size()) + " row(s) CSV mein save: " + outcome.path;
         log_.addText(LogKind::Message, message);
         lastExport_.serial += 1;
         lastExport_.message = message;
@@ -491,6 +626,20 @@ void Session::applyConnect(const ConnectOutcome& out) {
         return;
     }
     log_.addText(LogKind::Connected, "Connected: " + out.snapshot->description);
+    // The queries and the script are kept in the local folder, for local mode only (see the constructor).
+    const bool keep = options_.keepWork && !options_.dataDir.empty() && out.snapshot->description.rfind("local", 0) == 0;
+    if (keep != store_.enabled()) {
+        endWalk();
+        if (!keep) persistEditor(true);
+        store_ = QueryStore(keep ? options_.dataDir : std::string());
+        saved_.clear();
+        savedDb_.clear();    // back in local mode, applySnapshot below loads the list and the history
+        ++savedVersion_;
+        history_ = History();
+        scriptDb_ = keep ? out.snapshot->db : std::string();
+        if (keep && !scriptDb_.empty() && pytext::strip(editor_.text()).empty()) editor_.setText(store_.loadScript(scriptDb_));
+        lastScript_ = editor_.text();   // text brought from the server is saved only once it changes
+    }
     applySnapshot(*out.snapshot);
 }
 

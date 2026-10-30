@@ -396,16 +396,37 @@ TEST_CASE("gui panels: Pichli and Agli walk the history with the keys", "[gui][h
     s.press(ImGuiKey_F5);
     REQUIRE(s.rig.settle());
     s.frames(3);
-    s.press(ImGuiKey_UpArrow, false, false, true);       // Alt+Up
-    CHECK(s.text() == "DIKHAO * SE h;");
-    s.press(ImGuiKey_UpArrow, true);                     // Ctrl+Up
+    s.press(ImGuiKey_UpArrow, false, false, true);       // Alt+Up: the entry equal to the text on screen is passed over
     CHECK(s.text() == "BANAO TABLE h (a ANK);");
-    s.press(ImGuiKey_DownArrow, false, false, true);     // Alt+Down
+    CHECK(s.rig.session->historyLabel() == "1/2");
+    s.press(ImGuiKey_UpArrow, true);                     // Ctrl+Up: this is the oldest, it stays
+    CHECK(s.text() == "BANAO TABLE h (a ANK);");
+    s.press(ImGuiKey_DownArrow, false, false, true);     // Alt+Down: the newest entry
     CHECK(s.text() == "DIKHAO * SE h;");
-    s.press(ImGuiKey_DownArrow, true);                   // Ctrl+Down
-    CHECK(s.text() == "DIKHAO * SE h;");                 // past the newest entry: the text from before the walk comes back
+    CHECK(s.rig.session->historyLabel() == "2/2");
+    s.press(ImGuiKey_DownArrow, true);                   // Ctrl+Down: past it, the text from before the walk comes back
+    CHECK(s.text() == "DIKHAO * SE h;");
+    CHECK(s.rig.session->historyLabel().empty());
     s.press(ImGuiKey_Z, true);                           // a history step is one undo step
     CHECK(s.text() == "BANAO TABLE h (a ANK);");
+}
+
+TEST_CASE("gui toolbar: a click on Pichli and on Agli changes the text, the first click already", "[gui][headless][toolbar]") {
+    Screen s;
+    s.click(s.at(0, 0));
+    s.type("BANAO TABLE h (a ANK);");
+    s.press(ImGuiKey_Enter, true);
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    s.buffer().setText("DIKHAO * SE h;");
+    s.click(s.ui.toolbarButtonCentre(Action::Run));
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    s.click(s.ui.toolbarButtonCentre(Action::Previous));
+    CHECK(s.text() == "BANAO TABLE h (a ANK);");
+    s.click(s.ui.toolbarButtonCentre(Action::Next));
+    CHECK(s.text() == "DIKHAO * SE h;");
+    CHECK(s.ui.editor().focused());
 }
 
 TEST_CASE("gui panels: a double click on a table runs its rows, on a column inserts its name", "[gui][headless][panels]") {
@@ -1316,6 +1337,108 @@ TEST_CASE("gui tabs: a run with a table and an error shows Results and marks Log
     CHECK_FALSE(s.ui.logErrorDot());
 }
 
+TEST_CASE("gui toolbar: Yeh query runs only the statement at the caret, the key and the button", "[gui][headless][toolbar]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK); DAALO MEIN t MAAN (1);"));
+    s.buffer().setText("DAALO MEIN t MAAN (2);\nDIKHAO * SE t;\nDIKHAO * SE u;");
+    s.click(s.at(1, 3));
+    s.press(ImGuiKey_Enter, false, false, true);         // Alt+Enter: no line break, one statement
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    CHECK(s.buffer().lineCount() == 3);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>{"a"});
+    CHECK(s.rig.session->table()->rows.size() == 1);     // the DAALO on the line above did not run
+    s.click(s.at(2, 3));
+    s.click(s.ui.toolbarButtonCentre(Action::RunStatement));
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>{"b"});
+    CHECK(s.ui.editor().focused());
+    s.press(ImGuiKey_F9);
+    REQUIRE(s.rig.settle());
+    s.frames(2);
+    CHECK(s.logCount("DIKHAO * SE u;") == 2);
+}
+
+TEST_CASE("gui queries: a click on a saved query adds it as one undo step and Chalao runs only it", "[gui][headless][queries]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DAALO MEIN t MAAN (1);"));
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    s.buffer().setText("DAALO MEIN t MAAN (9);");
+    s.ui.showTab(GuiUi::Tab::Queries);
+    s.frames(3);
+    const ImVec2 row = s.ui.queryRowCentre(1);           // DIKHAO * SE t;
+    REQUIRE(row.x > 0.0f);
+    s.click(row);
+    CHECK(s.text() == "DAALO MEIN t MAAN (9);\n\nDIKHAO * SE t;");
+    CHECK(s.ui.editor().focused());
+    s.press(ImGuiKey_Enter, true);
+    REQUIRE(s.rig.settle());
+    s.frames(4);
+    REQUIRE(s.rig.session->table() != nullptr);
+    CHECK(s.rig.session->table()->rows.size() == 1);     // the DAALO above it did not run again
+    s.press(ImGuiKey_Z, true);
+    CHECK(s.text() == "DAALO MEIN t MAAN (9);");
+}
+
+TEST_CASE("gui queries: a thousand saved queries draw only what is in view", "[gui][headless][queries]") {
+    Screen s;
+    for (int i = 0; i < 1000; ++i) s.rig.session->runText("DIKHAO " + std::to_string(i) + ";");
+    REQUIRE(s.rig.settle());
+    s.frames(2);                                         // the run has shown its own tab
+    s.ui.showTab(GuiUi::Tab::Queries);
+    s.frames(4);
+    CHECK(s.ui.queryRowCentre(999).x > 0.0f);            // the newest first
+    CHECK(s.ui.queryRowCentre(0).x < 0.0f);
+}
+
+TEST_CASE("gui home: a database named with capitals opens properly", "[gui][headless][home]") {
+    Screen s;
+    s.buffer().setText("-- main ka script");
+    s.rig.session->persistEditor(true);
+    s.rig.session->runText("BANAO DATABASE Naya;");
+    s.rig.session->openDatabase("Naya");
+    REQUIRE(s.rig.settle());
+    s.frames(3);
+    CHECK(s.rig.session->currentDb() == "naya");
+    CHECK(s.text().empty());                             // the writing area of the new database
+    s.buffer().setText("-- naya ka script");
+    s.rig.session->persistEditor(true);
+    CHECK(wb::QueryStore(s.rig.data.str()).loadScript("naya") == "-- naya ka script");
+    CHECK(wb::QueryStore(s.rig.data.str()).loadScript("main") == "-- main ka script");
+}
+
+TEST_CASE("gui results: a script's every table can be opened, and the grid and the CSV follow", "[gui][headless][resultsets]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK, c ANK); DAALO MEIN t MAAN (1); DAALO MEIN u MAAN (2, 3), (4, 5); "
+                  "DIKHAO * SE t; DIKHAO * SE u;"));
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    REQUIRE(s.rig.session->resultSets().size() == 2);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>({"b", "c"}));
+    CHECK(s.ui.grid().cellHits().size() == 4);
+    const ImVec2 first = s.ui.resultSetButtonCentre(0);
+    REQUIRE(first.x > 0.0f);
+    s.click(first);
+    s.frames(3);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>({"a"}));
+    CHECK(s.ui.grid().cellHits().size() == 1);
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    REQUIRE(s.run("DIKHAO * SE u;"));                    // one table again: no buttons
+    CHECK(s.ui.resultSetButtonCentre(0).x < 0.0f);
+}
+
+TEST_CASE("gui results: a failure next to a table is named above it and leads to the Log", "[gui][headless][resultsets]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    CHECK(s.ui.runErrorsShown());
+    REQUIRE(s.rig.session->lastRunErrors().size() == 1);
+    CHECK(s.rig.session->lastRunErrors()[0].statement == 3);
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    CHECK_FALSE(s.ui.runErrorsShown());
+}
+
 // Dear ImGui warns (a red tooltip, and its debug state) when two items under the mouse share an ID. This sweeps the
 // mouse over the whole window in every state and fails on the first such conflict.
 namespace {
@@ -1341,7 +1464,9 @@ TEST_CASE("gui ids: no two widgets share an ID under the mouse in any panel, tab
     const float w = ImGui::GetIO().DisplaySize.x, h = ImGui::GetIO().DisplaySize.y;
     CHECK(idConflicts(s, w, h) == 0);   // the empty layout
 
-    REQUIRE(s.run("BANAO TABLE t (a ANK, naam TEXT); DAALO MEIN t MAAN (1,'x'),(2,'y'),(3,'z'); SHURU; DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    REQUIRE(s.run("BANAO TABLE t (a ANK, naam TEXT); DAALO MEIN t MAAN (1,'x'),(2,'y'),(3,'z'); SHURU; DIKHAO * SE t; DIKHAO a SE t; DIKHAO * SE nahi_hai;"));
+    REQUIRE(s.ui.resultSetButtonCentre(1).x > 0.0f);     // the result set buttons and the failure line are on screen too
+    REQUIRE(s.ui.runErrorsShown());
     s.ui.grid().select(1, 1);
     s.ui.schemaTree().setFocused(true);
     s.frames(3);

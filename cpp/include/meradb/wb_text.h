@@ -99,6 +99,7 @@ public:
     void add(const std::string& text);                  // appended unless equal to the last entry; position = size
     std::optional<std::string> step(int delta);         // nullopt when empty; pos = clamp(pos+delta, 0, size); "" at size
     std::size_t size() const { return items_.size(); }
+    std::size_t position() const { return pos_; }       // the entry a walk is on; size() = past the newest
     const std::vector<std::string>& items() const { return items_; }
 private:
     std::vector<std::string> items_;

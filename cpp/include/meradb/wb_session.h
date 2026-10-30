@@ -29,6 +29,11 @@ namespace meradb::wb {
 
 using UiPoster = std::function<void(std::function<void()>)>;
 
+// The statement of a script around byte `offset`: the one the caret is in or right after; on the blanks between two, the
+// next one; past the last, the last one. Semicolons in strings, comments and procedure bodies do not end a statement. A
+// script that cannot be split (an open string) comes back whole, so that running it reports the error. "" when empty.
+std::string statementAt(const std::string& script, std::size_t offset);
+
 enum class Panel { Tree, Results, Log, Editor };
 enum class Modal { None, Help, Connect };
 
@@ -87,10 +92,26 @@ public:
     TextBuffer& editor() { return editor_; }
     const LogBuffer& log() const { return log_; }
     TreeModel& tree() { return tree_; }
-    const ResultTable* table() const { return table_ ? &*table_ : nullptr; }   // null before the first result
-    const Result* lastResult() const { return lastResult_ ? &*lastResult_ : nullptr; }
-    int resultVersion() const { return resultVersion_; }                       // bumps on every new table
+    // One table of the last run that made any. A script's every DIKHAO is kept; the last one is shown first.
+    struct ResultSet {
+        int statement = 0;    // 1-based place of its statement in the script
+        Result result;
+        ResultTable table;
+    };
+    const std::vector<ResultSet>& resultSets() const { return resultSets_; }
+    int currentResultSet() const { return currentSet_; }
+    void selectResultSet(int index);                 // shows that table (the grid and the CSV follow); out of range: nothing
+    const ResultTable* table() const { return resultSets_.empty() ? nullptr : &resultSets_[static_cast<std::size_t>(currentSet_)].table; }   // null before the first result
+    const Result* lastResult() const { return resultSets_.empty() ? nullptr : &resultSets_[static_cast<std::size_t>(currentSet_)].result; }
+    int resultVersion() const { return resultVersion_; }                       // bumps whenever another table is shown
+    // What failed in the last run, so that a table on screen cannot hide it.
+    struct RunError {
+        int statement = 0;    // 1-based place in the script; 0 when the run is one failure (bad syntax, a lost connection)
+        std::string text;
+    };
+    const std::vector<RunError>& lastRunErrors() const { return runErrors_; }
     const History& history() const { return history_; }
+    std::string historyLabel() const;                // "3/7" while Pichli / Agli is on an entry, else ""
     // The queries run so far in the current database, oldest first, kept in <data>/.history/<db>.jsonl (local mode
     // only; empty and disabled for a server connection). savedVersion() bumps whenever the list changes.
     const std::vector<SavedQuery>& savedQueries() const { return saved_; }
@@ -112,6 +133,10 @@ public:
     // ---- actions (key bindings call these) ----
     void runEditorText();                            // F5 / Ctrl+R
     void runText(const std::string& text);           // tui.py run_text
+    void runEditorStatement();                       // the selection if any, else only the statement at the caret
+    // A query from the list goes below the script (never in place of it) and is selected, so that Chalao runs just it.
+    // A history entry on screen makes way for the script first.
+    void addQueryToEditor(const std::string& text);
     void clearLog();                                 // Ctrl+L
     void explainEditorText();                        // F6
     void historyStep(int delta);                     // Ctrl+Up (-1) / Ctrl+Down (+1)
@@ -148,7 +173,6 @@ private:
     void applyRun(RunOutcome out);
     void applyConnect(const ConnectOutcome& out);
     void applySnapshot(const Snapshot& snapshot);
-    void showResult(Result result);
 
     // Worker thread: post a closure to the UI through the poster, guarded by alive_ (see the class comment).
     void postUi(std::function<void()> fn);
@@ -163,8 +187,9 @@ private:
     TextBuffer editor_;
     LogBuffer log_;
     TreeModel tree_;
-    std::optional<ResultTable> table_;
-    std::optional<Result> lastResult_;
+    std::vector<ResultSet> resultSets_;
+    int currentSet_ = 0;
+    std::vector<RunError> runErrors_;
     History history_;
     QueryStore store_{""};
     std::vector<SavedQuery> saved_;
@@ -172,6 +197,7 @@ private:
     int savedVersion_ = 0;
     void reloadSaved();
     void seedHistory();
+    void endWalk();                // gives the writing area back if it still shows a history entry
     bool stepping_ = false;        // Pichli / Agli is walking through the history
     std::string steppedText_;      // the history entry Pichli / Agli last put in the writing area (never saved as the script)
     std::string draft_;            // what the writing area held before the walk; Agli past the end brings it back

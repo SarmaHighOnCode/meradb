@@ -71,6 +71,9 @@ const std::vector<KeyBinding>& keyBindings() {
         {ImGuiMod_Ctrl | ImGuiKey_Enter, Action::Run},
         {ImGuiMod_Ctrl | ImGuiKey_KeypadEnter, Action::Run},
         {ImGuiKey_F5, Action::Run},
+        {ImGuiMod_Alt | ImGuiKey_Enter, Action::RunStatement},
+        {ImGuiMod_Alt | ImGuiKey_KeypadEnter, Action::RunStatement},
+        {ImGuiKey_F9, Action::RunStatement},
         {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Enter, Action::Explain},
         {ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_KeypadEnter, Action::Explain},
         {ImGuiKey_F6, Action::Explain},
@@ -113,6 +116,7 @@ ImVec2 GuiUi::toolbarButtonCentre(Action action) const {
         case Action::Explain: return toolbar_[1];
         case Action::Previous: return toolbar_[2];
         case Action::Next: return toolbar_[3];
+        case Action::RunStatement: return toolbar_[4];
         default: break;
     }
     return ImVec2(-1, -1);
@@ -126,6 +130,7 @@ void GuiUi::focusEditor() {
 void GuiUi::perform(Action action) {
     switch (action) {
         case Action::Run: session_.runEditorText(); break;
+        case Action::RunStatement: session_.runEditorStatement(); break;
         case Action::Explain: session_.explainEditorText(); break;
         case Action::Previous: editor_.external([this] { session_.historyStep(-1); }); break;
         case Action::Next: editor_.external([this] { session_.historyStep(+1); }); break;
@@ -588,8 +593,16 @@ void GuiUi::drawQuery(const Rect& rect) {
             dl->AddText(ImVec2(lo.x + px(14.0f) + runLabelW + px(10.0f), lo.y + (buttonH - hintH) * 0.5f), toU32(th.primaryText, 0.55f), hint);
             ImGui::PopFont();
         }
+        ImGui::SetItemTooltip("%s", "Jo text select hai woh, nahi to poora editor chalao");
         ImGui::SameLine();
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+        if (ImGui::Button("Yeh query", ImVec2(ImGui::CalcTextSize("Yeh query").x + px(24.0f), buttonH))) {
+            perform(Action::RunStatement);
+            focusEditor();
+        }
+        ImGui::SetItemTooltip("%s", "Sirf woh query chalao jahan cursor hai (Alt+Enter / F9)");
+        toolbar_[4] = rectCentre();
+        ImGui::SameLine();
         if (ImGui::Button("Samjhao", ImVec2(ImGui::CalcTextSize("Samjhao").x + px(24.0f), buttonH))) {
             perform(Action::Explain);
             focusEditor();
@@ -603,20 +616,31 @@ void GuiUi::drawQuery(const Rect& rect) {
         const char* status = quitting ? "band ho raha hai..." : (session_.busy() ? "chal raha hai..." : "");
         const float statusW = status[0] != '\0' ? ImGui::CalcTextSize(status).x + px(24.0f) : 0.0f;   // text + spinner
         const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-        const float groupW = previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(8.0f) : 0.0f);
+        const std::string walk = session_.historyLabel();   // "3/7": where Pichli / Agli stands
+        const float walkW = walk.empty() ? 0.0f : ImGui::CalcTextSize(walk.c_str()).x + px(8.0f);
+        const float groupW = walkW + previousW + nextW + px(8.0f) * 2 + statusW + (statusW > 0 ? px(8.0f) : 0.0f);
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rightEdge - groupW));
+        if (!walk.empty()) {
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            dl->AddText(ImVec2(at.x, at.y + (buttonH - ImGui::GetTextLineHeight()) * 0.5f), toU32(th.muted), walk.c_str());
+            ImGui::Dummy(ImVec2(walkW - px(8.0f), buttonH));
+            ImGui::SameLine();
+        }
         ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
-        ImGui::BeginDisabled(session_.history().size() == 0);
+        const bool noHistory = session_.history().size() == 0;
+        ImGui::BeginDisabled(noHistory);
         if (ImGui::Button("Pichli", ImVec2(previousW, buttonH))) {
             perform(Action::Previous);
             focusEditor();
         }
+        ImGui::SetItemTooltip("%s", noHistory ? "Abhi koi purani query nahi: pehle kuch chalao" : "Pichli query (Alt+Up)");
         toolbar_[2] = rectCentre();
         ImGui::SameLine();
         if (ImGui::Button("Agli", ImVec2(nextW, buttonH))) {
             perform(Action::Next);
             focusEditor();
         }
+        ImGui::SetItemTooltip("%s", noHistory ? "Abhi koi purani query nahi: pehle kuch chalao" : "Agli query, aakhir mein aapka likha text wapas (Alt+Down)");
         toolbar_[3] = rectCentre();
         ImGui::EndDisabled();
         ImGui::PopFont();
@@ -644,7 +668,7 @@ void GuiUi::drawTabBarExtras(float tabY, float rightX) {
         if (session_.savedQueriesEnabled() && !session_.savedQueries().empty()) {
             const float w = ImGui::CalcTextSize("Queries saaf karo").x + px(20.0f);
             ImGui::SetCursorScreenPos(ImVec2(right - w, tabY));
-            if (ImGui::Button("Queries saaf karo", ImVec2(w, height))) session_.clearSavedQueries();
+            if (ImGui::Button("Queries saaf karo", ImVec2(w, height))) editor_.external([this] { session_.clearSavedQueries(); });
         }
     } else if (activeTab_ == Tab::Log) {
         const float w = ImGui::CalcTextSize("Log saaf karo").x + px(20.0f);
@@ -707,6 +731,8 @@ void GuiUi::drawResults(const Rect& rect) {
 void GuiUi::drawResultsTab() {
     const Theme& th = theme();
     ImGui::Spacing();
+    drawRunErrors();
+    drawResultSetButtons();
     const wb::ResultTable* table = session_.table();
     if (table == nullptr) {
         ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
@@ -715,6 +741,78 @@ void GuiUi::drawResultsTab() {
         return;
     }
     grid_.draw(*table, session_.resultVersion(), th, fonts_, scale_);
+}
+
+// What failed in the last run, above the table: a table on screen must not make a failure look like a success.
+void GuiUi::drawRunErrors() {
+    const std::vector<wb::Session::RunError>& errors = session_.lastRunErrors();
+    runErrorsShown_ = !errors.empty();
+    if (errors.empty()) return;
+    const Theme& th = theme();
+    const wb::Session::RunError& first = errors.front();
+    std::string text = first.text.substr(0, first.text.find_first_of("\r\n"));
+    if (first.statement > 0) text = "Query " + std::to_string(first.statement) + ": " + text;
+    if (errors.size() > 1) text += "  (+" + std::to_string(errors.size() - 1) + " aur)";
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const float buttonW = ImGui::CalcTextSize("Log dekho").x + px(20.0f);
+    const bool open = ImGui::Button("Log dekho", ImVec2(buttonW, 0.0f));
+    ImGui::PopFont();
+    if (open) requestTab_ = Tab::Log;
+    ImGui::SameLine();
+    const float maxW = std::max(px(60.0f), ImGui::GetContentRegionAvail().x);
+    const std::string shown = ellipsizeMiddle(text, maxW, [](const std::string& s) { return ImGui::CalcTextSize(s.c_str()).x; });
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.error));
+    ImGui::TextUnformatted(shown.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", first.text.c_str());
+    ImGui::Spacing();
+}
+
+// A script with more than one DIKHAO: one button per table, numbered by its place in the script.
+void GuiUi::drawResultSetButtons() {
+    setButtons_.clear();
+    const std::vector<wb::Session::ResultSet>& sets = session_.resultSets();
+    if (sets.size() < 2) return;
+    const Theme& th = theme();
+    std::vector<std::string> labels;
+    float total = 0.0f;
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    for (const wb::Session::ResultSet& set : sets) {
+        labels.push_back("Query " + std::to_string(set.statement) + " (" + std::to_string(set.result.rows.size()) + ")");
+        total += ImGui::CalcTextSize(labels.back().c_str()).x + px(20.0f) + gap;
+    }
+    const float buttonH = ImGui::GetFrameHeight();
+    const float height = buttonH + (total > ImGui::GetContentRegionAvail().x ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+    ImGui::PopFont();
+    ImGui::BeginChild("##resultsets", ImVec2(0.0f, height), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const int version = session_.resultVersion();
+    int chosen = -1;
+    for (std::size_t i = 0; i < sets.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const bool current = static_cast<int>(i) == session_.currentResultSet();
+        if (current) {
+            ImGui::PushStyleColor(ImGuiCol_Button, toVec4(th.primary));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, toVec4(th.primary, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, toVec4(th.primary, 0.7f));
+            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.primaryText));
+        }
+        if (ImGui::Button(labels[i].c_str(), ImVec2(ImGui::CalcTextSize(labels[i].c_str()).x + px(20.0f), buttonH))) chosen = static_cast<int>(i);
+        if (current) {
+            ImGui::PopStyleColor(4);
+            if (setScrollVersion_ != version) ImGui::SetScrollHereX(1.0f);   // a new run shows its last table: its button too
+        }
+        setButtons_.push_back(rectCentre());
+        ImGui::PopID();
+        if (i + 1 < sets.size()) ImGui::SameLine();
+    }
+    setScrollVersion_ = version;
+    ImGui::PopFont();
+    ImGui::EndChild();
+    if (chosen >= 0) session_.selectResultSet(chosen);
+    ImGui::Spacing();
 }
 
 void GuiUi::rebuildLogCache() {
@@ -756,12 +854,16 @@ void GuiUi::drawQueriesTab() {
         ImGui::PopStyleColor();
         return;
     }
+    queryRows_.clear();
     ImGui::BeginChild("##queries", ImVec2(0, 0), ImGuiChildFlags_None);
     ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
     const float runW = ImGui::CalcTextSize("Chalao").x + px(20.0f);
     ImGui::PopFont();
     const float rowH = px(34.0f);
-    for (int i = static_cast<int>(queries.size()) - 1; i >= 0; --i) {
+    ImGuiListClipper clipper;   // the list only grows: a long one draws what is in view
+    clipper.Begin(static_cast<int>(queries.size()));
+    while (clipper.Step()) for (int shownRow = clipper.DisplayStart; shownRow < clipper.DisplayEnd; ++shownRow) {
+        const int i = static_cast<int>(queries.size()) - 1 - shownRow;
         const wb::SavedQuery& q = queries[static_cast<std::size_t>(i)];
         ImGui::PushID(i);
         std::string one = q.text;
@@ -773,12 +875,12 @@ void GuiUi::drawQueriesTab() {
         const ImVec2 at = ImGui::GetCursorScreenPos();
         if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_None, ImVec2(avail - runW - px(8.0f), rowH))) {
             // added below the script that is already there (one undo step), never in place of it
-            const std::string current = session_.editor().text();
-            const bool blank = current.find_first_not_of(" \t\n") == std::string::npos;
-            session_.editor().setText(blank ? q.text : current + (current.back() == '\n' ? "\n" : "\n\n") + q.text);
+            const std::string text = q.text;
+            editor_.external([this, &text] { session_.addQueryToEditor(text); });
             editor_.setFocused(true);
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n\n(click: editor mein neeche jodo, Chalao: seedha chalao)", q.text.c_str());
+        queryRows_.emplace_back(i, rectCentre());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n\n(click: editor mein neeche jodo aur select karo, Chalao: seedha chalao)", q.text.c_str());
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float maxW = std::max(px(60.0f), avail - runW - px(170.0f));
         ImGui::PushFont(fonts_.ui, 12.0f);
@@ -927,7 +1029,10 @@ void GuiUi::drawHome(const ImVec2& display) {
                     bool valid = !newDbName_.empty() && !std::isdigit(static_cast<unsigned char>(newDbName_[0]));
                     for (unsigned char ch : newDbName_) valid = valid && (std::isalnum(ch) || ch == '_');
                     if (!valid) newDbError_ = "Naam mein sirf letters, digits aur _ (digit se shuru nahi).";
-                    else if (std::find(names.begin(), names.end(), newDbName_) != names.end()) newDbError_ = "Ye database pehle se hai.";
+                    std::string folded = newDbName_;   // "Naya" and "naya" are one database to the engine
+                    for (char& ch : folded) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    if (!valid) {
+                    } else if (std::find(names.begin(), names.end(), folded) != names.end()) newDbError_ = "Ye database pehle se hai.";
                     else {
                         session_.runText("BANAO DATABASE " + newDbName_ + ";");
                         session_.openDatabase(newDbName_);
