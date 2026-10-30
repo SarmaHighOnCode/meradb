@@ -14,6 +14,7 @@ Like SQL, every aggregate except GINO(*) IGNORES KHALI values, and on zero
 The English SQL names also work: COUNT, SUM, AVG, MIN, MAX.
 """
 
+import math
 from datetime import date
 
 from . import ast_nodes as ast
@@ -50,6 +51,8 @@ def compute(func: ast.FuncCall, rows: list[dict]):
         return len(rows)
 
     values = [v for v in (evaluate(func.arg, r) for r in rows) if v is not None]
+    if func.distinct:  # the first copy of each different value stays
+        values = list(dict.fromkeys(values))
 
     if name == "GINO":
         return len(values)
@@ -59,6 +62,9 @@ def compute(func: ast.FuncCall, rows: list[dict]):
         if any(isinstance(v, (bool, str, date)) for v in values):
             raise ExecutionError(f"{expr_label(func)}: {name} sirf numbers ke saath chalta hai")
         total = sum(values)
+        # a stored inf / nan stays what it is; only a sum that outgrew FLOAT is an error
+        if isinstance(total, float) and not math.isfinite(total) and all(math.isfinite(v) for v in values):
+            raise ExecutionError(f"{expr_label(func)}: {name} ka result FLOAT ke liye bahut bada hai")
         return total if name == "KUL" else total / len(values)
     if name == "NYUNTAM":
         return min(values)

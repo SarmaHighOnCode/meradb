@@ -81,7 +81,8 @@ from .evaluator import (
     expr_label,
     find_aggregates,
     find_subqueries,
-    is_true,
+    condition_holds,
+    expr_key,
 )
 from .parser import parse, parse_expression
 from .planner import Scope, bind, natural_join_condition
@@ -1220,6 +1221,8 @@ class Engine:
         return list(table.rows())
 
     def _exec_Select(self, stmt: ast.Select) -> Result:
+        if stmt.compound is not None:
+            return self._exec_SetOp(stmt.compound)
         plan = self._plan_select(stmt)
         scope = plan.scope
 
@@ -1242,14 +1245,14 @@ class Engine:
         #    (once, if uncorrelated; per row, if correlated -- see _precompute_subqueries)
         if plan.where is not None:
             subq = self._precompute_subqueries([plan.where], rows)
-            rows = [r for r, sq in zip(rows, subq) if is_true(evaluate(plan.where, r, sq))]
+            rows = [r for r, sq in zip(rows, subq) if condition_holds(evaluate(plan.where, r, sq), "JAHAN")]
 
         # 4. GROUP (SAMOOH) + compute aggregates, then filter groups (JINKA)
         if plan.grouped:
             rows = self._group(rows, plan.group_by, plan.aggregates, scope)
             if plan.having is not None:
                 subq = self._precompute_subqueries([plan.having], rows)
-                rows = [r for r, sq in zip(rows, subq) if is_true(evaluate(plan.having, r, sq))]
+                rows = [r for r, sq in zip(rows, subq) if condition_holds(evaluate(plan.having, r, sq), "JINKA")]
 
         # 5. SORT (KRAM). Python's sort is *stable*, so sorting by the LAST key
         #    first and the FIRST key last gives a correct multi-column sort.
@@ -1257,6 +1260,10 @@ class Engine:
             subq = self._precompute_subqueries([item.expr], rows)
             paired = sorted(zip(rows, subq), key=lambda p: _sort_key(evaluate(item.expr, p[0], p[1])), reverse=item.descending)
             rows = [r for r, _ in paired]
+
+        # Without ALAG, SIRF n OFFSET m needs only the first n + m rows: the others are never projected.
+        if stmt.limit is not None and not stmt.distinct:
+            rows = rows[: stmt.limit + (stmt.offset or 0)]
 
         # 6. PROJECT (pick / compute the output columns)
         subq = self._precompute_subqueries(plan.outputs, rows)
@@ -1272,7 +1279,9 @@ class Engine:
                     unique_rows.append(row)
             out_rows = unique_rows
 
-        # 8. LIMIT (SIRF)
+        # 8. OFFSET (skip the first m rows), then LIMIT (SIRF)
+        if stmt.offset is not None:
+            out_rows = out_rows[stmt.offset :]
         if stmt.limit is not None:
             out_rows = out_rows[: stmt.limit]
 
@@ -1300,10 +1309,9 @@ class Engine:
     def _plan_select(self, stmt: ast.Select) -> "SelectPlan":
         sources, tables, scope = self._select_sources_scope(stmt)
 
-        # KAHO: an output alias becomes the column header, and (only) KRAM may
-        # refer back to it by name -- JAHAN/JINKA do not (standard SQL: they
-        # run before the output list exists). We collect {alias: unbound expr}
-        # here so KRAM can be rewritten to that expr BEFORE binding.
+        # KAHO: an output alias becomes the column header, and KRAM, SAMOOH and JINKA may refer back to it by name -- JAHAN
+        # does not (it runs before the output list exists). We collect {alias: unbound expr} here so they can be rewritten
+        # to that expr BEFORE binding.
         labels, outputs, alias_exprs = [], [], {}
         for e, alias in zip(stmt.columns, stmt.aliases):
             if isinstance(e, ast.Star):
@@ -1316,12 +1324,25 @@ class Engine:
                 if alias:
                     alias_exprs[alias] = e
 
+        # A bare name in KRAM that matches an alias means the output expression, even when a column has that name too
+        # (standard SQL: ORDER BY looks at the output columns first). SAMOOH and JINKA look at the table's columns first
+        # and fall back to an alias, like MySQL.
         def _order_expr(e: ast.Expr) -> ast.Expr:
-            # a bare `naam` in KRAM that matches an alias (and isn't a real
-            # column) means the output expression, not a column lookup
-            if isinstance(e, ast.ColumnRef) and e.table is None and e.name in alias_exprs and e.name not in scope.by_column:
+            if isinstance(e, ast.ColumnRef) and e.table is None and e.name in alias_exprs:
                 return alias_exprs[e.name]
             return e
+
+        def _alias_or_column(e: ast.ColumnRef) -> ast.Expr:
+            if e.table is None and e.name in alias_exprs and e.name not in scope.by_column:
+                return alias_exprs[e.name]
+            return e
+
+        def _order_item(o: ast.OrderItem) -> ast.OrderItem:
+            # KRAM 2: the second output column. Only a bare whole number is a position; KRAM 1 + 1 stays an expression.
+            position = _order_position(o.expr, len(outputs))
+            if position is not None:
+                return ast.OrderItem(outputs[position], o.descending)
+            return ast.OrderItem(bind(_order_expr(o.expr), scope), o.descending)
 
         plan = SelectPlan(
             tables=tables,
@@ -1329,9 +1350,9 @@ class Engine:
             labels=labels,
             outputs=outputs,
             where=bind(stmt.where, scope),
-            group_by=[bind(g, scope) for g in stmt.group_by],
-            having=bind(stmt.having, scope),
-            order_by=[ast.OrderItem(bind(_order_expr(o.expr), scope), o.descending) for o in stmt.order_by],
+            group_by=[bind(_replace_refs(g, _alias_or_column), scope) for g in stmt.group_by],
+            having=bind(_replace_refs(stmt.having, _alias_or_column), scope),
+            order_by=[_order_item(o) for o in stmt.order_by],
         )
         plan.aggregates = self._unique_aggregates(plan.outputs + [plan.having] + [o.expr for o in plan.order_by])
         plan.grouped = bool(plan.group_by or plan.aggregates or plan.having is not None)
@@ -1368,9 +1389,23 @@ class Engine:
         stmt = subquery.statement
         if outer_row is None:
             return self._exec_Select(stmt), False
-        _, _, subquery_scope = self._select_sources_scope(stmt)
-        new_stmt, fired = self._correlate_select(stmt, subquery_scope, outer_row)
+        new_stmt, fired = self._correlate_query(stmt, outer_row)
         return self._exec_Select(new_stmt), fired
+
+    def _correlate_query(self, stmt: ast.Select, outer_row: dict) -> tuple[ast.Select, bool]:
+        if stmt.compound is not None:  # each side has tables, so names, of its own
+            compound, fired = self._correlate_set_op(stmt.compound, outer_row)
+            return ast.Select([], "", compound=compound), fired
+        _, _, subquery_scope = self._select_sources_scope(stmt)
+        return self._correlate_select(stmt, subquery_scope, outer_row)
+
+    def _correlate_set_op(self, stmt: ast.SetOp, outer_row: dict) -> tuple[ast.SetOp, bool]:
+        def side(s):
+            return self._correlate_set_op(s, outer_row) if isinstance(s, ast.SetOp) else self._correlate_query(s, outer_row)
+
+        left, left_fired = side(stmt.left)
+        right, right_fired = side(stmt.right)
+        return ast.SetOp(stmt.op, left, right, stmt.all, stmt.order_by, stmt.limit, stmt.offset), left_fired or right_fired
 
     def _correlate_select(self, stmt: ast.Select, subquery_scope: Scope, outer_row: dict) -> tuple[ast.Select, bool]:
         fired = [False]
@@ -1388,6 +1423,7 @@ class Engine:
             having=corr(stmt.having) if stmt.having is not None else None,
             order_by=[ast.OrderItem(corr(o.expr), o.descending) for o in stmt.order_by],
             limit=stmt.limit,
+            offset=stmt.offset,
             distinct=stmt.distinct,
             aliases=list(stmt.aliases),
         )
@@ -1428,7 +1464,9 @@ class Engine:
         if isinstance(expr, ast.IsNull):
             return ast.IsNull(self._correlate(expr.expr, subquery_scope, outer_row, fired), expr.negated)
         if isinstance(expr, ast.FuncCall):
-            return ast.FuncCall(expr.name, self._correlate(expr.arg, subquery_scope, outer_row, fired))
+            return ast.FuncCall(expr.name, self._correlate(expr.arg, subquery_scope, outer_row, fired), expr.distinct)
+        if isinstance(expr, ast.LikeEscape):
+            return ast.LikeEscape(*(self._correlate(e, subquery_scope, outer_row, fired) for e in (expr.text, expr.pattern, expr.escape)))
         if isinstance(expr, ast.Coalesce):
             return ast.Coalesce([self._correlate(a, subquery_scope, outer_row, fired) for a in expr.args])
         if isinstance(expr, ast.CaseWhen):
@@ -1505,7 +1543,9 @@ class Engine:
         left_tuples = [tuple(r) for r in left.rows]
         right_tuples = [tuple(r) for r in right.rows]
 
-        if stmt.op == "SANYUKT":  # UNION: dedupe, preserving first-occurrence order
+        if stmt.all:  # UNION ALL: every row of both sides
+            out = left_tuples + right_tuples
+        elif stmt.op == "SANYUKT":  # UNION: dedupe, preserving first-occurrence order
             seen, out = set(), []
             for row in left_tuples + right_tuples:
                 if row not in seen:
@@ -1526,6 +1566,26 @@ class Engine:
                     seen.add(row)
                     out.append(row)
 
+        # KRAM / SIRF after the last side belong to the whole result. Only what it shows can sort it, so each key is an
+        # output column: its name (the first side's names count) or its position.
+        sort_columns = []
+        for o in stmt.order_by:
+            position = _order_position(o.expr, len(left.columns))
+            if position is None:
+                name = o.expr.name if isinstance(o.expr, ast.ColumnRef) else expr_label(o.expr)
+                if name not in left.columns:
+                    raise ExecutionError(
+                        f"KRAM '{name}': {stmt.op} ka result sirf apne output columns se sort ho sakta hai (naam ya number)"
+                    )
+                position = left.columns.index(name)
+            sort_columns.append((position, o.descending))
+        for position, descending in reversed(sort_columns):
+            out = sorted(out, key=lambda r: _sort_key(r[position]), reverse=descending)
+        if stmt.offset is not None:
+            out = out[stmt.offset :]
+        if stmt.limit is not None:
+            out = out[: stmt.limit]
+
         return Result(left.columns, [list(r) for r in out], f"{len(out)} row(s)")
 
     def _exec_Update(self, stmt: ast.Update) -> Result:
@@ -1542,7 +1602,7 @@ class Engine:
         if where is not None:
             candidate_rows = [scope.row(0, values) for _, values in candidates]
             subq = self._precompute_subqueries([where], candidate_rows)
-            targets = [c for c, r, sq in zip(candidates, candidate_rows, subq) if is_true(evaluate(where, r, sq))]
+            targets = [c for c, r, sq in zip(candidates, candidate_rows, subq) if condition_holds(evaluate(where, r, sq), "JAHAN")]
         else:
             targets = list(candidates)
 
@@ -1595,7 +1655,7 @@ class Engine:
         if where is not None:
             candidate_rows = [scope.row(0, values) for _, values in candidates]
             subq = self._precompute_subqueries([where], candidate_rows)
-            doomed = [c for c, r, sq in zip(candidates, candidate_rows, subq) if is_true(evaluate(where, r, sq))]
+            doomed = [c for c, r, sq in zip(candidates, candidate_rows, subq) if condition_holds(evaluate(where, r, sq), "JAHAN")]
         else:
             doomed = list(candidates)
 
@@ -1625,11 +1685,16 @@ class Engine:
             lines = self._explain_select(inner, self._plan_select(inner))
         elif isinstance(inner, ast.SetOp):
             op_name = {"SANYUKT": "UNION", "SAAJHA": "INTERSECT", "CHHODKAR": "EXCEPT"}[inner.op]
-            lines = [f"{inner.op} ({op_name}) of:"]
+            lines = [f"{inner.op}{' ALL' if inner.all else ''} ({op_name}) of:"]
             for side, label in ((inner.left, "LEFT"), (inner.right, "RIGHT")):
                 sub_lines = self._explain_one(side)
                 lines.append(f"  {label}:")
                 lines.extend(f"    {line}" for line in sub_lines)
+            if inner.order_by:
+                keys = ", ".join(expr_label(o.expr) + (" ULTA" if o.descending else "") for o in inner.order_by)
+                lines.append(f"SORT   KRAM {keys}")
+            if inner.limit is not None:
+                lines.append(f"LIMIT  SIRF {inner.limit}" + (f" OFFSET {inner.offset}" if inner.offset is not None else ""))
         elif isinstance(inner, (ast.Update, ast.Delete)):
             table = self._table(inner.table)
             scope = Scope([(inner.table, table.schema)])
@@ -1649,10 +1714,12 @@ class Engine:
         """One side of a SetOp -- itself a Select or (recursively) a SetOp."""
         if isinstance(stmt, ast.SetOp):
             op_name = {"SANYUKT": "UNION", "SAAJHA": "INTERSECT", "CHHODKAR": "EXCEPT"}[stmt.op]
-            lines = [f"{stmt.op} ({op_name}) of:"]
+            lines = [f"{stmt.op}{' ALL' if stmt.all else ''} ({op_name}) of:"]
             for side in (stmt.left, stmt.right):
                 lines.extend(f"  {line}" for line in self._explain_one(side))
             return lines
+        if stmt.compound is not None:
+            return self._explain_one(stmt.compound)
         return self._explain_select(stmt, self._plan_select(stmt))
 
     JOIN_LABEL = {"INNER": "", "LEFT": "LEFT ", "RIGHT": "RIGHT ", "FULL": "FULL ", "NATURAL": "NATURAL "}
@@ -1685,7 +1752,7 @@ class Engine:
         if stmt.distinct:
             lines.append("DISTINCT  ALAG")
         if stmt.limit is not None:
-            lines.append(f"LIMIT  SIRF {stmt.limit}")
+            lines.append(f"LIMIT  SIRF {stmt.limit}" + (f" OFFSET {stmt.offset}" if stmt.offset is not None else ""))
         return lines
 
     def _explain_subqueries(self, exprs: list, scope: Scope) -> list[str]:
@@ -1701,10 +1768,8 @@ class Engine:
                 if id(sub) in seen:
                     continue
                 seen.add(id(sub))
-                _, _, subquery_scope = self._select_sources_scope(sub.statement)
-                substituted, fired = self._correlate_select(sub.statement, subquery_scope, dummy_outer)
-                inner_plan = self._plan_select(substituted)
-                first_line = self._explain_select(substituted, inner_plan)[0]
+                substituted, fired = self._correlate_query(sub.statement, dummy_outer)
+                first_line = self._explain_one(substituted)[0]
                 kind = "correlated" if fired else "uncorrelated"
                 lines.append(f"SUBQUERY ({kind}): {first_line}")
         return lines
@@ -1727,14 +1792,11 @@ class Engine:
         In a grouped query each output row stands for a whole GROUP of rows, so a
         bare column like `naam` has no single value -- unless we grouped by it.
         """
-        grouped = {name for g in plan.group_by for name in column_refs(g)}
+        # SAMOOH a + 1 fixes the value of a + 1 in a group, not of a: an expression is fine when the whole of it, or each
+        # column left in it, is something grouped on.
+        grouped = {expr_key(g) for g in plan.group_by}
         for expr in plan.outputs + [plan.having] + [o.expr for o in plan.order_by]:
-            for name in column_refs(expr, skip_aggregates=True):
-                if name not in grouped:
-                    raise ExecutionError(
-                        f"Column '{scope.display(name)}' SAMOOH mein nahi hai -- ise SAMOOH mein daalo "
-                        f"ya kisi aggregate (GINO, KUL, AUSAT...) ke andar use karo"
-                    )
+            _check_grouped_expr(expr, grouped, scope)
 
     @staticmethod
     def _group(rows: list[dict], group_by: list, aggs: list[ast.FuncCall], scope: Scope) -> list[dict]:
@@ -1953,7 +2015,7 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, kind: st
             matched = False
             for l_row in partners(r_row):
                 combined = {**l_row, **r_row}
-                if is_true(evaluate(on, combined)):
+                if condition_holds(evaluate(on, combined), "PAR"):
                     out.append(combined)
                     matched = True
             if not matched:
@@ -1984,7 +2046,7 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, kind: st
         matched = False
         for r_row in partners(l_row):
             combined = {**l_row, **r_row}
-            if is_true(evaluate(on, combined)):  # re-check the full PAR (it may have more conditions)
+            if condition_holds(evaluate(on, combined), "PAR"):  # re-check the full PAR (it may have more conditions)
                 out.append(combined)
                 matched = True
                 if keep_right_unmatched:
@@ -1998,6 +2060,70 @@ def _join(left_rows: list[dict], right_rows: list[dict], on, hash_keys, kind: st
             if id(r_row) not in matched_right_ids:
                 out.append({**null_left, **r_row})
     return out
+
+
+def _check_grouped_expr(e, grouped: set, scope: Scope) -> None:
+    if e is None or isinstance(e, ast.FuncCall) or expr_key(e) in grouped:
+        return
+    if isinstance(e, ast.ColumnRef):
+        raise ExecutionError(
+            f"Column '{scope.display(e.name)}' SAMOOH mein nahi hai -- ise SAMOOH mein daalo "
+            f"ya kisi aggregate (GINO, KUL, AUSAT...) ke andar use karo"
+        )
+    if isinstance(e, ast.BinaryOp):
+        children = [e.left, e.right]
+    elif isinstance(e, ast.UnaryOp):
+        children = [e.operand]
+    elif isinstance(e, ast.IsNull):
+        children = [e.expr]
+    elif isinstance(e, ast.Coalesce):
+        children = e.args
+    elif isinstance(e, ast.LikeEscape):
+        children = [e.text, e.pattern, e.escape]
+    elif isinstance(e, ast.CaseWhen):
+        children = [part for branch in e.branches for part in branch] + [e.else_]
+    elif isinstance(e, ast.InSubquery):
+        children = [e.left]
+    else:
+        children = []
+    for child in children:
+        _check_grouped_expr(child, grouped, scope)
+
+
+def _order_position(e, output_count: int) -> Optional[int]:
+    if not isinstance(e, ast.Literal) or not isinstance(e.value, int) or isinstance(e.value, bool):
+        return None
+    if e.value < 1 or e.value > output_count:
+        raise ExecutionError(
+            f"KRAM {e.value}: is query mein {output_count} output column(s) hain -- 1 se {output_count} tak ka number likho"
+        )
+    return e.value - 1
+
+
+def _replace_refs(expr, pick):
+    """A copy of `expr` with each column reference replaced by what `pick` returns. Does not enter subqueries: they
+    have names of their own. Used for KAHO aliases in SAMOOH and JINKA."""
+    if expr is None:
+        return None
+    if isinstance(expr, ast.ColumnRef):
+        return pick(expr)
+    if isinstance(expr, ast.BinaryOp):
+        return ast.BinaryOp(expr.op, _replace_refs(expr.left, pick), _replace_refs(expr.right, pick))
+    if isinstance(expr, ast.UnaryOp):
+        return ast.UnaryOp(expr.op, _replace_refs(expr.operand, pick))
+    if isinstance(expr, ast.IsNull):
+        return ast.IsNull(_replace_refs(expr.expr, pick), expr.negated)
+    if isinstance(expr, ast.Coalesce):
+        return ast.Coalesce([_replace_refs(a, pick) for a in expr.args])
+    if isinstance(expr, ast.CaseWhen):
+        return ast.CaseWhen(
+            [(_replace_refs(c, pick), _replace_refs(v, pick)) for c, v in expr.branches], _replace_refs(expr.else_, pick)
+        )
+    if isinstance(expr, ast.LikeEscape):
+        return ast.LikeEscape(_replace_refs(expr.text, pick), _replace_refs(expr.pattern, pick), _replace_refs(expr.escape, pick))
+    if isinstance(expr, ast.InSubquery):
+        return ast.InSubquery(_replace_refs(expr.left, pick), expr.subquery, expr.negated)
+    return expr
 
 
 def _sort_key(value):

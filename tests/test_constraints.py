@@ -426,10 +426,15 @@ class OutputAliasTest(ConstraintsTestCase):
         )
         self.assertEqual(len(result.rows), 3)
 
-    def test_real_column_wins_over_alias_of_same_name(self):
-        # `id` is a REAL column, so `KRAM id` must sort by the column, not the alias
+    def test_alias_wins_over_real_column_of_same_name_in_kram(self):
+        # standard SQL: ORDER BY looks at the output columns first, so `KRAM id` means the alias
         result = self.run_sql("DIKHAO cgpa KAHO id SE students KRAM id")
-        self.assertEqual(result.rows, [[8.4], [9.1], [7.0]])  # sorted by real id (1,2,3), not by cgpa
+        self.assertEqual(result.rows, [[7.0], [8.4], [9.1]])
+
+    def test_real_column_wins_over_alias_of_same_name_in_samooh(self):
+        # SAMOOH and JINKA look at the table's columns first, like MySQL
+        result = self.run_sql("DIKHAO cgpa KAHO id, GINO(*) SE students SAMOOH cgpa KRAM 1")
+        self.assertEqual(result.rows, [[7.0, 1], [8.4, 1], [9.1, 1]])
 
     def test_star_kaho_is_a_parse_error(self):
         with self.assertRaises(ParseError):

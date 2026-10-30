@@ -14,6 +14,7 @@ are parsed but ignored -- see docs/LANGUAGE.md). VARCHAR2 and CHAR are further
 aliases of TEXT, matching common SQL dialects.
 """
 
+import re
 from datetime import date
 
 from .errors import ExecutionError
@@ -57,6 +58,24 @@ def parse_date(text: str, column: str = None) -> date:
     except ValueError:
         where = f"Column '{column}': " if column else ""
         raise ExecutionError(f"{where}{text!r} valid DATE nahi hai -- 'YYYY-MM-DD' format chahiye") from None
+
+
+def parse_datetime(text: str) -> str:
+    """'YYYY-MM-DD[ HH:MM[:SS]]' (or a T for the space) -> 'YYYY-MM-DD HH:MM:SS'; anything else is an error."""
+    match = _DATETIME.fullmatch(text)
+    try:
+        if match is None:
+            raise ValueError
+        date.fromisoformat(match[1])
+        hour, minute, second = int(match[2] or 0), int(match[3] or 0), int(match[4] or 0)
+        if hour > 23 or minute > 59 or second > 59:
+            raise ValueError
+    except ValueError:
+        raise ExecutionError(f"{text!r} valid DATETIME nahi hai -- 'YYYY-MM-DD HH:MM:SS' format chahiye") from None
+    return f"{match[1]} {hour:02d}:{minute:02d}:{second:02d}"
+
+
+_DATETIME = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?", re.ASCII)
 
 
 def coerce(value, type_name: str, column: str):

@@ -528,12 +528,38 @@ class Parser:
         if self._match_kw("VIEWS"):
             return ast.ShowViews()
 
+        return self._parse_set_chain()
+
+    def _at_set_op(self) -> bool:
+        return self._peek().type == TokenType.KEYWORD and self._peek().value in self.SET_OPS
+
+    def _parse_set_chain(self) -> ast.Statement:
         result: ast.Statement = self._parse_select_body()
-        while self._peek().type == TokenType.KEYWORD and self._peek().value in self.SET_OPS:
+        # `DIKHAO a KRAM x SIRF 2 SANYUKT DIKHAO b` sorts and cuts that side by itself. When no side but the last has such
+        # clauses they are written after the whole query and apply to its whole result, as in SQL.
+        def own_clauses(s: ast.Select) -> bool:
+            return bool(s.order_by) or s.limit is not None or s.offset is not None
+
+        earlier_clauses = own_clauses(result)
+        while self._at_set_op():
             op = self._advance().value
+            keep_all = op == "SANYUKT" and self._is_soft("all")
+            if keep_all:
+                self._advance()
             self._expect_kw("DIKHAO")
-            result = ast.SetOp(op, result, self._parse_select_body())
+            right = self._parse_select_body()
+            node = ast.SetOp(op, result, right, all=keep_all)
+            if not self._at_set_op() and not earlier_clauses:
+                node.order_by, right.order_by = right.order_by, []
+                node.limit, right.limit = right.limit, None
+                node.offset, right.offset = right.offset, None
+            earlier_clauses = earlier_clauses or own_clauses(right)
+            result = node
         return result
+
+    def _is_soft(self, word: str) -> bool:
+        tok = self._peek()
+        return tok.type == TokenType.IDENT and tok.value == word
 
     def _parse_select_body(self) -> ast.Select:
         # select body := [ALAG] cols SE table [alias] { join } [JAHAN expr]
@@ -569,6 +595,11 @@ class Parser:
                 kind = "NATURAL"
             elif self._match_kw("MILAO"):
                 kind = "INNER"
+            elif self._match_sym(","):  # SE a, b: every row of a with every row of b; JAHAN does the filtering
+                cross_table = self._expect_ident("table ka naam")
+                cross_alias = self._parse_alias() or cross_table
+                select.joins.append(ast.Join(cross_table, cross_alias, ast.Literal(True), "INNER"))
+                continue
             else:
                 break
             join_table = self._expect_ident("table ka naam")
@@ -599,13 +630,26 @@ class Parser:
                 select.order_by.append(self._parse_order_item())
 
         if self._match_kw("SIRF"):
-            tok = self._peek()
-            if tok.type != TokenType.NUMBER or not isinstance(tok.value, int):
-                raise self._error("SIRF ke baad ek whole number expected tha")
-            self._advance()
-            select.limit = tok.value
+            # SIRF n  |  SIRF n OFFSET m  |  SIRF m, n  (the MySQL form: skip m, keep n)
+            first = self._whole_number("SIRF")
+            if self._match_sym(","):
+                select.offset = first
+                select.limit = self._whole_number(",")
+            else:
+                select.limit = first
+                if self._is_soft("offset"):
+                    self._advance()
+                    select.offset = self._whole_number("OFFSET")
 
         return select
+
+    def _whole_number(self, what: str) -> int:
+        tok = self._peek()
+        if tok.type != TokenType.NUMBER or not isinstance(tok.value, int):
+            raise self._error(f"{what} ke baad ek whole number expected tha")
+        self._advance()
+        # no result has more rows than this, so a bigger number means the same (the C++ engine's int limit)
+        return min(tok.value, 2147483647)
 
     def _parse_select_item(self) -> tuple[ast.Expr, Optional[str]]:
         # item = "*" | IDENT "." "*" | expr [ "KAHO" IDENT ]
@@ -687,7 +731,15 @@ class Parser:
 
     def _parse_comparison(self) -> ast.Expr:
         left = self._parse_additive()
+        # Comparison operators chain to the left: 1 < 2 = SACH reads (1 < 2) = SACH
+        while True:
+            node = self._parse_comparison_step(left)
+            if node is None:
+                return left
+            left = node
 
+    def _parse_comparison_step(self, left: ast.Expr) -> Optional[ast.Expr]:
+        """One comparison with `left` on its left side, or None when none follows."""
         # x HAI KHALI  /  x HAI NAHI KHALI
         if self._match_kw("HAI"):
             negated = self._match_kw("NAHI")
@@ -709,7 +761,7 @@ class Parser:
         for op in ("=", "!=", "<", "<=", ">", ">="):
             if self._match_sym(op):
                 return ast.BinaryOp(op, left, self._parse_additive())
-        return left
+        return None
 
     def _parse_pattern_range_or_list(self, left: ast.Expr):
         """
@@ -721,7 +773,11 @@ class Parser:
             x MEIN (a, b, c)   ->  x = a YA x = b YA x = c
         """
         if self._match_kw("JAISA"):
-            return ast.BinaryOp("JAISA", left, self._parse_additive())
+            pattern = self._parse_additive()
+            if self._is_soft("escape"):  # x JAISA '10!%' ESCAPE '!'
+                self._advance()
+                return ast.LikeEscape(left, pattern, self._parse_additive())
+            return ast.BinaryOp("JAISA", left, pattern)
 
         if self._match_kw("BEECH"):
             low = self._parse_additive()  # additive stops before AUR, so this is safe
@@ -748,8 +804,10 @@ class Parser:
         DIKHAO. Does NOT consume the closing ')' -- the caller does, since the
         two call sites (bare parens, MEIN list) close it slightly differently."""
         self._expect_kw("DIKHAO")
-        select_stmt = self._parse_select_body()
-        return ast.Subquery(select_stmt)
+        chain = self._parse_set_chain()
+        if isinstance(chain, ast.SetOp):
+            return ast.Subquery(ast.Select([], "", compound=chain))
+        return ast.Subquery(chain)
 
     def _parse_additive(self) -> ast.Expr:
         left = self._parse_term()
@@ -782,6 +840,8 @@ class Parser:
     def _parse_primary(self) -> ast.Expr:
         tok = self._peek()
         if tok.type in (TokenType.NUMBER, TokenType.STRING):
+            if tok.type == TokenType.NUMBER and tok.value == float("inf"):
+                raise self._error("Ye number FLOAT ke liye bahut bada hai")
             self._advance()
             return ast.Literal(tok.value)
         if self._match_kw("SACH"):
@@ -803,9 +863,17 @@ class Parser:
                         args.append(self._parse_expr())
                     self._expect_sym(")")
                     return ast.Coalesce(args)
+                # ALAG / DISTINCT. A column may be called distinct: only a value right after it makes it the soft word.
+                nxt = self._peek(1)
+                soft_distinct = self._is_soft("distinct") and (nxt.type != TokenType.SYMBOL or nxt.value in ("(", "*"))
+                if soft_distinct:
+                    self._advance()
+                distinct = soft_distinct or self._match_kw("ALAG")
+                if distinct and self._check_sym("*"):
+                    raise self._error(f"ALAG ke baad column chahiye -- {tok.value.upper()}(ALAG *) nahi chalta")
                 arg = ast.Star() if self._match_sym("*") else self._parse_expr()
                 self._expect_sym(")")
-                return ast.FuncCall(tok.value.upper(), arg)
+                return ast.FuncCall(tok.value.upper(), arg, distinct)
             # name.column  or  name.*   (qualified by a table name or alias)
             if self._match_sym("."):
                 if self._match_sym("*"):

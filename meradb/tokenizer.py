@@ -230,6 +230,14 @@ class Tokenizer:
             self._advance()
             while self._peek().isdigit():
                 self._advance()
+        # 1e5, 2.5E-3: an exponent makes it a FLOAT. Only when digits follow: `1e` stays the number 1 and the name e.
+        sign = 1 if self._peek(1) in ("+", "-") else 0
+        if self._peek() in ("e", "E") and self._peek(1 + sign).isdigit():
+            is_float = True
+            for _ in range(1 + sign):
+                self._advance()
+            while self._peek().isdigit():
+                self._advance()
         text = self.text[start : self.pos]
         return Token(TokenType.NUMBER, float(text) if is_float else int(text), line, col)
 
