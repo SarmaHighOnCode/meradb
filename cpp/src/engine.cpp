@@ -3020,6 +3020,17 @@ void replaceRefs(std::unique_ptr<ast::Expr>& expr, const std::function<const ast
     }
 }
 
+// KRAM <whole number>: the 0-based output column it names; nullopt for any other expression.
+std::optional<size_t> orderPosition(const ast::Expr& e, size_t outputCount) {
+    auto* lit = dynamic_cast<const ast::Literal*>(&e);
+    if (lit == nullptr || !isIntValue(lit->value)) return std::nullopt;
+    int64_t n = std::get<int64_t>(lit->value.data);
+    if (n < 1 || static_cast<uint64_t>(n) > outputCount)
+        throw ExecutionError("KRAM " + std::to_string(n) + ": is query mein " + std::to_string(outputCount) +
+                             " output column(s) hain -- 1 se " + std::to_string(outputCount) + " tak ka number likho");
+    return static_cast<size_t>(n - 1);
+}
+
 // Scalar context (Subquery): exactly 1 column, 0 or 1 row. List context
 // (InSubquery): exactly 1 column, any number of rows.
 SubqueryResult reduceSubqueryResult(const ast::Expr& node, const Result& result) {
@@ -3209,6 +3220,11 @@ std::unique_ptr<Engine::SelectPlan> Engine::planSelect(const ast::Select& stmt) 
         plan->having = bind(having.get(), scope);
     }
     for (const auto& o : stmt.orderBy) {
+        // KRAM 2: the second output column. Only a bare whole number is a position; KRAM 1 + 1 stays an expression.
+        if (auto position = orderPosition(*o.expr, plan->outputs.size())) {
+            plan->orderBy.emplace_back(cloneExpr(*plan->outputs[*position]), o.descending);
+            continue;
+        }
         const ast::Expr* alias = aliasOf(*o.expr, false);
         plan->orderBy.emplace_back(bind(alias ? *alias : *o.expr, scope), o.descending);
     }

@@ -147,3 +147,17 @@ TEST_CASE("KRAM prefers an output alias over a column of the same name", "[seman
     // a qualified name is always the table's column
     REQUIRE(q(e, "DIKHAO id KAHO a SE t KRAM t.a, id;") == "2;1;4;5;3");
 }
+
+TEST_CASE("KRAM takes output column positions", "[semantics][order]") {
+    TempDir dir;
+    Engine e(dir.str());
+    seed(e);
+    REQUIRE(q(e, "DIKHAO id SE t KRAM 1 ULTA;") == "5;4;3;2;1");
+    REQUIRE(q(e, "DIKHAO id, a SE t KRAM 2, 1 ULTA;") == "2|KHALI;4|10;1|10;5|20;3|30");
+    REQUIRE(q(e, "DIKHAO a, GINO(*) SE t SAMOOH a KRAM 2 ULTA, 1;") == "10|2;KHALI|1;20|1;30|1");
+    REQUIRE(q(e, "DIKHAO * SE t KRAM 2, 1 SIRF 2;") == "2|KHALI|y;1|10|x");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t KRAM 99;"), ContainsSubstring("KRAM"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO id SE t KRAM 0;"), ContainsSubstring("KRAM"));
+    // only a bare number is a position: an expression stays an expression
+    REQUIRE(q(e, "DIKHAO id SE t KRAM 1 + 1, id ULTA SIRF 1;") == "5");
+}
