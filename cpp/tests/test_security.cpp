@@ -1,6 +1,7 @@
 // cpp/tests/test_security.cpp -- proofs of concept for security flaws found in review. Each case failed before its fix.
 #include <catch2/catch_test_macros.hpp>
 #include "golden_runner.h"
+#include "meradb/crypto.h"
 #include "meradb/engine.h"
 #include "meradb/errors.h"
 #include "meradb/fs_util.h"
@@ -150,6 +151,81 @@ TEST_CASE("security a user cannot be created with an empty password", "[security
     CHECK(runLast(f.admin, "BANAO USER blank GUPT '';").error ==
           "[Execution Galti] User 'blank' ka password khali nahi ho sakta");
     CHECK_FALSE(f.inst->users().exists("blank"));
+}
+
+namespace {
+// A users.json entry the way the old code wrote it: 100,000 iterations and no "iterations" key.
+nlohmann::ordered_json legacyEntry(const std::string& password) {
+    const crypto::Bytes salt(16, 0x5A);
+    nlohmann::ordered_json entry = nlohmann::ordered_json::object();
+    entry["salt"] = crypto::toHex(salt);
+    entry["hash"] = crypto::toHex(crypto::pbkdf2HmacSha256(password, salt, PBKDF2_LEGACY_ITERATIONS, 32));
+    entry["grants"] = nlohmann::ordered_json::object();
+    entry["grants"]["main.t"] = {"DIKHAO"};
+    return entry;
+}
+nlohmann::ordered_json readUsersFile(const TempDir& dir) {
+    std::ifstream in(dir.file("users.json"));
+    return nlohmann::ordered_json::parse(in);
+}
+}  // namespace
+
+TEST_CASE("security an old 100,000 iteration account still logs in and is upgraded by the login", "[security][passwords]") {
+    TempDir dir;
+    nlohmann::ordered_json file = nlohmann::ordered_json::object();
+    file["old"] = legacyEntry("hunter2");
+    std::ofstream(dir.file("users.json")) << file.dump(2);
+
+    UserStore users(dir.str());
+    CHECK_FALSE(users.verify("old", "wrong"));
+    CHECK_FALSE(readUsersFile(dir)["old"].contains("iterations"));  // a failed login changes nothing
+
+    CHECK(users.verify("old", "hunter2"));
+    auto upgraded = readUsersFile(dir)["old"];
+    CHECK(upgraded["iterations"] == PBKDF2_ITERATIONS);
+    CHECK(upgraded["hash"] != file["old"]["hash"]);
+    CHECK(upgraded["salt"] != file["old"]["salt"]);
+    CHECK(upgraded["grants"] == file["old"]["grants"]);
+
+    CHECK(users.verify("old", "hunter2"));  // the upgraded hash works, in memory and from the file
+    UserStore reloaded(dir.str());
+    CHECK(reloaded.verify("old", "hunter2"));
+    CHECK_FALSE(reloaded.verify("old", "wrong"));
+}
+
+TEST_CASE("security an unknown user takes as long to refuse as a known one", "[security][passwords]") {
+    TempDir dir;
+    UserStore users(dir.str());
+    users.create("ravi", "pw");
+    auto timed = [&](const char* name) {
+        auto start = std::chrono::steady_clock::now();
+        CHECK_FALSE(users.verify(name, "wrong"));
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
+    const double known = timed("ravi");
+    const double unknown = timed("ghost");
+    CHECK(unknown > known / 3);  // same work; the margin only absorbs scheduling noise
+}
+
+TEST_CASE("security damaged users.json entries never log in and never crash", "[security][passwords][corruption]") {
+    for (const char* text : {R"({"r":{"salt":"zz","hash":"00"}})", R"({"r":{"salt":5,"hash":[]}})", R"({"r":7})",
+                             R"({"r":{"role":true}})", R"({"r":{"salt":"00","hash":"00","iterations":-1}})",
+                             R"({"r":{"salt":"00","hash":"00","iterations":0}})",
+                             R"({"r":{"salt":"00","hash":"00","iterations":"many"}})",
+                             R"({"r":{"salt":"00","hash":"00","iterations":99999999999}})"}) {
+        INFO(text);
+        TempDir dir;
+        std::ofstream(dir.file("users.json")) << text;
+        UserStore users(dir.str());
+        CHECK_FALSE(users.verify("r", ""));
+        CHECK_FALSE(users.verify("r", "x"));
+    }
+    for (const char* text : {"[1,2]", "{", "not json", ""}) {
+        INFO(text);
+        TempDir dir;
+        std::ofstream(dir.file("users.json")) << text;
+        CHECK_THROWS_AS(UserStore(dir.str()), StorageError);
+    }
 }
 
 // ---- requests that are not statements: nothing in checkPrivileges looks at them ----

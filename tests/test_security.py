@@ -1,5 +1,6 @@
 """Proofs of concept for security flaws found in review. Each test failed before its fix."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -13,7 +14,7 @@ from meradb.catalog import Catalog
 from meradb.engine import Engine
 from meradb.errors import ExecutionError, StorageError
 from meradb.server import MeraDBServer
-from meradb.users import UserStore
+from meradb.users import PBKDF2_ITERATIONS, PBKDF2_LEGACY_ITERATIONS, UserStore
 
 
 class RawClient:
@@ -68,6 +69,56 @@ class PasswordTests(unittest.TestCase):
         with self.assertRaises(ExecutionError):
             self.users.create("blank", "")
         self.assertFalse(self.users.exists("blank"))
+
+    def write_users(self, entries: dict) -> UserStore:
+        with open(os.path.join(self.dir, "users.json"), "w", encoding="utf-8") as f:
+            json.dump(entries, f)
+        return UserStore(self.dir)
+
+    def test_old_account_still_logs_in_and_is_upgraded_by_the_login(self):
+        salt = bytes(range(16))
+        old = {"salt": salt.hex(), "hash": hashlib.pbkdf2_hmac("sha256", b"hunter2", salt, PBKDF2_LEGACY_ITERATIONS).hex(),
+               "grants": {"main.t": ["DIKHAO"]}}
+        users = self.write_users({"old": old})
+
+        self.assertFalse(users.verify("old", "wrong"))
+        self.assertNotIn("iterations", UserStore(self.dir).users["old"])  # a failed login changes nothing
+
+        self.assertTrue(users.verify("old", "hunter2"))
+        upgraded = UserStore(self.dir).users["old"]
+        self.assertEqual(upgraded["iterations"], PBKDF2_ITERATIONS)
+        self.assertNotEqual(upgraded["hash"], old["hash"])
+        self.assertEqual(upgraded["grants"], old["grants"])
+        self.assertTrue(UserStore(self.dir).verify("old", "hunter2"))
+        self.assertFalse(UserStore(self.dir).verify("old", "wrong"))
+
+    def test_new_accounts_use_the_stronger_work_factor(self):
+        self.users.create("ravi", "pw")
+        self.assertEqual(self.users.users["ravi"]["iterations"], PBKDF2_ITERATIONS)
+        self.assertGreaterEqual(PBKDF2_ITERATIONS, 600_000)
+        self.assertTrue(self.users.verify("ravi", "pw"))
+
+    def test_damaged_entries_never_log_in_and_never_raise(self):
+        for entry in [{"salt": "zz", "hash": "00"}, {"salt": 5, "hash": []}, 7, {"role": True}, {"salt": "00"},
+                      {"salt": "00", "hash": "é"}, {"salt": "00", "hash": "00", "iterations": -1},
+                      {"salt": "00", "hash": "00", "iterations": 0}, {"salt": "00", "hash": "00", "iterations": "many"},
+                      {"salt": "00", "hash": "00", "iterations": True},
+                      {"salt": "00", "hash": "00", "iterations": 99_999_999_999}]:
+            with self.subTest(entry=entry):
+                self.assertFalse(self.write_users({"r": entry}).verify("r", "x"))
+
+    def test_a_password_json_cannot_encode_is_only_a_wrong_password(self):
+        self.users.create("ravi", "pw")
+        self.assertFalse(self.users.verify("ravi", "\ud800"))
+
+
+class SharedPasswordTests(ServerCase):
+    password = "s3cret"
+
+    def test_non_ascii_guess_is_refused_cleanly(self):
+        reply = self.client().request(type="hello", password="päss")
+        self.assertEqual(reply, {"ok": False, "error": "Password galat hai"})
+        self.assertTrue(self.client().request(type="hello", password="s3cret").get("ok"))
 
 
 class PathTests(ServerCase):

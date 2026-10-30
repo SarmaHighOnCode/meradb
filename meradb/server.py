@@ -101,7 +101,9 @@ class ClientHandler(socketserver.StreamRequestHandler):
                 send(self.wfile, {"ok": False, "error": "User ya password galat hai"})
                 server.log(f"{peer}  login fail (galat user/password: {user!r})")
                 return
-        elif server.password and not hmac.compare_digest(str(hello.get("password") or ""), server.password):
+        # bytes: compare_digest raises TypeError on a str with a non-ASCII character
+        elif server.password and not hmac.compare_digest(str(hello.get("password") or "").encode("utf-8", "surrogatepass"),
+                                                         server.password.encode("utf-8", "surrogatepass")):
             send(self.wfile, {"ok": False, "error": "Password galat hai"})  # bare: see note above
             server.log(f"{peer}  login fail (galat password)")
             return

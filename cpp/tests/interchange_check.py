@@ -99,7 +99,7 @@ def users_shape(data: str) -> dict:
     users = json.load(open(os.path.join(data, "users.json"), encoding="utf-8"))
     shape = {}
     for name, record in users.items():
-        assert list(record.keys()) == ["salt", "hash", "grants"], (name, list(record.keys()))
+        assert list(record.keys()) == ["salt", "hash", "iterations", "grants"], (name, list(record.keys()))
         assert len(record["salt"]) == 32 and len(record["hash"]) == 64, name
         int(record["salt"], 16), int(record["hash"], 16)
         shape[name] = record["grants"]

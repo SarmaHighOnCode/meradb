@@ -36,8 +36,36 @@ std::optional<std::string> privilegeFromName(const std::string& upperName) {
 
 namespace {
 
-std::string hashHex(const std::string& password, const crypto::Bytes& salt) {
-    return crypto::toHex(crypto::pbkdf2HmacSha256(password, salt, PBKDF2_ITERATIONS, 32));
+std::string hashHex(const std::string& password, const crypto::Bytes& salt, std::uint32_t iterations = PBKDF2_ITERATIONS) {
+    return crypto::toHex(crypto::pbkdf2HmacSha256(password, salt, iterations, 32));
+}
+
+// What a login compares against: read under the lock, used outside it.
+struct StoredHash {
+    crypto::Bytes salt;
+    std::string hash;
+    std::uint32_t iterations = PBKDF2_LEGACY_ITERATIONS;
+};
+
+// nullopt for a malformed entry or a role: those never authenticate.
+std::optional<StoredHash> storedHash(const nlohmann::ordered_json& user) {
+    try {
+        StoredHash stored;
+        stored.hash = user.at("hash").get<std::string>();
+        stored.salt = crypto::fromHex(user.at("salt").get<std::string>());
+        auto iterations = user.find("iterations");
+        if (iterations != user.end()) {
+            if (!iterations->is_number_integer()) return std::nullopt;
+            const std::int64_t wide = iterations->get<std::int64_t>();
+            if (wide < 1 || wide > PBKDF2_MAX_ITERATIONS) return std::nullopt;
+            stored.iterations = static_cast<std::uint32_t>(wide);
+        }
+        return stored;
+    } catch (const nlohmann::json::exception&) {
+        return std::nullopt;
+    } catch (const StorageError&) {  // the salt is not hex
+        return std::nullopt;
+    }
 }
 
 // The table-wide privileges stored under `field` ("grants" or "grant_option") for db.table.
@@ -203,7 +231,7 @@ std::vector<std::string> UserStore::names() const {
 void UserStore::create(const std::string& name, const std::string& password) {
     if (exists(name)) throw ExecutionError("User '" + name + "' pehle se hai");
     if (password.empty()) throw ExecutionError("User '" + name + "' ka password khali nahi ho sakta");
-    // the slow part (100,000 iterations) runs without the lock
+    // the slow part (the PBKDF2 iterations) runs without the lock
     crypto::Bytes salt = sys::randomBytes(16);
     std::string hash = hashHex(password, salt);
     std::lock_guard<std::mutex> guard(mutex_);
@@ -211,6 +239,7 @@ void UserStore::create(const std::string& name, const std::string& password) {
     json user = json::object();
     user["salt"] = crypto::toHex(salt);
     user["hash"] = hash;
+    user["iterations"] = PBKDF2_ITERATIONS;
     user["grants"] = json::object();
     users_[name] = std::move(user);
     try {
@@ -227,26 +256,39 @@ void UserStore::drop(const std::string& name) {
     mutateAndSave([&] { users_.erase(name); });
 }
 
-bool UserStore::verify(const std::string& name, const std::string& password) const {
-    std::string saltHex, expected;
+bool UserStore::verify(const std::string& name, const std::string& password) {
+    std::optional<StoredHash> stored;
     {
         std::lock_guard<std::mutex> guard(mutex_);
         auto it = users_.find(name);
-        if (it == users_.end()) return false;
-        try {
-            saltHex = (*it).at("salt").get<std::string>();
-            expected = (*it).at("hash").get<std::string>();
-        } catch (const nlohmann::json::exception&) {
-            return false;  // a malformed entry never authenticates
-        }
+        if (it != users_.end() && it->is_object()) stored = storedHash(*it);
     }
-    crypto::Bytes salt;
-    try {
-        salt = crypto::fromHex(saltHex);
-    } catch (const StorageError&) {
+    if (!stored) {  // no such login: do the same work, so timing does not tell which names exist
+        static const crypto::Bytes dummySalt(16, 0);
+        hashHex(password, dummySalt);
         return false;
     }
-    return crypto::constantTimeEquals(hashHex(password, salt), expected);
+    if (!crypto::constantTimeEquals(hashHex(password, stored->salt, stored->iterations), stored->hash)) return false;
+    if (stored->iterations < PBKDF2_ITERATIONS) {
+        // The one moment the password is at hand: bring the account up to today's work factor. The login has already
+        // succeeded, so a failure here (read-only folder, ...) only leaves the old hash in place for next time.
+        crypto::Bytes salt = sys::randomBytes(16);
+        std::string upgraded = hashHex(password, salt);
+        std::lock_guard<std::mutex> guard(mutex_);
+        auto it = users_.find(name);
+        // a concurrent DROP or another login's upgrade wins: only the entry just verified is replaced
+        if (it != users_.end() && it->is_object() && it->value("hash", std::string()) == stored->hash) {
+            try {
+                mutateAndSave([&] {
+                    (*it)["salt"] = crypto::toHex(salt);
+                    (*it)["hash"] = upgraded;
+                    (*it)["iterations"] = PBKDF2_ITERATIONS;
+                });
+            } catch (const MeraDBError&) {
+            }
+        }
+    }
+    return true;
 }
 
 void UserStore::grant(const std::string& name, const std::string& db, const std::string& table,
