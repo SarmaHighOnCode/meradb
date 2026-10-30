@@ -181,6 +181,7 @@ std::string padded(int n, const char* format) {
 
 std::string dateFormat(const DateTime& dt, const std::string& fmt) {
     int weekday = (dt.date.ordinal + 6) % 7;  // Monday == 0
+    const int hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
     std::string out;
     for (size_t i = 0; i < fmt.size(); ++i) {
         if (fmt[i] != '%' || i + 1 >= fmt.size()) {
@@ -196,7 +197,14 @@ std::string dateFormat(const DateTime& dt, const std::string& fmt) {
             case 'e': out += std::to_string(dt.day); break;
             case 'H': out += padded(dt.hour, "%02d"); break;
             case 'i': out += padded(dt.minute, "%02d"); break;
-            case 's': out += padded(dt.second, "%02d"); break;
+            case 's': case 'S': out += padded(dt.second, "%02d"); break;
+            case 'c': out += std::to_string(dt.month); break;
+            case 'k': out += std::to_string(dt.hour); break;
+            case 'h': case 'I': out += padded(hour12, "%02d"); break;
+            case 'l': out += std::to_string(hour12); break;
+            case 'p': out += dt.hour < 12 ? "AM" : "PM"; break;
+            case 'T': out += padded(dt.hour, "%02d") + ":" + padded(dt.minute, "%02d") + ":" + padded(dt.second, "%02d"); break;
+            case 'r': out += padded(hour12, "%02d") + ":" + padded(dt.minute, "%02d") + ":" + padded(dt.second, "%02d") + (dt.hour < 12 ? " AM" : " PM"); break;
             case 'M': out += kMonthNames[dt.month - 1]; break;
             case 'b': out += std::string(kMonthNames[dt.month - 1]).substr(0, 3); break;
             case 'W': out += kWeekdayNames[weekday]; break;

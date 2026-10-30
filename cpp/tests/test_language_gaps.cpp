@@ -46,3 +46,11 @@ TEST_CASE("Date functions read the whole text, not its first ten characters", "[
     REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-01-01 10:20', '%H:%i');") == "10:20");
     REQUIRE(q(e, "DIKHAO YEAR('2024-01-01T10:20:30'), DATEDIFF('2024-01-15 23:00:00', '2024-01-14 01:00:00');") == "2024|1");
 }
+
+TEST_CASE("DATE_FORMAT knows the MySQL time specifiers", "[gaps][date]") {
+    TempDir dir;
+    Engine e(dir.str());
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-03-05 13:02:09', '%S %T %r %h %I %l %k %c %p %q');") ==
+            "09 13:02:09 01:02:09 PM 01 01 1 13 3 PM q");
+    REQUIRE(q(e, "DIKHAO DATE_FORMAT('2024-03-05 00:30:00', '%h %l %p');") == "12 12 AM");
+}
