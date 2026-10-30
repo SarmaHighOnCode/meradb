@@ -294,9 +294,9 @@ void Session::runText(const std::string& raw) {
 
 void Session::runEditorText() { runText(editor_.runnableText()); }
 
-void Session::showResult(Result result) {
-    table_ = makeTable(result);
-    lastResult_ = std::move(result);
+void Session::selectResultSet(int index) {
+    if (index < 0 || index >= static_cast<int>(resultSets_.size()) || index == currentSet_) return;
+    currentSet_ = index;
     ++resultVersion_;
 }
 
@@ -378,28 +378,45 @@ void Session::applySnapshot(const Snapshot& s) {
 }
 
 void Session::applyRun(RunOutcome out) {
+    runErrors_.clear();
     if (out.notice) {
         log_.addText(out.notice->first, out.notice->second);
+        if (out.notice->first == LogKind::Error) runErrors_.push_back({0, out.notice->second});
         return;
     }
     if (out.failed) {
         log_.addText(LogKind::Error, out.failure);
         log_.addText(LogKind::Dim, "Ctrl+O se dobara connect karo.");
+        runErrors_.push_back({0, out.failure});
         return;
     }
-    Result* shown = nullptr;
-    for (Result& r : out.results) {
+    std::vector<ResultSet> sets;
+    const bool alone = out.results.size() == 1;
+    for (std::size_t i = 0; i < out.results.size(); ++i) {
+        Result& r = out.results[i];
+        const int statement = static_cast<int>(i) + 1;
         if (!r.error.empty()) {
             log_.addText(LogKind::Error, r.error);
+            runErrors_.push_back({alone ? 0 : statement, r.error});
             continue;
         }
-        if (!r.columns.empty()) shown = &r;
         if (!r.message.empty()) log_.addText(LogKind::Message, r.message);
+        if (!r.columns.empty()) {
+            ResultSet set;
+            set.statement = statement;
+            set.table = makeTable(r);
+            set.result = std::move(r);
+            sets.push_back(std::move(set));
+        }
     }
     char buf[64];
     std::snprintf(buf, sizeof buf, "(%.1f ms)", out.ms);
     log_.addText(LogKind::Dim, buf);
-    if (shown != nullptr) showResult(std::move(*shown));
+    if (!sets.empty()) {   // a run without a table leaves the last one on screen
+        resultSets_ = std::move(sets);
+        currentSet_ = static_cast<int>(resultSets_.size()) - 1;
+        ++resultVersion_;
+    }
     const std::string dbBefore = savedDb_;
     if (out.snapshot) applySnapshot(*out.snapshot);
     // a script that moved to another database was saved under the old one, but it was just run: Pichli still reaches it
@@ -478,13 +495,14 @@ std::string Session::historyLabel() const {
 }
 
 void Session::exportCsv() {
-    if (lastResult_ == std::nullopt) {
+    const Result* shown = lastResult();
+    if (shown == nullptr) {
         log_.addText(LogKind::Warn, "Pehle koi DIKHAO query chalao, phir Ctrl+S");
         return;
     }
-    const ExportOutcome outcome = meradb::wb::exportCsv(*lastResult_, options_.exportBaseDir, options_.stamp());
+    const ExportOutcome outcome = meradb::wb::exportCsv(*shown, options_.exportBaseDir, options_.stamp());
     if (outcome.ok) {
-        const std::string message = std::to_string(lastResult_->rows.size()) + " row(s) CSV mein save: " + outcome.path;
+        const std::string message = std::to_string(shown->rows.size()) + " row(s) CSV mein save: " + outcome.path;
         log_.addText(LogKind::Message, message);
         lastExport_.serial += 1;
         lastExport_.message = message;

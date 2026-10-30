@@ -1,5 +1,6 @@
 // cpp/tests/test_wb_querystore.cpp -- the saved queries (QueryStore and Session::savedQueries)
 #include "wb_test_util.h"
+#include "test_util.h"
 #include <catch2/catch_test_macros.hpp>
 #include "meradb/wb_querystore.h"
 #include "meradb/wb_session.h"
@@ -485,6 +486,64 @@ TEST_CASE("Queries saaf karo empties Pichli too and gives the script back", "[wb
     CHECK(rig.text() == "-- script");
     rig.s().persistEditor(true);
     CHECK(rig.savedScript() == "-- script");
+}
+
+// ---- every table of a script ----
+
+TEST_CASE("Every table of a script is kept, the last one is shown, and any of them can be chosen", "[wb][resultsets]") {
+    meradb_test::TempDir tmp;
+    ManualPoster poster;
+    auto owned = std::make_unique<FakeBackend>();
+    owned->replies["s;"] = {wbtest::tableResult({"a"}, {{meradb::Value(int64_t(1))}}), meradb::Result{},
+                            wbtest::tableResult({"b"}, {{meradb::Value(int64_t(2))}, {meradb::Value(int64_t(3))}})};
+    owned->replies["s;"][1].error = "galti";
+    owned->replies["m;"] = {meradb::Result{}};
+    owned->replies["m;"][0].message = "ho gaya";
+    SessionOptions opts;
+    opts.exportBaseDir = tmp.str();
+    Session s(std::move(owned), std::move(opts), poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(s.table() == nullptr);
+    s.runText("s;");
+    REQUIRE(poster.pumpIdle(s));
+    REQUIRE(s.resultSets().size() == 2);
+    CHECK(s.resultSets()[0].statement == 1);
+    CHECK(s.resultSets()[1].statement == 3);
+    CHECK(s.table()->columns == std::vector<std::string>{"b"});   // like before: the last table
+    REQUIRE(s.lastRunErrors().size() == 1);
+    CHECK(s.lastRunErrors()[0].statement == 2);
+    const int version = s.resultVersion();
+    s.selectResultSet(0);
+    CHECK(s.resultVersion() == version + 1);
+    CHECK(s.table()->columns == std::vector<std::string>{"a"});
+    s.exportCsv();                                                // the CSV is the table on screen
+    CHECK(s.lastExport().message.rfind("1 row(s)", 0) == 0);
+    s.selectResultSet(0);
+    s.selectResultSet(7);
+    CHECK(s.resultVersion() == version + 1);                      // nothing changed
+    s.runText("m;");                                              // no table: the tables stay, the failure is gone
+    REQUIRE(poster.pumpIdle(s));
+    CHECK(s.resultSets().size() == 2);
+    CHECK(s.lastRunErrors().empty());
+}
+
+TEST_CASE("A syntax error or a lost connection is one failure without a statement number", "[wb][resultsets]") {
+    ManualPoster poster;
+    auto owned = std::make_unique<FakeBackend>();
+    FakeBackend* fake = owned.get();
+    owned->replies["bad;"] = {meradb::Result{}};
+    owned->replies["bad;"][0].error = "syntax";
+    Session s(std::move(owned), SessionOptions{}, poster.poster());
+    REQUIRE(poster.pumpIdle(s));
+    s.runText("bad;");
+    REQUIRE(poster.pumpIdle(s));
+    REQUIRE(s.lastRunErrors().size() == 1);
+    CHECK(s.lastRunErrors()[0].statement == 0);
+    fake->dropped = true;
+    s.runText("x;");
+    REQUIRE(poster.pumpIdle(s));
+    REQUIRE(s.lastRunErrors().size() == 1);
+    CHECK(s.lastRunErrors()[0].text.find("toot gaya") != std::string::npos);
 }
 
 // ---- Connect: the kept work follows the connection ----

@@ -718,6 +718,8 @@ void GuiUi::drawResults(const Rect& rect) {
 void GuiUi::drawResultsTab() {
     const Theme& th = theme();
     ImGui::Spacing();
+    drawRunErrors();
+    drawResultSetButtons();
     const wb::ResultTable* table = session_.table();
     if (table == nullptr) {
         ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.faint));
@@ -726,6 +728,78 @@ void GuiUi::drawResultsTab() {
         return;
     }
     grid_.draw(*table, session_.resultVersion(), th, fonts_, scale_);
+}
+
+// What failed in the last run, above the table: a table on screen must not make a failure look like a success.
+void GuiUi::drawRunErrors() {
+    const std::vector<wb::Session::RunError>& errors = session_.lastRunErrors();
+    runErrorsShown_ = !errors.empty();
+    if (errors.empty()) return;
+    const Theme& th = theme();
+    const wb::Session::RunError& first = errors.front();
+    std::string text = first.text.substr(0, first.text.find_first_of("\r\n"));
+    if (first.statement > 0) text = "Query " + std::to_string(first.statement) + ": " + text;
+    if (errors.size() > 1) text += "  (+" + std::to_string(errors.size() - 1) + " aur)";
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const float buttonW = ImGui::CalcTextSize("Log dekho").x + px(20.0f);
+    const bool open = ImGui::Button("Log dekho", ImVec2(buttonW, 0.0f));
+    ImGui::PopFont();
+    if (open) requestTab_ = Tab::Log;
+    ImGui::SameLine();
+    const float maxW = std::max(px(60.0f), ImGui::GetContentRegionAvail().x);
+    const std::string shown = ellipsizeMiddle(text, maxW, [](const std::string& s) { return ImGui::CalcTextSize(s.c_str()).x; });
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.error));
+    ImGui::TextUnformatted(shown.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", first.text.c_str());
+    ImGui::Spacing();
+}
+
+// A script with more than one DIKHAO: one button per table, numbered by its place in the script.
+void GuiUi::drawResultSetButtons() {
+    setButtons_.clear();
+    const std::vector<wb::Session::ResultSet>& sets = session_.resultSets();
+    if (sets.size() < 2) return;
+    const Theme& th = theme();
+    std::vector<std::string> labels;
+    float total = 0.0f;
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    for (const wb::Session::ResultSet& set : sets) {
+        labels.push_back("Query " + std::to_string(set.statement) + " (" + std::to_string(set.result.rows.size()) + ")");
+        total += ImGui::CalcTextSize(labels.back().c_str()).x + px(20.0f) + gap;
+    }
+    const float buttonH = ImGui::GetFrameHeight();
+    const float height = buttonH + (total > ImGui::GetContentRegionAvail().x ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+    ImGui::PopFont();
+    ImGui::BeginChild("##resultsets", ImVec2(0.0f, height), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PushFont(fonts_.uiMedium, kUiFontSize);
+    const int version = session_.resultVersion();
+    int chosen = -1;
+    for (std::size_t i = 0; i < sets.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const bool current = static_cast<int>(i) == session_.currentResultSet();
+        if (current) {
+            ImGui::PushStyleColor(ImGuiCol_Button, toVec4(th.primary));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, toVec4(th.primary, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, toVec4(th.primary, 0.7f));
+            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(th.primaryText));
+        }
+        if (ImGui::Button(labels[i].c_str(), ImVec2(ImGui::CalcTextSize(labels[i].c_str()).x + px(20.0f), buttonH))) chosen = static_cast<int>(i);
+        if (current) {
+            ImGui::PopStyleColor(4);
+            if (setScrollVersion_ != version) ImGui::SetScrollHereX(1.0f);   // a new run shows its last table: its button too
+        }
+        setButtons_.push_back(rectCentre());
+        ImGui::PopID();
+        if (i + 1 < sets.size()) ImGui::SameLine();
+    }
+    setScrollVersion_ = version;
+    ImGui::PopFont();
+    ImGui::EndChild();
+    if (chosen >= 0) session_.selectResultSet(chosen);
+    ImGui::Spacing();
 }
 
 void GuiUi::rebuildLogCache() {

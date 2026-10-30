@@ -87,9 +87,24 @@ public:
     TextBuffer& editor() { return editor_; }
     const LogBuffer& log() const { return log_; }
     TreeModel& tree() { return tree_; }
-    const ResultTable* table() const { return table_ ? &*table_ : nullptr; }   // null before the first result
-    const Result* lastResult() const { return lastResult_ ? &*lastResult_ : nullptr; }
-    int resultVersion() const { return resultVersion_; }                       // bumps on every new table
+    // One table of the last run that made any. A script's every DIKHAO is kept; the last one is shown first.
+    struct ResultSet {
+        int statement = 0;    // 1-based place of its statement in the script
+        Result result;
+        ResultTable table;
+    };
+    const std::vector<ResultSet>& resultSets() const { return resultSets_; }
+    int currentResultSet() const { return currentSet_; }
+    void selectResultSet(int index);                 // shows that table (the grid and the CSV follow); out of range: nothing
+    const ResultTable* table() const { return resultSets_.empty() ? nullptr : &resultSets_[static_cast<std::size_t>(currentSet_)].table; }   // null before the first result
+    const Result* lastResult() const { return resultSets_.empty() ? nullptr : &resultSets_[static_cast<std::size_t>(currentSet_)].result; }
+    int resultVersion() const { return resultVersion_; }                       // bumps whenever another table is shown
+    // What failed in the last run, so that a table on screen cannot hide it.
+    struct RunError {
+        int statement = 0;    // 1-based place in the script; 0 when the run is one failure (bad syntax, a lost connection)
+        std::string text;
+    };
+    const std::vector<RunError>& lastRunErrors() const { return runErrors_; }
     const History& history() const { return history_; }
     std::string historyLabel() const;                // "3/7" while Pichli / Agli is on an entry, else ""
     // The queries run so far in the current database, oldest first, kept in <data>/.history/<db>.jsonl (local mode
@@ -149,7 +164,6 @@ private:
     void applyRun(RunOutcome out);
     void applyConnect(const ConnectOutcome& out);
     void applySnapshot(const Snapshot& snapshot);
-    void showResult(Result result);
 
     // Worker thread: post a closure to the UI through the poster, guarded by alive_ (see the class comment).
     void postUi(std::function<void()> fn);
@@ -164,8 +178,9 @@ private:
     TextBuffer editor_;
     LogBuffer log_;
     TreeModel tree_;
-    std::optional<ResultTable> table_;
-    std::optional<Result> lastResult_;
+    std::vector<ResultSet> resultSets_;
+    int currentSet_ = 0;
+    std::vector<RunError> runErrors_;
     History history_;
     QueryStore store_{""};
     std::vector<SavedQuery> saved_;

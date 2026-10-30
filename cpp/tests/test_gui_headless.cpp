@@ -1337,6 +1337,36 @@ TEST_CASE("gui tabs: a run with a table and an error shows Results and marks Log
     CHECK_FALSE(s.ui.logErrorDot());
 }
 
+TEST_CASE("gui results: a script's every table can be opened, and the grid and the CSV follow", "[gui][headless][resultsets]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); BANAO TABLE u (b ANK, c ANK); DAALO MEIN t MAAN (1); DAALO MEIN u MAAN (2, 3), (4, 5); "
+                  "DIKHAO * SE t; DIKHAO * SE u;"));
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    REQUIRE(s.rig.session->resultSets().size() == 2);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>({"b", "c"}));
+    CHECK(s.ui.grid().cellHits().size() == 4);
+    const ImVec2 first = s.ui.resultSetButtonCentre(0);
+    REQUIRE(first.x > 0.0f);
+    s.click(first);
+    s.frames(3);
+    CHECK(s.rig.session->table()->columns == std::vector<std::string>({"a"}));
+    CHECK(s.ui.grid().cellHits().size() == 1);
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    REQUIRE(s.run("DIKHAO * SE u;"));                    // one table again: no buttons
+    CHECK(s.ui.resultSetButtonCentre(0).x < 0.0f);
+}
+
+TEST_CASE("gui results: a failure next to a table is named above it and leads to the Log", "[gui][headless][resultsets]") {
+    Screen s;
+    REQUIRE(s.run("BANAO TABLE t (a ANK); DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    CHECK(s.ui.tab() == GuiUi::Tab::Results);
+    CHECK(s.ui.runErrorsShown());
+    REQUIRE(s.rig.session->lastRunErrors().size() == 1);
+    CHECK(s.rig.session->lastRunErrors()[0].statement == 3);
+    REQUIRE(s.run("DIKHAO * SE t;"));
+    CHECK_FALSE(s.ui.runErrorsShown());
+}
+
 // Dear ImGui warns (a red tooltip, and its debug state) when two items under the mouse share an ID. This sweeps the
 // mouse over the whole window in every state and fails on the first such conflict.
 namespace {
@@ -1362,7 +1392,9 @@ TEST_CASE("gui ids: no two widgets share an ID under the mouse in any panel, tab
     const float w = ImGui::GetIO().DisplaySize.x, h = ImGui::GetIO().DisplaySize.y;
     CHECK(idConflicts(s, w, h) == 0);   // the empty layout
 
-    REQUIRE(s.run("BANAO TABLE t (a ANK, naam TEXT); DAALO MEIN t MAAN (1,'x'),(2,'y'),(3,'z'); SHURU; DIKHAO * SE t; DIKHAO * SE nahi_hai;"));
+    REQUIRE(s.run("BANAO TABLE t (a ANK, naam TEXT); DAALO MEIN t MAAN (1,'x'),(2,'y'),(3,'z'); SHURU; DIKHAO * SE t; DIKHAO a SE t; DIKHAO * SE nahi_hai;"));
+    REQUIRE(s.ui.resultSetButtonCentre(1).x > 0.0f);     // the result set buttons and the failure line are on screen too
+    REQUIRE(s.ui.runErrorsShown());
     s.ui.grid().select(1, 1);
     s.ui.schemaTree().setFocused(true);
     s.frames(3);

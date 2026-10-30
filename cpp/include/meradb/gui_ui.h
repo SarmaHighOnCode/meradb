@@ -84,6 +84,9 @@ public:
     // Previous or Next. Clicking one gives the keyboard back to the editor.
     ImVec2 toolbarButtonCentre(Action action) const;
     bool transactionBadgeShown() const { return badgeShown_; }   // the TRANSACTION badge was drawn in the last frame
+    // Where the last frame drew the button of a script's result set; (-1, -1) when it is not on screen.
+    ImVec2 resultSetButtonCentre(std::size_t index) const { return index < setButtons_.size() ? setButtons_[index] : ImVec2(-1, -1); }
+    bool runErrorsShown() const { return runErrorsShown_; }      // the Results tab named a failure of the last run
 
     // Before ImGui::NewFrame(): applies the theme and the monitor's content scale if either changed.
     void prepare(float scale);
@@ -108,6 +111,8 @@ private:
     void drawQueriesTab();
     void drawHome(const ImVec2& display);
     void drawResultsTab();
+    void drawRunErrors();
+    void drawResultSetButtons();
     void drawTabBarExtras(float tabY, float rightX);
     void rebuildLogCache();
     bool overlayOpen() const;
@@ -149,6 +154,9 @@ private:
     ImVec2 toolbar_[4] = {ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1), ImVec2(-1, -1)};
     void focusEditor();
     bool badgeShown_ = false;
+    std::vector<ImVec2> setButtons_;
+    int setScrollVersion_ = -1;
+    bool runErrorsShown_ = false;
     void drawToast(const ImVec2& display, float statusHeight);
     void drawQuitOverlay(const ImVec2& display);
     bool quitOverlayShown_ = false;
