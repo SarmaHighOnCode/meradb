@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace meradb {
 using namespace ast;
