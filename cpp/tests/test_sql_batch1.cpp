@@ -189,7 +189,11 @@ TEST_CASE("date functions", "[sql][functions]") {
     REQUIRE(now[13] == ':');
     std::time_t t = std::time(nullptr);
     std::tm local{};
+#ifdef _WIN32
     localtime_s(&local, &t);
+#else
+    localtime_r(&t, &local);
+#endif
     REQUIRE(std::stoi(now.substr(0, 4)) >= local.tm_year + 1900 - 1);
     REQUIRE(one(e, "CURDATE()").size() == 10);
     REQUIRE(one(e, "CURRENT_DATE") == one(e, "CURDATE()"));

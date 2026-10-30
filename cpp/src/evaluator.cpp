@@ -393,7 +393,7 @@ void columnRefNodesImpl(const Expr* expr, std::vector<const ColumnRef*>& out) {
     if (expr == nullptr) return;
     requireStack();
     if (auto* ref = dynamic_cast<const ColumnRef*>(expr)) {
-        out.push_back(ref);
+        if (ref->name.empty() || ref->name[0] != '@') out.push_back(ref);  // @x is a session variable, not a column
     } else if (auto* b = dynamic_cast<const BinaryOp*>(expr)) {
         columnRefNodesImpl(b->left.get(), out);
         columnRefNodesImpl(b->right.get(), out);

@@ -770,6 +770,17 @@ void Engine::checkPrivileges(const ast::Statement& stmt) {
     // Open to every session: choosing the database (grants are per database, so nothing is exposed), SET ROLE, and
     // SHOW GRANTS for yourself.
     if (dynamic_cast<const UseDatabase*>(&stmt) || dynamic_cast<const SetRole*>(&stmt)) return;
+    // Session variables and prepared statements are open too: EXECUTE re-enters executeStatement, so the statement it
+    // runs is checked like any other. SET autocommit stays a transaction command (superuser only).
+    if (dynamic_cast<const ShowVariables*>(&stmt) || dynamic_cast<const Prepare*>(&stmt) ||
+        dynamic_cast<const ExecutePrepared*>(&stmt) || dynamic_cast<const Deallocate*>(&stmt))
+        return;
+    if (auto* set = dynamic_cast<const SetVariable*>(&stmt)) {
+        bool onlyUserVariables = true;
+        for (const auto& assignment : set->assignments)
+            if (assignment.first.empty() || assignment.first[0] != '@') onlyUserVariables = false;
+        if (onlyUserVariables) return;
+    }
     if (auto* shown = dynamic_cast<const ShowGrants*>(&stmt)) {
         if (!shown->user.has_value() || *shown->user == *user) return;
     }

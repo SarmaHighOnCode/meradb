@@ -1518,6 +1518,98 @@ HATAO TABLE y_log;
 HATAO ROLE y_auditor;
 
 -- ============================================================================
+-- TRANSACTIONS, TRIGGER RULES, PROCEDURES, FUNCTIONS, PREPARE
+-- (scratch objects named z_*, dropped again at the end of this section)
+-- ============================================================================
+BANAO TABLE z_acct (id INT MUKHYA KUNJI, naam TEXT, paisa INT);
+BANAO TABLE z_log (ev TEXT);
+DAALO MEIN z_acct MAAN (1, 'asha', 1000), (2, 'ravi', 500);
+
+-- ---- autocommit and SAVEPOINT ----
+-- MySQL: START TRANSACTION;   SAVEPOINT s1;   ROLLBACK TO SAVEPOINT s1;   COMMIT;
+SHURU;
+BADLO z_acct RAKHO paisa = paisa - 100 JAHAN id = 1;
+SAVEPOINT s1;
+BADLO z_acct RAKHO paisa = 0 JAHAN id = 2;
+ROLLBACK TO s1;
+RELEASE SAVEPOINT s1;
+PAKKA;
+DIKHAO id, paisa SE z_acct KRAM id;
+
+-- MySQL: SET autocommit = 0;   INSERT ...;   ROLLBACK;   SET autocommit = 1;
+SET autocommit = 0;
+DAALO MEIN z_acct MAAN (3, 'temp', 1);
+WAPAS;
+SET autocommit = 1;
+DIKHAO GINO(*) SE z_acct;
+
+-- ---- triggers: SIGNAL and changing NEW in a BEFORE trigger ----
+-- MySQL: CREATE TRIGGER z_neg BEFORE UPDATE ON z_acct FOR EACH ROW BEGIN
+--          IF NEW.paisa < 0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'paisa negative nahi ho sakta'; END IF; END;
+BANAO TRIGGER z_neg PEHLE BADLO PAR z_acct SHURU
+    IF NAYA.paisa < 0 THEN SIGNAL 'paisa negative nahi ho sakta'; END IF;
+KHATAM;
+
+-- MySQL: CREATE TRIGGER z_clamp BEFORE INSERT ON z_acct FOR EACH ROW BEGIN
+--          IF NEW.paisa > 5000 THEN SET NEW.paisa = 5000; END IF; END;
+BANAO TRIGGER z_clamp PEHLE DAALO PAR z_acct SHURU
+    IF NAYA.paisa > 5000 THEN SET NAYA.paisa = 5000; END IF;
+KHATAM;
+
+-- MySQL: CREATE TRIGGER z_seen AFTER INSERT ON z_acct FOR EACH ROW INSERT INTO z_log VALUES ('insert');
+BANAO TRIGGER z_seen BAAD DAALO PAR z_acct SHURU DAALO MEIN z_log MAAN ('insert'); KHATAM;
+
+DAALO MEIN z_acct MAAN (4, 'dhani', 90000);
+DIKHAO id, paisa SE z_acct JAHAN id = 4;
+
+-- EXPECTED ERROR: the SIGNAL stops the UPDATE and nothing changes
+-- MySQL: UPDATE z_acct SET paisa = -5 WHERE id = 1;   (ERROR 1644: paisa negative nahi ho sakta)
+BADLO z_acct RAKHO paisa = -5 JAHAN id = 1;
+DIKHAO paisa SE z_acct JAHAN id = 1;
+
+-- ---- stored procedure with variables, a loop and an OUT parameter ----
+-- MySQL: CREATE PROCEDURE z_jod(IN n INT, OUT total INT) BEGIN DECLARE i INT DEFAULT 1; SET total = 0;
+--          WHILE i <= n DO SET total = total + i; SET i = i + 1; END WHILE; END;
+BANAO PROCEDURE z_jod (IN n INT, OUT total INT) SHURU
+    DECLARE i INT DEFAULT 1;
+    SET total = 0;
+    WHILE i <= n DO
+        SET total = total + i;
+        SET i = i + 1;
+    END WHILE;
+KHATAM;
+
+-- MySQL: CALL z_jod(10, @t);   SELECT @t;
+CHALAO z_jod(10, @t);
+DIKHAO @t;
+
+-- ---- stored function ----
+-- MySQL: CREATE FUNCTION z_bonus(sal INT, pct INT) RETURNS INT DETERMINISTIC RETURN sal * pct / 100;
+BANAO FUNCTION z_bonus (sal INT, pct INT) RETURNS INT SHURU RETURN sal * pct / 100; KHATAM;
+
+-- MySQL: SELECT naam, z_bonus(paisa, 10) FROM z_acct ORDER BY id;
+DIKHAO naam, z_bonus(paisa, 10) SE z_acct KRAM id;
+
+-- MySQL: SHOW FUNCTION STATUS WHERE Db = 'palantir';
+SHOW FUNCTION STATUS;
+
+-- ---- PREPARE / EXECUTE / DEALLOCATE ----
+-- MySQL: PREPARE p FROM 'SELECT naam FROM z_acct WHERE id = ?';   SET @id = 2;   EXECUTE p USING @id;   DEALLOCATE PREPARE p;
+PREPARE z_p FROM 'DIKHAO naam SE z_acct JAHAN id = ?';
+SET @id = 2;
+EXECUTE z_p USING @id;
+DEALLOCATE PREPARE z_p;
+
+-- ---- Clean up the scratch objects of this section ----
+HATAO FUNCTION z_bonus;
+HATAO PROCEDURE z_jod;
+HATAO TRIGGER z_seen;
+HATAO TRIGGER z_clamp;
+HATAO TRIGGER z_neg;
+HATAO TABLE z_log;
+HATAO TABLE z_acct;
+
+-- ============================================================================
 -- FINAL CHECK : what is saved in the palantir database
 -- ============================================================================
 

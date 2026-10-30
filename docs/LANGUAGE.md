@@ -461,22 +461,34 @@ KHATAM;
 - Multiple triggers on the same `(timing, event, table)` fire **in the order they were
   created**.
 
-**Honest scope:**
-- A trigger fires **once per affected row**, running a fixed list of stored statements
-  with `NAYA`/`PURANA` substituted in as literal values -- there is no procedural control
-  flow (no loops; `AGAR...KHATAM` inside an ordinary expression is the only "if" available,
-  same as everywhere else in MeraDB).
-- A `PEHLE` (BEFORE) trigger's error **aborts the whole outer `DAALO`/`BADLO`/`MITAO`** --
-  a real and useful way to veto a write from a trigger.
-- A `BAAD` (AFTER) trigger's error also propagates up to the caller, but it does **not**
-  roll back row(s) already written by the same outer statement -- it only prevents
-  anything scheduled after it (in the same batch, or later in the outer statement) from
-  happening. There is no automatic "undo the whole batch" if an AFTER trigger fails.
-- `TAKRAAV PAR BADLO` (upsert): a row that collides with an existing one and gets updated
-  fires `BADLO` triggers (it really is an update); a row that gets freshly inserted fires
-  `DAALO` triggers.
-- `SAMJHAO` (EXPLAIN) is trigger-unaware: triggers are a side effect of *running* DML, not
-  something a query plan involves.
+**Procedural bodies.** A trigger body may use everything a procedure body can (see
+[Stored procedures](#stored-procedures)): `DECLARE`, `SET`, `IF`, loops, `SIGNAL`.
+
+```sql
+BANAO TRIGGER neg PEHLE DAALO PAR t SHURU
+    IF NAYA.v < 0 THEN SIGNAL 'v negative nahi ho sakta'; END IF;      -- AGAR ... TAB ... KHATAM AGAR also works
+KHATAM;
+
+BANAO TRIGGER clamp PEHLE DAALO PAR t SHURU
+    IF NAYA.v > 100 THEN RAKHO NAYA.v = 100; END IF;                   -- SET NAYA.v = 100 is the same
+KHATAM;
+```
+
+- **`SIGNAL 'message'`** stops the statement with that message. Everything the statement did
+  is undone, including rows already written and what earlier `BAAD` triggers logged. (The
+  data change is undone; so is the rest of a multi-row `DAALO`.)
+- **`RAKHO NAYA.col = expr`** in a `PEHLE DAALO`/`PEHLE BADLO` trigger changes the row about
+  to be written. The new value is type-checked and checked for `NOT NULL`/unique like any
+  other. `PURANA` is read-only; `BAAD` triggers cannot change `NAYA`.
+- Several triggers on the same `(timing, event, table)` fire in creation order.
+- `BANAO TRIGGER IF NOT EXISTS name ...` does nothing if the trigger exists;
+  `HATAO TRIGGER IF EXISTS name` does nothing if it does not.
+- A trigger fires **once per affected row**.
+- A `PEHLE` (BEFORE) trigger's error aborts the whole outer `DAALO`/`BADLO`/`MITAO`.
+- `TAKRAAV PAR BADLO` (upsert): a row that collides and gets updated fires `BADLO` triggers;
+  a row freshly inserted fires `DAALO` triggers.
+- `SAMJHAO` (EXPLAIN) is trigger-unaware.
+- A trigger runs with the invoking session's own privileges.
 
 ## Stored procedures
 
@@ -497,197 +509,86 @@ instead of a confusing one deep inside the first statement that uses the wrong v
 `CHALAO`'s arguments must be constant expressions (literals, arithmetic on literals, ...):
 there is no outer row to reference a column against at a bare `CHALAO` call site.
 
-**Honest scope:**
-- No loops, no local variables beyond the parameters themselves, and **no return value** --
-  a procedure *does* something (a sequence of writes/reads); it doesn't compute and hand
-  back a value the way a query does.
-- **Name-collision caveat:** inside the body, a bare (unqualified) column reference that
-  happens to share its name with a parameter is **always** treated as the parameter -- there
-  is no separate namespace. Prefixing every parameter name with `p_` (as in the example
-  above) sidesteps this entirely; every example/doc in this project follows that
-  convention.
-- Like triggers, a procedure runs with the **invoking session's own privileges**.
+### Procedure bodies
 
-## DML: Data Manipulation Language
+A body can be a plain list of statements (as above) or a small program. Keywords come in
+English and Hinglish forms (`AGAR`/`IF`, `TAB`/`THEN`, `WARNA`/`ELSE`, `JAB TAK`/`WHILE`).
 
 ```sql
--- INSERT (column list optional; missing columns become KHALI)
-DAALO MEIN students (id, naam, umar) MAAN (1, 'Ravi', 20), (2, 'Priya', 19);
-DAALO MEIN students MAAN (3, 'Aman', 'aman@x.in', 22);
+BANAO PROCEDURE jod (IN n INT, OUT total INT) SHURU
+    DECLARE i INT DEFAULT 1;
+    SET total = 0;
+    WHILE i <= n DO
+        SET total = total + i;
+        SET i = i + 1;
+    END WHILE;
+KHATAM;
 
--- INSERT ... SELECT ("multi-table insert"): rows come from a query instead of MAAN
-DAALO MEIN alumni (id, naam) DIKHAO id, naam SE students JAHAN umar > 25;
-
--- Simplified upsert: TAKRAAV PAR BADLO ("on conflict, update") -- if a row
--- collides with an EXISTING row on any UNIQUE/PRIMARY KEY column (single or
--- composite), that row is UPDATEd instead of rejected. The assignment
--- expressions see the INCOMING (attempted) row's own values, so
--- `naam = naam` means "keep the value I tried to insert".
-DAALO MEIN students (id, naam) MAAN (1, 'Ravi Verma') TAKRAAV PAR BADLO naam = naam;
--- A conflict against ANOTHER ROW IN THE SAME STATEMENT is still a hard error --
--- only conflicts against rows already on disk are rescued this way.
-
--- REPLACE: same grammar as DAALO MEIN (column list, several rows, DIKHAO ...), but a new row
--- that collides on a MUKHYA KUNJI / ANOKHA key first DELETES the row(s) it collides with.
-REPLACE INTO students (id, naam) MAAN (1, 'Ravi K'), (9, 'Neha');     -- BADAL DAALO MEIN is the same
--- "3 row(s) affected (2 daali, 1 purani row(s) replace hui)": a replaced row counts twice, like MySQL.
--- The delete obeys the SANDARBH rules (a child row can block it, ON DELETE CASCADE follows it) and
--- needs the MITAO privilege as well as DAALO. Within one statement a later row replaces an earlier one
--- with the same key. TAKRAAV PAR BADLO cannot be combined with REPLACE.
-
--- SELECT
-DIKHAO * SE students;
-DIKHAO naam, umar + 1 SE students
-    JAHAN umar >= 18 AUR (naam != 'Ravi' YA email HAI NAHI KHALI)
-    KRAM umar ULTA, naam
-    SIRF 10;
-
--- pattern / range / list
-DIKHAO * SE students JAHAN naam JAISA 'R%';          -- % = any characters, _ = exactly one
-DIKHAO * SE students JAHAN umar BEECH 18 AUR 25;     -- inclusive on both ends
-DIKHAO * SE students JAHAN id MEIN (1, 2, 3);
-DIKHAO * SE students JAHAN naam NAHI JAISA '%a%';    -- NAHI works before JAISA, BEECH, MEIN
-
--- aggregates: GINO (COUNT), KUL (SUM), AUSAT (AVG), NYUNTAM (MIN), ADHIKTAM (MAX)
-DIKHAO GINO(*), AUSAT(umar), ADHIKTAM(umar) SE students;
-DIKHAO shehar, GINO(*) SE students
-    SAMOOH shehar                                    -- GROUP BY
-    JINKA GINO(*) > 1                                -- HAVING: filter groups
-    KRAM GINO(*) ULTA;
-DIKHAO ALAG shehar SE students;                      -- DISTINCT
-
--- PEHLA / COALESCE: first non-KHALI argument (any number of arguments)
-DIKHAO naam, PEHLA(umar, 0) SE students;
-
--- CASE WHEN, written AGAR ... TAB ... [AGAR ... TAB ...] [WARNA ...] KHATAM
-DIKHAO naam,
-    AGAR umar >= 60 TAB 'senior'
-    AGAR umar >= 18 TAB 'adult'
-    WARNA 'minor'
-    KHATAM KAHO age_group
-    SE students;
--- a KHALI condition is treated as false (like JAHAN), never raises an error
-
--- Subqueries: scalar (exactly 1 column, 0 or 1 row for this outer row),
--- IN-list (exactly 1 column, any number of rows), correlated or not
-DIKHAO naam SE students JAHAN umar > (DIKHAO AUSAT(umar) SE students);        -- scalar
-DIKHAO naam SE students JAHAN dept_id MEIN (DIKHAO id SE depts JAHAN active); -- IN-list
-DIKHAO s.naam SE students s
-    JAHAN s.umar > (DIKHAO AUSAT(s2.umar) SE students s2 JAHAN s2.dept_id = s.dept_id);  -- correlated:
-    -- s2's subquery references the OUTER row's s.dept_id, so it reruns once per outer row
-
--- KAHO: rename an output column (like SQL's AS). KRAM may refer back to the alias;
--- JAHAN and JINKA cannot -- they run before the output list exists.
-DIKHAO GINO(*) KAHO total, AUSAT(umar) KAHO avg_umar
-    SE students
-    KRAM total ULTA;
-
--- JOINS: give tables a short alias after their name, then use alias.column
-DIKHAO s.naam, c.title
-    SE students s
-    MILAO courses c PAR s.cid = c.id          -- INNER JOIN: only students with a course
-    JAHAN c.title != 'OS';
-DIKHAO s.naam, c.title
-    SE students s
-    BAAYAN MILAO courses c PAR s.cid = c.id;  -- LEFT JOIN: every student; KHALI if no course
-DIKHAO c.* SE students s MILAO courses c PAR s.cid = c.id;   -- all columns of one table
--- A plain `naam` works when only one table has that column; otherwise write s.naam.
-
-DIKHAO s.naam, d.dname
-    SE students s
-    DAHINA MILAO depts d PAR s.dept_id = d.id;   -- RIGHT JOIN: every dept, KHALI if no students
-DIKHAO s.naam, d.dname
-    SE students s
-    DONO MILAO depts d PAR s.dept_id = d.id;     -- FULL OUTER JOIN: unmatched rows from BOTH sides
-DIKHAO naam, dname
-    SE students SAMAAN MILAO depts;              -- NATURAL JOIN: no PAR -- matches every column
-    -- name shared between the two tables (here: dept_id in both); errors if none are shared
-
--- Set operations: SANYUKT (UNION), SAAJHA (INTERSECT), CHHODKAR (EXCEPT/MINUS).
--- All three dedupe (like SQL's bare UNION/INTERSECT/EXCEPT -- no ALL variant).
--- Both sides must have the same number of columns; names don't need to match.
-DIKHAO naam SE students JAHAN dept_id = 1
-SANYUKT
-DIKHAO naam SE teachers JAHAN dept_id = 1;
-
--- paging: SIRF n OFFSET m skips m rows first; the MySQL form SIRF m, n means the same as SIRF n OFFSET m
-DIKHAO * SE students KRAM id SIRF 10 OFFSET 20;
-DIKHAO * SE students KRAM id SIRF 20, 10;
-DIKHAO * SE students KRAM id LIMIT 10 OFFSET 20;      -- LIMIT = SIRF (also LIMIT m, n)
-
--- no SE: one row, computed from the expressions alone
-DIKHAO NOW();
-DIKHAO 1 + 1, UPPER('a'), 7 / 2;
-
--- JOIN ... USING: join on same-named columns; the shared column shows ONCE in *
-DIKHAO * SE students s MILAO depts d USING (dept_id);
-DIKHAO naam, dname SE students BAAYAN MILAO depts USING (dept_id);   -- BAAYAN / DAHINA / DONO work too
-DIKHAO * SE a MILAO b USING (x, y);                                  -- several columns
-
--- EXISTS / NOT EXISTS (correlated or not) and ANY / SOME / ALL
-DIKHAO title SE courses c JAHAN EXISTS (DIKHAO 1 SE students s JAHAN s.cid = c.id);
-DIKHAO title SE courses c JAHAN NAHI EXISTS (DIKHAO 1 SE students s JAHAN s.cid = c.id);  -- NOT EXISTS also works
-DIKHAO naam SE students JAHAN cgpa > ANY (DIKHAO cgpa SE students JAHAN shehar = 'Pune');
-DIKHAO naam SE students JAHAN cgpa >= ALL (DIKHAO cgpa SE students);
-
--- derived table: a subquery in SE (or after MILAO) needs an alias; its output names are the columns
-DIKHAO t.shehar, t.n SE (DIKHAO shehar, GINO(*) KAHO n SE students SAMOOH shehar) t JAHAN t.n > 1;
-DIKHAO c.title, x.n SE courses c MILAO (DIKHAO cid, GINO(*) KAHO n SE students SAMOOH cid) x PAR x.cid = c.id;
-
--- UPDATE
-BADLO students RAKHO umar = umar + 1, email = KHALI JAHAN id = 1;
-
--- DELETE
-MITAO SE students JAHAN umar HAI KHALI;
-MITAO SE students;                             -- deletes every row
+CHALAO jod(10, @t);        -- returns the OUT values as a row
+DIKHAO @t;                 -- 55
 ```
 
-Operators: `=  !=  <>  <  <=  >  >=  +  -  *  /  DIV  %  ||`, where `+` and `||` also join two texts
-(`||` turns a number into text first: `'id-' || 5` is `id-5`; KHALI on either side gives KHALI).
-`/` is exact division like MySQL: two INTs that divide evenly give an INT (`6 / 2` is `3`), otherwise
-a FLOAT (`7 / 2` is `3.5`). `DIV` is integer division, cutting off the fraction (`7 DIV 2` is `3`,
-`-7 DIV 2` is `-3`). Dividing by zero is an error.
+| Construct | Notes |
+|---|---|
+| `DECLARE x TYPE [DEFAULT expr];` | local variable |
+| `SET x = expr;` / `RAKHO x = expr;` | local, `@user` variable or parameter |
+| `IF c THEN ... ELSEIF c THEN ... ELSE ... END IF;` | |
+| `WHILE c DO ... END WHILE;` | also `JAB TAK c KARO ... KHATAM JAB TAK;` |
+| `REPEAT ... UNTIL c END REPEAT;` | body runs at least once |
+| `label: LOOP ... END LOOP label;` | leave with `LEAVE label;`, skip with `ITERATE label;` |
+| `DIKHAO a, b INTO x, y SE t ...;` | exactly one row, else an error |
+| `DECLARE c CURSOR FOR DIKHAO ...;` `OPEN c;` `FETCH c INTO x;` `CLOSE c;` | |
+| `DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;` | runs when `FETCH` / `SELECT INTO` finds no row |
+| `SIGNAL 'message';` | stops with an error |
 
-## Scalar functions
+- Parameters have a mode: `IN` (default), `OUT` (starts `KHALI`) or `INOUT`. For `OUT` and
+  `INOUT`, `CHALAO` needs a `@variable` (or a declared local variable inside another body).
+  `IN` arguments can be any expression, including `@variables`.
+- Loops stop with an error after a safety limit of iterations.
+- `CHALAO` reports `N statement(s)`: the SQL statements the body ran.
+- A body runs with the caller's own privileges.
+- `HATAO PROCEDURE IF EXISTS name` is allowed.
+- Name collision: inside a plain-statement body, a bare column name equal to a parameter
+  name is taken as the parameter. Prefix parameters with `p_` to avoid this.
 
-These work on one row's values and can be used anywhere an expression can: the `DIKHAO` list,
-`JAHAN`, `KRAM`, `SAMOOH`, `JINKA`, `BADLO ... RAKHO` and `DAALO ... MAAN`. Names are
-case-insensitive and are the plain English SQL names. **If any argument is KHALI the result is
-KHALI** (the exceptions are `NULLIF` and `IFNULL`, described below).
+### Stored functions
 
 ```sql
-DIKHAO UPPER(naam), LENGTH(naam), CONCAT(naam, ' (', shehar, ')') SE students;
-DIKHAO naam SE students JAHAN LOWER(shehar) = 'delhi' KRAM LENGTH(naam) ULTA;
-DIKHAO ROUND(AUSAT(cgpa), 2), YEAR(CURDATE()) SE students;
-BADLO students RAKHO naam = TRIM(naam), email = LOWER(email);
+BANAO FUNCTION bonus (sal INT, pct INT) RETURNS INT SHURU
+    RETURN sal * pct / 100;
+KHATAM;
+
+DIKHAO naam, bonus(salary, 10) SE emp;
+SHOW FUNCTION STATUS;
+HATAO FUNCTION bonus;           -- HATAO FUNCTION IF EXISTS bonus also works
 ```
 
-| Function | Result |
-|----------|--------|
-| `UPPER(s)`, `LOWER(s)` | upper / lower case text (upper-case covers ASCII, Latin-1, Greek and Cyrillic letters) |
-| `LENGTH(s)`, `CHAR_LENGTH(s)` | number of **characters** (not bytes) |
-| `TRIM(s)`, `LTRIM(s)`, `RTRIM(s)` | text without surrounding spaces (both / left / right) |
-| `SUBSTRING(s, start [, len])`, `SUBSTR` | part of `s`; `start` is **1-based**, a negative `start` counts from the end, `start` 0 gives `''` |
-| `CONCAT(a, b, ...)` | any number of arguments, numbers become text; KHALI if **any** argument is KHALI |
-| `REPLACE(s, from, to)` | every `from` in `s` replaced by `to` |
-| `LEFT(s, n)`, `RIGHT(s, n)` | first / last `n` characters |
-| `ROUND(x [, digits])` | rounds half away from zero; `ROUND(1234, -2)` is `1200`; a FLOAT stays FLOAT |
-| `FLOOR(x)`, `CEIL(x)` / `CEILING(x)` | whole number below / above (an INT, unless it does not fit) |
-| `ABS(x)` | absolute value |
-| `MOD(a, b)` | remainder like MySQL: the sign follows `a` (`MOD(-7, 3)` = -1). The `%` operator keeps the engine's rule, the sign follows `b` (`-7 % 3` = 2); `b = 0` is an error for both |
-| `POWER(a, b)` / `POW` | `a` to the power `b` (an INT when both are INT, `b >= 0` and it fits) |
-| `SQRT(x)` | square root as FLOAT; a negative `x` gives KHALI |
-| `NOW()` | current local date and time as TEXT `'YYYY-MM-DD HH:MM:SS'` |
-| `CURDATE()`, `CURRENT_DATE` | today as a DATE (usable for a `DATE` column) |
-| `YEAR(d)`, `MONTH(d)`, `DAY(d)` | parts of a DATE, `'YYYY-MM-DD'` text or `NOW()` text |
-| `DATEDIFF(a, b)` | days from `b` to `a` (`a - b`); dates or `'YYYY-MM-DD'` text |
-| `DATE_FORMAT(d, fmt)` | text from a DATE using `%Y %y %m %d %e %H %i %s %M %b %W %a %j %%` (year, 2-digit year, month, day, day without zero, hour, minute, second, month name, short month name, weekday name, short weekday name, day of year) |
-| `NULLIF(a, b)` | KHALI when `a = b`, else `a` (a KHALI `b` gives `a`) |
-| `IFNULL(a, b)` | `a`, or `b` if `a` is KHALI (the same as `PEHLA(a, b)`) |
-| `CAST(x AS type)` | converts `x` to `INT`, `FLOAT`, `TEXT`, `DATE` or `BOOL`; `KAHO` can replace `AS`, and the Hinglish type names work (`ANK`, `DASHAMLAV`, `SHABD`, `TAREEKH`). `CAST(3.7 AS INT)` is `4` (rounds), `CAST('12' AS INT)` is `12`; text that is not a valid value is an error |
+- Used inside any expression (`JAHAN`, `KRAM`, `DAALO` values, `BADLO ... RAKHO`, other bodies).
+- Arguments and the result are converted to the declared types like MySQL does
+  (`'1000'` becomes `1000` for an `INT`, `5` becomes `'5'` for a `TEXT`); a `KHALI` argument goes through.
+- A function **may read but not change anything**: `DAALO`/`BADLO`/`MITAO`, DDL and `CHALAO`
+  inside a function are errors. `RETURN` is only allowed in functions (a procedure with `RETURN` is refused when created).
+- A function that ends without `RETURN` is an error; recursion has a depth limit.
+- Reading a table inside a function needs `DIKHAO` on it; only a superuser can create functions.
 
-`NOW()` returns TEXT, so store it in a TEXT column; `DATEDIFF`, `YEAR` and friends accept it
-directly. Use `CURDATE()` for a `DATE` column.
+### Session variables
+
+`SET @x = expr, @y = expr;` stores a value for the connection. `DIKHAO @x;` reads it
+(`KHALI` if never set) -- no `SE` needed. Variables are per connection and are not saved.
+`SHOW VARIABLES [LIKE 'pattern']` shows the server settings (currently `autocommit`); read a `@variable` with `DIKHAO @x`.
+
+### Prepared statements
+
+```sql
+PREPARE p FROM 'DIKHAO naam SE t JAHAN id = ?';
+EXECUTE p USING 2;
+DEALLOCATE PREPARE p;           -- HATAO PREPARE p is the same
+```
+
+`PREPARE ... FROM` takes a string or a `@variable` holding one, with exactly one statement.
+The SQL is checked when prepared. `?` marks inside string literals are not placeholders; each value from
+`USING` is inserted as a safe literal, so a value containing quotes cannot change the statement.
+Dynamic table names work by building the text first. `EXECUTE` checks privileges for the statement it runs.
 
 ## Transactions
 
@@ -700,6 +601,21 @@ PAKKA;                                     -- COMMIT: keep both changes
 ```
 
 - Everything outside `SHURU ... PAKKA` is saved immediately ("autocommit").
+- `SET autocommit = 0` (also `OFF`): the first statement that changes anything opens a
+  transaction that stays open until `PAKKA` or `WAPAS`. `SET autocommit = 1` (or `ON`) commits
+  an open transaction. `SHURU` while such a transaction is open commits it first, like MySQL's `START TRANSACTION`.
+  While it is open, other connections wait and get "Database busy hai". Closing the session rolls it back.
+- Savepoints, inside a transaction:
+
+  ```sql
+  SAVEPOINT a;
+  ROLLBACK TO a;            -- also WAPAS TAK a; the savepoint stays and can be used again
+  RELEASE SAVEPOINT a;
+  ```
+
+  `ROLLBACK TO` undoes everything after the savepoint and drops later savepoints.
+  `SAVEPOINT` outside a transaction is an error.
+- Restricted users (`-U`) cannot run `SET autocommit` or `SAVEPOINT`; those are superuser commands.
 - A transaction covers the current database. `ISTEMAL`, `BANAO DATABASE` and
   `HATAO DATABASE` are not allowed inside one.
 - While your transaction is open, other clients wait. They never see half-finished work.
