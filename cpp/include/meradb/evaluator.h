@@ -72,6 +72,9 @@ Value evaluate(const ast::Expr& expr, const Row& row, const SubqueryResults* sub
 
 // Used by JAHAN/JINKA: only exactly SACH counts. KHALI (unknown) does not.
 bool isTrue(const Value& v);
+// The answer of a condition clause (JAHAN, PAR, JINKA, TAB, IF ...): KHALI does not hold, and anything but SACH / JHOOTH
+// is an error instead of a silent "no" (JAHAN 1 used to return no rows at all).
+bool conditionHolds(const Value& v, const char* clause);
 
 // ---- utilities used by the planner and the engine ----
 

@@ -153,3 +153,22 @@ TEST_CASE("A FLOAT result too big to hold is an error, not inf", "[gaps][float]"
     REQUIRE_THROWS_WITH(e.execute("DIKHAO KUL(x) SE g;"), ContainsSubstring("FLOAT"));
     REQUIRE(q(e, "DIKHAO POWER(2, -1), POWER(0, 0), POWER(0, 2), POWER(-8, 0.5), SQRT(-1);") == "0.5|1|0|KHALI|KHALI");
 }
+
+TEST_CASE("A condition must be a condition", "[gaps][condition]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE t (a INT, b TEXT);");
+    run(e, "DAALO MEIN t MAAN (1, 'x');");
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN 1;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN a;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO a SE t JAHAN 'SACH';"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("BADLO t RAKHO a = 2 JAHAN 1;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("MITAO SE t JAHAN b;"), ContainsSubstring("'JAHAN' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO GINO(*) SE t JINKA 1;"), ContainsSubstring("'JINKA' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO AGAR 1 TAB 2 KHATAM;"), ContainsSubstring("'AGAR' ko SACH/JHOOTH"));
+    REQUIRE_THROWS_WITH(e.execute("DIKHAO x.a SE t x MILAO t y PAR 1;"), ContainsSubstring("'PAR' ko SACH/JHOOTH"));
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN SACH;") == "1");
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN KHALI;") == "");
+    REQUIRE(q(e, "DIKHAO a SE t JAHAN JHOOTH;") == "");
+    REQUIRE(q(e, "DIKHAO AGAR KHALI TAB 2 WARNA 3 KHATAM;") == "3");
+}

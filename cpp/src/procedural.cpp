@@ -403,10 +403,10 @@ Engine::ProcFlow Engine::runProcLoop(const ast::PLoop& loop, ProcFrame& frame) {
             Next n = settle(runProcBlock(loop.body, frame), out);
             if (n == Next::Pass) return out;
             if (n == Next::Stop) return ProcFlow::Next;
-        } while (!isTrue(evalExprValue(*loop.cond, &frame)));
+        } while (!conditionHolds(evalExprValue(*loop.cond, &frame), "UNTIL"));
         return ProcFlow::Next;
     }
-    while (loop.kind == "LOOP" || isTrue(evalExprValue(*loop.cond, &frame))) {
+    while (loop.kind == "LOOP" || conditionHolds(evalExprValue(*loop.cond, &frame), "WHILE")) {
         tick();
         Next n = settle(runProcBlock(loop.body, frame), out);
         if (n == Next::Pass) return out;
@@ -433,7 +433,7 @@ Engine::ProcFlow Engine::runProcNode(const ast::ProcNode& node, ProcFrame& frame
         frame.notFound = n;
     } else if (auto* n = dynamic_cast<const PIf*>(&node)) {
         for (const auto& [cond, block] : n->branches)
-            if (isTrue(evalExprValue(*cond, &frame))) return runProcBlock(block, frame);
+            if (conditionHolds(evalExprValue(*cond, &frame), "IF")) return runProcBlock(block, frame);
         return runProcBlock(n->elseBlock, frame);
     } else if (auto* n = dynamic_cast<const PLoop*>(&node)) {
         return runProcLoop(*n, frame);

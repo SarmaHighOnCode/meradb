@@ -2791,7 +2791,7 @@ Result Engine::execUpdate(const ast::Update& stmt, const RowCheck* check) {
         for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
         auto subq = precomputeSubqueries({where.get()}, candidateRows, outerKeys);
         for (size_t i = 0; i < cands.size(); ++i)
-            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) targets.push_back(cands[i]);
+            if (conditionHolds(evaluate(*where, candidateRows[i], subq.at(i)), "JAHAN")) targets.push_back(cands[i]);
     } else {
         targets = cands;
     }
@@ -2864,7 +2864,7 @@ Result Engine::execDelete(const ast::Delete& stmt) {
         for (const auto& c : cands) candidateRows.push_back(scope.row(0, c.second));
         auto subq = precomputeSubqueries({where.get()}, candidateRows, scope.allKeys());
         for (size_t i = 0; i < cands.size(); ++i)
-            if (isTrue(evaluate(*where, candidateRows[i], subq.at(i)))) doomed.push_back(cands[i]);
+            if (conditionHolds(evaluate(*where, candidateRows[i], subq.at(i)), "JAHAN")) doomed.push_back(cands[i]);
     } else {
         doomed = cands;
     }
@@ -2943,7 +2943,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
             bool matched = false;
             for (size_t li : *partners) {
                 Row combined = combineRows(leftRows[li], rRow);
-                if (isTrue(evaluate(on, combined))) {
+                if (conditionHolds(evaluate(on, combined), "PAR")) {
                     out.push_back(std::move(combined));
                     matched = true;
                 }
@@ -2977,7 +2977,7 @@ std::vector<Row> joinRows(const std::vector<Row>& leftRows, const std::vector<Ro
         bool matched = false;
         for (size_t ri : *partners) {
             Row combined = combineRows(lRow, rightRows[ri]);
-            if (isTrue(evaluate(on, combined))) {  // re-check the full PAR (it may have more conditions)
+            if (conditionHolds(evaluate(on, combined), "PAR")) {  // re-check the full PAR (it may have more conditions)
                 out.push_back(std::move(combined));
                 matched = true;
                 matchedRight[ri] = true;
@@ -3547,7 +3547,7 @@ Result Engine::execSelect(const ast::Select& stmt) {
         auto subq = precomputeSubqueries({plan.where.get()}, rows, keys);
         std::vector<Row> kept;
         for (size_t i = 0; i < rows.size(); ++i)
-            if (isTrue(evaluate(*plan.where, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+            if (conditionHolds(evaluate(*plan.where, rows[i], subq.at(i)), "JAHAN")) kept.push_back(std::move(rows[i]));
         rows = std::move(kept);
     }
 
@@ -3558,7 +3558,7 @@ Result Engine::execSelect(const ast::Select& stmt) {
             auto subq = precomputeSubqueries({plan.having.get()}, rows, keys);
             std::vector<Row> kept;
             for (size_t i = 0; i < rows.size(); ++i)
-                if (isTrue(evaluate(*plan.having, rows[i], subq.at(i)))) kept.push_back(std::move(rows[i]));
+                if (conditionHolds(evaluate(*plan.having, rows[i], subq.at(i)), "JINKA")) kept.push_back(std::move(rows[i]));
             rows = std::move(kept);
         }
     }
@@ -4049,7 +4049,7 @@ Engine::RowCheck Engine::viewCheck(const ViewTarget& target) {
         for (const auto& r : rows) dicts.push_back(scope.row(0, r));
         auto subq = precomputeSubqueries({bound.get()}, dicts, scope.allKeys());
         for (size_t i = 0; i < dicts.size(); ++i)
-            if (!isTrue(evaluate(*bound, dicts[i], subq.at(i))))
+            if (!conditionHolds(evaluate(*bound, dicts[i], subq.at(i)), "JAHAN"))
                 throw ExecutionError("View '" + viewName +
                                      "' ki WITH CHECK OPTION ke karan row reject: ye row view ki JAHAN shart poori nahi karti");
     };

@@ -484,6 +484,12 @@ void findSubqueriesImpl(const Expr* expr, std::vector<const Expr*>& out) {
 
 bool isTrue(const Value& v) { return isBool(v, true); }
 
+bool conditionHolds(const Value& v, const char* clause) {
+    if (v.isNull()) return false;
+    requireBool(v, clause);
+    return std::get<bool>(v.data);
+}
+
 Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueries) {
     requireStack();
     if (auto* lit = dynamic_cast<const Literal*>(&expr)) return lit->value;
@@ -543,7 +549,7 @@ Value evaluate(const Expr& expr, const Row& row, const SubqueryResults* subqueri
 
     if (auto* cw = dynamic_cast<const CaseWhen*>(&expr)) {
         for (auto& [cond, value] : cw->branches)
-            if (isTrue(evaluate(*cond, row, subqueries))) return evaluate(*value, row, subqueries);
+            if (conditionHolds(evaluate(*cond, row, subqueries), "AGAR")) return evaluate(*value, row, subqueries);
         return cw->elseExpr ? evaluate(*cw->elseExpr, row, subqueries) : Value();
     }
 
