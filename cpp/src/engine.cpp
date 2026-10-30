@@ -2584,7 +2584,10 @@ Result Engine::execInsert(const ast::Insert& stmt, const RowCheck* check) {
             (void)oldValues;
             ignore.insert(rowId);
         }
-        checkUnique(*t, updatedNewRows, ignore);
+        // the updated rows and the rows going in fresh end up in the same table: they must not collide with each other
+        std::vector<std::vector<Value>> finalRows = updatedNewRows;
+        finalRows.insert(finalRows.end(), toInsert.begin(), toInsert.end());
+        checkUnique(*t, finalRows, ignore);
         checkFk(*t, updatedNewRows);
         // a TAKRAAV collision is really an UPDATE of an existing row, so it fires
         // BADLO triggers (not DAALO) -- matches real upsert semantics

@@ -114,3 +114,13 @@ TEST_CASE("A failed statement inside a transaction undoes only itself", "[semant
     REQUIRE(q(e, "DIKHAO id SE t;") == "1");
     REQUIRE(q(e, "DIKHAO id SE lg;") == "1");
 }
+
+TEST_CASE("TAKRAAV PAR BADLO cannot create a duplicate key", "[semantics][upsert]") {
+    TempDir dir;
+    Engine e(dir.str());
+    run(e, "BANAO TABLE u (id INT MUKHYA KUNJI, v INT);");
+    run(e, "DAALO MEIN u MAAN (1, 0);");
+    // row (1, 0) collides and is updated to id = 2, while row (2, 0) is inserted fresh
+    REQUIRE_THROWS_WITH(e.execute("DAALO MEIN u MAAN (1, 0), (2, 0) TAKRAAV PAR BADLO id = 2;"), ContainsSubstring("Duplicate"));
+    REQUIRE(q(e, "DIKHAO id SE u KRAM id;") == "1");
+}
