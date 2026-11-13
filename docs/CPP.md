@@ -669,6 +669,11 @@ These are deliberate and small.
   saves it only after the data check passes. Python changes its in-memory schema
   first, so after a failed ALTER a Python session keeps a constraint that was never
   saved.
+- **ALTER ADD / DROP COLUMN keep the table's other constraints**: Python rebuilds the schema
+  from name and columns only, silently dropping every composite `ANOKHA` / composite
+  `MUKHYA KUNJI`. C++ keeps them, and the named indexes too; `DROP COLUMN` removes only
+  the constraints and indexes that name the dropped column. `ADD COLUMN ... MUKHYA KUNJI`
+  is refused when the table already has a composite `MUKHYA KUNJI`.
 - **Sorting mixed types** (for example TEXT against INT produced by an `AGAR`
   expression): Python raises an unhandled `TypeError`; C++ reports an execution
   error with a Hinglish message.
@@ -890,9 +895,6 @@ These are deliberate and small.
 These look like bugs in the reference engine. They are reproduced so that output and
 on-disk data stay identical, and are worth fixing in both engines together.
 
-- `ALTER ... ADD COLUMN` and `ALTER ... DROP COLUMN` rebuild the schema from name
-  and columns only, silently dropping composite `ANOKHA` / composite `MUKHYA KUNJI`
-  constraints from the catalog.
 - `RENAME COLUMN` does not rename the column inside composite constraint lists,
   leaving stale names.
 - `BANAO VIEW` runs its `DIKHAO` once at creation time as a sanity check.

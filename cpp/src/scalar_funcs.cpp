@@ -268,16 +268,22 @@ Value powerValue(const Value& a, const Value& b) {
     needNumber(b, "POWER");
     if (isIntValue(a) && isIntValue(b) && std::get<int64_t>(b.data) >= 0) {
         // exact integer power while it fits; the loop stops at once for the bases that cannot grow
-        int64_t base = std::get<int64_t>(a.data), exp = std::get<int64_t>(b.data), result = 1;
+        int64_t base = std::get<int64_t>(a.data), exp = std::get<int64_t>(b.data);
         if (base == 0) return Value(int64_t{exp == 0 ? 1 : 0});
         if (base == 1) return Value(int64_t{1});
         if (base == -1) return Value(int64_t{exp % 2 == 0 ? 1 : -1});
+        // the magnitude is multiplied up as an unsigned number (a negative result used to slip past the limit check
+        // and overflow); the sign goes back on at the end. |I64_MIN| = 2^63 is a power of two, so it fits too.
+        const uint64_t magnitude = base < 0 ? 0 - static_cast<uint64_t>(base) : static_cast<uint64_t>(base);
+        const bool negative = base < 0 && exp % 2 != 0;
+        const uint64_t limit = static_cast<uint64_t>(I64_MAX) + (negative ? 1 : 0);
+        uint64_t product = 1;
         bool fits = true;
         for (int64_t i = 0; i < exp && fits; ++i) {
-            if (base == I64_MIN || result > I64_MAX / (base < 0 ? -base : base)) fits = false;
-            else result *= base;
+            if (product > limit / magnitude) fits = false;
+            else product *= magnitude;
         }
-        if (fits) return Value(result);
+        if (fits) return Value(negative ? static_cast<int64_t>(0 - product) : static_cast<int64_t>(product));
     }
     const double x = asDouble(a), y = asDouble(b);
     if (x == 0 && y < 0) throw ExecutionError("POWER: 0 ki negative power nahi hoti (zero se divide jaisa)");

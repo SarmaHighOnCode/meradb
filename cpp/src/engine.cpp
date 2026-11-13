@@ -740,7 +740,11 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
         scope.sources.push_back(std::move(s));
     };
     addSource(stmt.table, stmt.alias.value_or(stmt.table), stmt.derived.get());
-    for (const auto& join : stmt.joins) addSource(join.table, join.alias, join.derived.get());
+    std::vector<size_t> joinSource;  // join -> its place in scope.sources
+    for (const auto& join : stmt.joins) {
+        joinSource.push_back(scope.sources.size());
+        addSource(join.table, join.alias, join.derived.get());
+    }
 
     RefCollector strict, lenient;  // lenient: JINKA / KRAM may name an output alias (KAHO)
     for (const auto& c : stmt.columns) strict.add(c.get());
@@ -791,6 +795,52 @@ void Engine::checkSelectAccess(const ast::Select& stmt, const PrivScope* outer) 
         }
     }
     for (const ast::ColumnRef* ref : strict.refs) resolve(*ref);
+    // MILAO ... SAMAAN (a, b) and a NATURAL join compare columns that no expression names: the rows that come out
+    // depend on them, so both sides need DIKHAO on each one (else a hidden column could be probed value by value).
+    for (size_t j = 0; j < stmt.joins.size(); ++j) {
+        const auto& join = stmt.joins[j];
+        const bool natural = join.kind == "NATURAL" && join.usingColumns.empty() && join.on == nullptr;
+        if (!natural && join.usingColumns.empty()) continue;
+        if (joinSource[j] >= scope.sources.size()) continue;
+        const PrivScope::Source& right = scope.sources[joinSource[j]];
+        const auto shown = [](const PrivScope::Source& s) { return s.table.empty() ? s.alias : s.table; };
+        const auto has = [](const PrivScope::Source& s, const std::string& c) {
+            return std::find(s.columns.begin(), s.columns.end(), c) != s.columns.end();
+        };
+        const auto need = [&](const PrivScope::Source& s, const std::string& c) {
+            if (!s.access.covers(c)) denyColumn("DIKHAO", shown(s), c);
+        };
+        // the earlier side of one compared column: the first source that has it (a view's columns are not known here)
+        const auto needEarlier = [&](const std::string& c) {
+            for (size_t k = 0; k < joinSource[j]; ++k)
+                if (has(scope.sources[k], c)) return need(scope.sources[k], c);
+            for (size_t k = 0; k < joinSource[j]; ++k)
+                if (scope.sources[k].unknown) need(scope.sources[k], c);
+        };
+        if (!natural) {
+            for (const auto& c : join.usingColumns) {
+                need(right, c);
+                needEarlier(c);
+            }
+            continue;
+        }
+        // NATURAL: every column name the two sides share. With a view on either side the shared names are not known
+        // here, so a restricted reader of that view (or of the other side) is refused outright.
+        bool viewInvolved = right.unknown;
+        for (size_t k = 0; k < joinSource[j]; ++k) viewInvolved = viewInvolved || scope.sources[k].unknown;
+        if (viewInvolved) {
+            for (size_t k = 0; k <= joinSource[j]; ++k)
+                if (!scope.sources[k].access.full) denyColumn("DIKHAO", shown(scope.sources[k]), "*");
+            continue;
+        }
+        for (const auto& c : right.columns) {
+            bool shared = false;
+            for (size_t k = 0; k < joinSource[j] && !shared; ++k) shared = has(scope.sources[k], c);
+            if (!shared) continue;
+            need(right, c);
+            needEarlier(c);
+        }
+    }
     // An output alias only excuses a name that is not also a real column: KRAM prefers the real column, so
     // `DIKHAO id KAHO secret SE t KRAM secret` would reveal the order of the hidden values.
     auto isRealColumn = [&](const std::string& name) {
@@ -1860,7 +1910,8 @@ Result Engine::execAlterAddColumn(const ast::AlterAddColumn& stmt) {
     if (std::find(names.begin(), names.end(), newCol.name) != names.end())
         throw ExecutionError("Column '" + newCol.name + "' pehle se hai");
     if (newCol.primaryKey &&
-        std::any_of(schema.columns.begin(), schema.columns.end(), [](const Column& c) { return c.primaryKey; }))
+        (schema.compositePk.has_value() ||
+         std::any_of(schema.columns.begin(), schema.columns.end(), [](const Column& c) { return c.primaryKey; })))
         throw ExecutionError("Table mein pehle se MUKHYA KUNJI hai");
 
     std::vector<RowValues> oldRows;
@@ -1909,6 +1960,7 @@ Result Engine::execAlterAddColumn(const ast::AlterAddColumn& stmt) {
     newSchema.columns = schema.columns;
     newSchema.compositeUnique = schema.compositeUnique;
     newSchema.compositePk = schema.compositePk;
+    newSchema.indexes = schema.indexes;  // and so are the named indexes (BANAO INDEX)
     newSchema.columns.insert(newSchema.columns.begin() + static_cast<std::ptrdiff_t>(position), newCol);
     checkSchemaExtras(newSchema);
     if (!newCol.fkName.empty()) checkFkNameFree(newCol.fkName, schema.name);
@@ -2016,14 +2068,20 @@ Result Engine::execAlterDropColumn(const ast::AlterDropColumn& stmt) {
         throw ExecutionError("Column '" + stmt.column + "' hata nahi sakte -- column " + joinStrs(usedByShart, ", ") +
                              " ka SHART ise use karta hai");
 
-    // NOTE (mirrors Python): composite constraints are not carried over.
+    // A composite constraint or index goes only when it names the dropped column; every other one is kept. (The
+    // Python engine drops them all -- a silent loss of MUKHYA KUNJI / ANOKHA that this engine no longer mirrors.)
+    const auto namesIt = [&](const std::vector<std::string>& columns) {
+        return std::find(columns.begin(), columns.end(), stmt.column) != columns.end();
+    };
     TableSchema newSchema;
     newSchema.name = schema.name;
     newSchema.columns = schema.columns;
     newSchema.columns.erase(newSchema.columns.begin() + static_cast<std::ptrdiff_t>(idx));
-    for (const auto& ix : schema.indexes)  // a plain index survives unless it names the dropped column
-        if (!ix.unique && std::find(ix.columns.begin(), ix.columns.end(), stmt.column) == ix.columns.end())
-            newSchema.indexes.push_back(ix);
+    for (const auto& group : schema.compositeUnique)
+        if (!namesIt(group)) newSchema.compositeUnique.push_back(group);
+    if (schema.compositePk && !namesIt(*schema.compositePk)) newSchema.compositePk = schema.compositePk;
+    for (const auto& ix : schema.indexes)
+        if (!namesIt(ix.columns)) newSchema.indexes.push_back(ix);
     auto types = newSchema.types();
     std::vector<std::vector<uint8_t>> payloads;
     for (auto& [id, v] : t->rows()) {
@@ -2229,6 +2287,7 @@ Result Engine::execRenameTable(const ast::RenameTable& stmt) {
     TableSchema schema = cat.get(stmt.table);  // raises if it doesn't exist
     if (stmt.newName == stmt.table) throw ExecutionError("Naya naam purane naam '" + stmt.table + "' jaisa hi hai");
     if (cat.find(stmt.newName) != nullptr) throw ExecutionError("Table '" + stmt.newName + "' pehle se hai");
+    if (cat.views.count(stmt.newName)) throw ExecutionError("'" + stmt.newName + "' naam ka VIEW pehle se hai");
 
     // the row DATA doesn't change, only the file's name -- a rename is atomic
     std::error_code ec;
@@ -2759,10 +2818,17 @@ Result Engine::execInsert(const ast::Insert& stmt, const RowCheck* check) {
         std::vector<Row> oldDicts, updatedDicts;
         for (const auto& target : updatedTargets) oldDicts.push_back(rowDict(schema, target.second));
         for (const auto& nv : updatedNewRows) updatedDicts.push_back(rowDict(schema, nv));
+        // parent side, exactly as BADLO does it: a referenced value that changes is refused (RESTRICT), followed
+        // (ON UPDATE CASCADE) or set to KHALI in the child rows -- worked out and checked before anything is written
+        FkWork work(t.get(), stmt.table);
+        std::vector<FkChange> fkChanges;
+        for (size_t i = 0; i < updatedTargets.size(); ++i)
+            fkChanges.push_back({updatedTargets[i].first, updatedTargets[i].second, updatedNewRows[i]});
+        fkUpdate(work, stmt.table, fkChanges, false);
+        fkValidate(work);
         for (size_t i = 0; i < oldDicts.size(); ++i)
             fireTriggers("PEHLE", "BADLO", stmt.table, &updatedDicts[i], &oldDicts[i]);
-        t->deleteMany(updatedTargets);
-        t->insertMany(updatedNewRows);
+        fkApply(work);
         for (size_t i = 0; i < oldDicts.size(); ++i)
             fireTriggers("BAAD", "BADLO", stmt.table, &updatedDicts[i], &oldDicts[i]);
     }
@@ -3938,8 +4004,9 @@ Result Engine::execSetOp(const ast::SetOp& stmt) {
             return false;
         });
     if (stmt.offset.has_value()) {
-        if (static_cast<size_t>(*stmt.offset) >= out.size()) out.clear();
-        else out.erase(out.begin(), out.begin() + *stmt.offset);
+        const size_t skip = static_cast<size_t>(std::max(0, *stmt.offset));  // a negative OFFSET skips nothing, as in DIKHAO
+        if (skip >= out.size()) out.clear();
+        else out.erase(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(skip));
     }
     if (stmt.limit.has_value() && static_cast<size_t>(*stmt.limit) < out.size()) out.resize(static_cast<size_t>(*stmt.limit));
     Result result;

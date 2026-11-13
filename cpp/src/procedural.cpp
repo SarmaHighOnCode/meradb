@@ -114,19 +114,28 @@ std::string fillPlaceholders(const std::string& text, const std::vector<size_t>&
 }
 
 // SQL LIKE for SHOW VARIABLES LIKE: % any run, _ one character, case-insensitive
-bool likeText(const std::string& text, const std::string& pattern, size_t t = 0, size_t p = 0) {
-    for (; p < pattern.size(); ++p) {
-        if (pattern[p] == '%') {
-            for (size_t k = t; k <= text.size(); ++k)
-                if (likeText(text, pattern, k, p + 1)) return true;
+// No recursion: only the LAST % seen is ever retried, so the cost is text x pattern at worst. (One recursive call per
+// % made '%%%%%%%%%%%%%%%%x' run for minutes, with the instance lock held.)
+bool likeText(const std::string& text, const std::string& pattern) {
+    const auto lower = [](char c) { return ::tolower(static_cast<unsigned char>(c)); };
+    const size_t none = std::string::npos;
+    size_t t = 0, p = 0, starP = none, starT = 0;
+    while (t < text.size()) {
+        if (p < pattern.size() && pattern[p] == '%') {
+            starP = p++;
+            starT = t;
+        } else if (p < pattern.size() && (pattern[p] == '_' || lower(pattern[p]) == lower(text[t]))) {
+            ++p;
+            ++t;
+        } else if (starP != none) {  // let the last % swallow one more character and try again
+            p = starP + 1;
+            t = ++starT;
+        } else {
             return false;
         }
-        if (t >= text.size()) return false;
-        if (pattern[p] != '_' && ::tolower(static_cast<unsigned char>(pattern[p])) != ::tolower(static_cast<unsigned char>(text[t])))
-            return false;
-        ++t;
     }
-    return t == text.size();
+    while (p < pattern.size() && pattern[p] == '%') ++p;
+    return p == pattern.size();
 }
 
 bool truthy(const Value& v, bool& ok) {
